@@ -372,7 +372,7 @@ function AppRoutes() {
       <Route path="/terms" element={<TermsPage />} />
       <Route path="/merchant-service-agreement" element={<MerchantServiceAgreementPage />} />
       <Route path="/security" element={<SecurityPage />} />
-      <Route path="/developers" element={<DocumentationPage />} />
+      <Route path="/documentation" element={<DocumentationPage />} />
       <Route path="/invoicing" element={<InvoicingOverview />} />
       <Route path="/qr-payments" element={<QrPaymentsInfo />} />
       <Route path="/escrow-marketplace" element={<EscrowMarketplaceInfo />} />
