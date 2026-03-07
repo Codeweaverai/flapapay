@@ -54,6 +54,7 @@ import { PrivacyPage } from './pages/PrivacyPage';
 import { TermsPage } from './pages/TermsPage';
 import { MerchantServiceAgreementPage } from './pages/MerchantServiceAgreementPage';
 import { SecurityPage } from './pages/SecurityPage';
+import { DocumentationPage } from './pages/DocumentationPage';
 import { AdminLayout } from './components/layout/AdminLayout';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { AdminUsers } from './pages/admin/AdminUsers';
@@ -371,6 +372,7 @@ function AppRoutes() {
       <Route path="/terms" element={<TermsPage />} />
       <Route path="/merchant-service-agreement" element={<MerchantServiceAgreementPage />} />
       <Route path="/security" element={<SecurityPage />} />
+      <Route path="/developers" element={<DocumentationPage />} />
       <Route path="/invoicing" element={<InvoicingOverview />} />
       <Route path="/qr-payments" element={<QrPaymentsInfo />} />
       <Route path="/escrow-marketplace" element={<EscrowMarketplaceInfo />} />
