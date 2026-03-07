@@ -1,0 +1,14 @@
+node_modules
+dist
+test-results
+cypress
+coverage
+.git
+.vscode
+.idea
+.env
+.DS_Store
+npm-debug.log
+yarn-error.log
+Dockerfile
+docker-compose.yml

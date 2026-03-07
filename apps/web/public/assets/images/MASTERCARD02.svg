@@ -1,0 +1,31 @@
+<svg version="1.1" id="Layer_1" xmlns:x="ns_extend;" xmlns:i="ns_ai;" xmlns:graph="ns_graphs;" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 183.6 114" style="enable-background:new 0 0 183.6 114;" xml:space="preserve">
+ <style type="text/css">
+  .st0{fill-rule:evenodd;clip-rule:evenodd;fill:#FF5F00;}
+	.st1{fill-rule:evenodd;clip-rule:evenodd;fill:#EB001B;}
+	.st2{fill-rule:evenodd;clip-rule:evenodd;fill:#F79E1B;}
+ </style>
+ <metadata>
+  <sfw xmlns="ns_sfw;">
+   <slices>
+   </slices>
+   <sliceSourceBounds bottomLeftOrigin="true" height="114" width="183.6" x="-132.2" y="0">
+   </sliceSourceBounds>
+  </sfw>
+ </metadata>
+ <desc>
+  Created with Sketch.
+ </desc>
+ <g id="Components---Sprint-3">
+  <g id="assets-_x2F_-logo-_x2F_-mastercard-_x2F_-symbol">
+   <polygon id="Fill-1" class="st0" points="67,101.8 116.6,101.8 116.6,12.2 67,12.2 		">
+   </polygon>
+   <path id="Fill-2" class="st1" d="M70.1,57c0-18.2,8.5-34.4,21.7-44.8C82.2,4.6,70,0,56.7,0C25.4,0,0,25.5,0,57s25.4,57,56.7,57
+			c13.2,0,25.4-4.6,35.1-12.2C78.6,91.4,70.1,75.2,70.1,57">
+   </path>
+   <path id="Fill-4" class="st2" d="M181.8,92.3v-2.2h-0.6l-0.7,1.5l-0.7-1.5h-0.6v2.2h0.4v-1.7l0.6,1.4h0.4l0.6-1.4v1.7H181.8z
+			 M178.2,92.3v-1.8h0.7v-0.4h-1.9v0.4h0.7v1.8H178.2z M183.6,57c0,31.5-25.4,57-56.7,57c-13.2,0-25.4-4.6-35.1-12.2
+			C105,91.4,113.5,75.2,113.5,57c0-18.2-8.5-34.4-21.7-44.8C101.5,4.6,113.6,0,126.9,0C158.2,0,183.6,25.5,183.6,57L183.6,57z">
+   </path>
+  </g>
+ </g>
+</svg>

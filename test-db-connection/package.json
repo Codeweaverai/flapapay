@@ -1,0 +1,12 @@
+{
+  "name": "test-db-connection",
+  "version": "1.0.0",
+  "description": "Test PostgreSQL connection with pg client",
+  "main": "databasepg.js",
+  "scripts": {
+    "test": "node databasepg.js"
+  },
+  "dependencies": {
+    "pg": "^8.11.3"
+  }
+}

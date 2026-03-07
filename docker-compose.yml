@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: flapapay-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345678
+      POSTGRES_DB: flapapay_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - flapapay-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  identity:
+    build: ./services/identity
+    container_name: flapapay-identity
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgres://postgres:12345678@postgres:5432/flapapay_db
+      JWT_SECRET: supersecretkey
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - flapapay-network
+
+  ledger:
+    build: ./services/ledger
+    container_name: flapapay-ledger
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgres://postgres:12345678@postgres:5432/flapapay_db
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - flapapay-network
+
+  fx:
+    build: ./services/fx
+    container_name: flapapay-fx
+    environment:
+      PORT: 3003
+    ports:
+      - "3003:3003"
+    networks:
+      - flapapay-network
+
+  payment:
+    build: ./services/payment
+    container_name: flapapay-payment
+    environment:
+      PORT: 3004
+      LEDGER_URL: http://ledger:3002
+      FX_URL: http://fx:3003
+    ports:
+      - "3004:3004"
+    depends_on:
+      - ledger
+      - fx
+    networks:
+      - flapapay-network
+
+  web:
+    build: ./apps/web
+    container_name: flapapay-web
+    ports:
+      - "5173:80"
+    networks:
+      - flapapay-network
+    depends_on:
+      - identity
+      - payment
+
+  redis:
+    image: redis:7-alpine
+    container_name: flapapay-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - flapapay-network
+    restart: unless-stopped
+
+networks:
+  flapapay-network:
+    driver: bridge
+
+volumes:
+  postgres_data:

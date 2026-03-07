@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables (NEVER commit secrets)
+.env
+.env.*
+apps/web/.env
+apps/web/.env.*
+apps/mobile/.env
+apps/mobile/.env.*
+
+# Build output
+dist/
+build/
+apps/web/dist/
+apps/web/.vite/
+apps/mobile/.expo/
+*.js.map
+
+# Logs
+*.log
+logs/
+server.log
+server_debug.log
+server_debug_new.log
+
+# Generated / Temp files
+*.pem
+*.p12
+*.pfx
+keys/
+tmp/
+*.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+test-output.txt
+test_output.txt
+syntax_error.txt
+grep_results.txt
+schema_output*.txt
+users_schema.txt
+schema_vc.txt
+invoices_columns.txt
+full_schema.txt
+
+# PDF test files
+*.pdf
