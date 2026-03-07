@@ -58,6 +58,7 @@ export const Footer: React.FC = () => {
                         <div className="space-y-4">
                             <Link to="/help" className="block text-gray-500 hover:text-orange-500 font-bold transition-colors">Help Center</Link>
                             <Link to="/developers" className="block text-gray-500 hover:text-orange-500 font-bold transition-colors">API Docs</Link>
+                            <Link to="/security" className="block text-gray-500 hover:text-orange-500 font-bold transition-colors">Security</Link>
                             <Link to="/privacy" className="block text-gray-500 hover:text-orange-500 font-bold transition-colors">Privacy Policy</Link>
                             <Link to="/terms" className="block text-gray-500 hover:text-orange-500 font-bold transition-colors">Terms of Service</Link>
                         </div>
