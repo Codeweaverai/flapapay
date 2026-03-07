@@ -150,7 +150,7 @@ export const StatusPage: React.FC = () => {
             case 'operational':
                 return 'text-green-500 bg-green-500/10 border-green-500/20';
             case 'degraded':
-                return 'text-yellow-500 bg-yellow-500/10 border-yellow-500/20';
+                return 'text-orange-500 bg-orange-500/10 border-orange-500/20';
             case 'outage':
                 return 'text-red-500 bg-red-500/10 border-red-500/20';
             default:
@@ -176,7 +176,7 @@ export const StatusPage: React.FC = () => {
             case 'investigating':
                 return 'bg-red-500/10 text-red-400 border-red-500/20';
             case 'identified':
-                return 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20';
+                return 'bg-orange-500/10 text-orange-400 border-orange-500/20';
             case 'monitoring':
                 return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
             case 'resolved':
@@ -201,7 +201,7 @@ export const StatusPage: React.FC = () => {
                 {/* Hero Section */}
                 <section className="relative border-b border-gray-800 py-24 bg-gradient-to-b from-gray-900/50 to-black">
                     <div className="absolute inset-0 overflow-hidden">
-                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] bg-gradient-to-b from-green-500/5 to-transparent rounded-full blur-3xl"></div>
+                        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] bg-gradient-to-b from-orange-500/5 to-transparent rounded-full blur-3xl"></div>
                     </div>
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
@@ -210,7 +210,7 @@ export const StatusPage: React.FC = () => {
                             <div className={`inline-flex items-center gap-3 px-6 py-3 rounded-full border mb-8 ${
                                 allOperational 
                                     ? 'bg-green-500/10 border-green-500/20 text-green-400' 
-                                    : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'
+                                    : 'bg-orange-500/10 border-orange-500/20 text-orange-400'
                             }`}>
                                 {allOperational ? (
                                     <CheckCircle2 className="w-5 h-5" />
@@ -273,7 +273,7 @@ export const StatusPage: React.FC = () => {
                                         service.status === 'operational'
                                             ? 'bg-gray-900/50 border-gray-800 hover:border-green-500/30'
                                             : service.status === 'degraded'
-                                            ? 'bg-yellow-500/5 border-yellow-500/20'
+                                            ? 'bg-orange-500/5 border-orange-500/20'
                                             : 'bg-red-500/5 border-red-500/20'
                                     }`}
                                 >
@@ -320,7 +320,7 @@ export const StatusPage: React.FC = () => {
                                                         hasOutage
                                                             ? 'bg-red-500'
                                                             : hasDegraded
-                                                            ? 'bg-yellow-500'
+                                                            ? 'bg-orange-500'
                                                             : 'bg-green-500'
                                                     }`}
                                                     title={`Day ${day + 1}: ${hasOutage ? 'Outage' : hasDegraded ? 'Degraded' : 'Operational'}`}
@@ -343,7 +343,7 @@ export const StatusPage: React.FC = () => {
                                 <span className="text-xs text-gray-400 font-medium">Operational</span>
                             </div>
                             <div className="flex items-center gap-2">
-                                <div className="w-3 h-3 rounded-sm bg-yellow-500"></div>
+                                <div className="w-3 h-3 rounded-sm bg-orange-500"></div>
                                 <span className="text-xs text-gray-400 font-medium">Degraded</span>
                             </div>
                             <div className="flex items-center gap-2">
@@ -409,7 +409,7 @@ export const StatusPage: React.FC = () => {
                 {/* Subscribe to Updates */}
                 <section className="py-16 bg-black border-t border-gray-800">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="bg-gradient-to-br from-purple-600/20 to-blue-600/20 rounded-3xl border border-purple-500/20 p-12 text-center">
+                        <div className="bg-gradient-to-br from-orange-500/20 to-yellow-500/20 rounded-3xl border border-orange-500/20 p-12 text-center">
                             <h2 className="text-3xl font-black text-white mb-4">Stay Informed</h2>
                             <p className="text-gray-400 font-medium mb-8 max-w-xl mx-auto">
                                 Subscribe to receive status updates and incident notifications directly to your inbox.
@@ -418,9 +418,9 @@ export const StatusPage: React.FC = () => {
                                 <input
                                     type="email"
                                     placeholder="Enter your email"
-                                    className="flex-1 px-6 py-4 rounded-xl bg-gray-900 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                                    className="flex-1 px-6 py-4 rounded-xl bg-gray-900 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
                                 />
-                                <button className="px-8 py-4 rounded-xl bg-purple-500 text-white font-black hover:bg-purple-600 transition-all">
+                                <button className="px-8 py-4 rounded-xl bg-orange-500 text-white font-black hover:bg-orange-600 transition-all">
                                     Subscribe
                                 </button>
                             </div>
@@ -435,18 +435,18 @@ export const StatusPage: React.FC = () => {
                 <section className="py-16 bg-black border-t border-gray-800">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
                         <div className="grid md:grid-cols-3 gap-6">
-                            <a href="/documentation" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-purple-500/30 transition-all group">
-                                <Book className="w-8 h-8 text-purple-400 mb-4" />
+                            <a href="/documentation" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-orange-500/30 transition-all group">
+                                <Book className="w-8 h-8 text-orange-400 mb-4" />
                                 <h3 className="text-lg font-black text-white mb-2">Documentation</h3>
                                 <p className="text-sm text-gray-400 font-medium">Learn how to integrate and use FlapaPay APIs</p>
                             </a>
-                            <a href="/contact" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-purple-500/30 transition-all group">
-                                <Mail className="w-8 h-8 text-purple-400 mb-4" />
+                            <a href="/contact" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-orange-500/30 transition-all group">
+                                <Mail className="w-8 h-8 text-orange-400 mb-4" />
                                 <h3 className="text-lg font-black text-white mb-2">Contact Support</h3>
                                 <p className="text-sm text-gray-400 font-medium">Get help from our support team</p>
                             </a>
-                            <a href="https://status.flapapay.com/api" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-purple-500/30 transition-all group">
-                                <Globe className="w-8 h-8 text-purple-400 mb-4" />
+                            <a href="https://status.flapapay.com/api" className="p-6 rounded-2xl bg-gray-900/50 border border-gray-800 hover:border-orange-500/30 transition-all group">
+                                <Globe className="w-8 h-8 text-orange-400 mb-4" />
                                 <h3 className="text-lg font-black text-white mb-2">Status API</h3>
                                 <p className="text-sm text-gray-400 font-medium">Access status data programmatically</p>
                             </a>

@@ -140,15 +140,15 @@ app.post('/webhook', (req, res) => {
                 {/* Hero Section */}
                 <section className="relative border-b border-gray-800 py-24 bg-gradient-to-b from-gray-900 to-black">
                     <div className="absolute inset-0 overflow-hidden">
-                        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-purple-500/10 rounded-full blur-3xl"></div>
-                        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-blue-500/10 rounded-full blur-3xl"></div>
+                        <div className="absolute top-0 left-1/4 w-[600px] h-[600px] bg-orange-500/10 rounded-full blur-3xl"></div>
+                        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-yellow-500/10 rounded-full blur-3xl"></div>
                     </div>
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
                         <div className="text-center max-w-3xl mx-auto">
-                            <div className="inline-flex items-center px-4 py-2 rounded-full bg-purple-500/10 border border-purple-500/20 mb-8">
-                                <span className="flex h-2 w-2 rounded-full bg-purple-500 mr-3 animate-pulse"></span>
-                                <span className="text-xs font-black text-purple-400 uppercase tracking-widest">Developer Documentation</span>
+                            <div className="inline-flex items-center px-4 py-2 rounded-full bg-orange-500/10 border border-orange-500/20 mb-8">
+                                <span className="flex h-2 w-2 rounded-full bg-orange-500 mr-3 animate-pulse"></span>
+                                <span className="text-xs font-black text-orange-400 uppercase tracking-widest">Developer Documentation</span>
                             </div>
                             <h1 className="text-5xl md:text-7xl font-black text-white mb-6 tracking-tight">
                                 Build with FlapaPay
@@ -165,7 +165,7 @@ app.post('/webhook', (req, res) => {
                                     placeholder="Search documentation..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="w-full pl-12 pr-4 py-4 rounded-2xl bg-gray-900 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 transition-all"
+                                    className="w-full pl-12 pr-4 py-4 rounded-2xl bg-gray-900 border border-gray-700 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 transition-all"
                                 />
                             </div>
 
@@ -175,7 +175,7 @@ app.post('/webhook', (req, res) => {
                                     <a
                                         key={link}
                                         href="#"
-                                        className="px-6 py-3 rounded-xl bg-gray-900 border border-gray-700 text-gray-300 font-bold hover:border-purple-500 hover:text-white transition-all"
+                                        className="px-6 py-3 rounded-xl bg-gray-900 border border-gray-700 text-gray-300 font-bold hover:border-orange-500 hover:text-white transition-all"
                                     >
                                         {link}
                                     </a>
@@ -224,12 +224,12 @@ app.post('/webhook', (req, res) => {
                                                     onClick={() => setActiveSection(activeSection === section.id ? '' : section.id)}
                                                     className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all ${
                                                         activeSection === section.id
-                                                            ? 'bg-purple-500/10 text-purple-400'
+                                                            ? 'bg-orange-500/10 text-orange-400'
                                                             : 'text-gray-400 hover:text-white hover:bg-gray-900'
                                                     }`}
                                                 >
                                                     <div className="flex items-center gap-3">
-                                                        <span className={activeSection === section.id ? 'text-purple-400' : 'text-gray-500'}>
+                                                        <span className={activeSection === section.id ? 'text-orange-400' : 'text-gray-500'}>
                                                             {section.icon}
                                                         </span>
                                                         {section.title}
@@ -254,10 +254,10 @@ app.post('/webhook', (req, res) => {
                                     </nav>
 
                                     {/* Need Help */}
-                                    <div className="mt-8 p-4 rounded-2xl bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/20">
+                                    <div className="mt-8 p-4 rounded-2xl bg-gradient-to-br from-orange-500/10 to-yellow-500/10 border border-orange-500/20">
                                         <p className="text-sm font-black text-white mb-2">Need Help?</p>
                                         <p className="text-xs text-gray-400 mb-4">Can't find what you're looking for? Our team is here to help.</p>
-                                        <a href="/contact" className="text-xs font-bold text-purple-400 hover:text-purple-300 transition-colors flex items-center gap-2">
+                                        <a href="/contact" className="text-xs font-bold text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-2">
                                             Contact Support
                                             <ChevronRight className="w-3 h-3" />
                                         </a>
@@ -270,7 +270,7 @@ app.post('/webhook', (req, res) => {
                                 {/* Introduction */}
                                 <div className="mb-16">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center text-orange-400">
                                             <Book className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-white">Introduction</h2>
@@ -288,7 +288,7 @@ app.post('/webhook', (req, res) => {
                                                 { icon: <Shield className="w-6 h-6" />, title: 'Security', desc: 'PCI-DSS Level 1' },
                                             ].map((item, i) => (
                                                 <div key={i} className="p-6 rounded-2xl bg-gray-900 border border-gray-800">
-                                                    <div className="text-purple-400 mb-3">{item.icon}</div>
+                                                    <div className="text-orange-400 mb-3">{item.icon}</div>
                                                     <p className="text-2xl font-black text-white mb-1">{item.title}</p>
                                                     <p className="text-sm text-gray-500 font-medium">{item.desc}</p>
                                                 </div>
@@ -300,7 +300,7 @@ app.post('/webhook', (req, res) => {
                                 {/* Quick Start */}
                                 <div className="mb-16">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center text-orange-400">
                                             <Zap className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-white">Quick Start</h2>
@@ -310,7 +310,7 @@ app.post('/webhook', (req, res) => {
                                         {/* Step 1 */}
                                         <div className="p-6 rounded-2xl bg-gray-900 border border-gray-800">
                                             <div className="flex items-center gap-3 mb-4">
-                                                <span className="w-8 h-8 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-sm font-black">1</span>
+                                                <span className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-sm font-black">1</span>
                                                 <h3 className="text-xl font-black text-white">Install the SDK</h3>
                                             </div>
                                             <div className="relative">
@@ -329,7 +329,7 @@ app.post('/webhook', (req, res) => {
                                         {/* Step 2 */}
                                         <div className="p-6 rounded-2xl bg-gray-900 border border-gray-800">
                                             <div className="flex items-center gap-3 mb-4">
-                                                <span className="w-8 h-8 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-sm font-black">2</span>
+                                                <span className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-sm font-black">2</span>
                                                 <h3 className="text-xl font-black text-white">Initialize the Client</h3>
                                             </div>
                                             <div className="relative">
@@ -348,7 +348,7 @@ app.post('/webhook', (req, res) => {
                                         {/* Step 3 */}
                                         <div className="p-6 rounded-2xl bg-gray-900 border border-gray-800">
                                             <div className="flex items-center gap-3 mb-4">
-                                                <span className="w-8 h-8 rounded-full bg-purple-500/20 text-purple-400 flex items-center justify-center text-sm font-black">3</span>
+                                                <span className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center text-sm font-black">3</span>
                                                 <h3 className="text-xl font-black text-white">Create Your First Payment</h3>
                                             </div>
                                             <div className="relative">
@@ -369,7 +369,7 @@ app.post('/webhook', (req, res) => {
                                 {/* API Reference Preview */}
                                 <div className="mb-16">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center text-orange-400">
                                             <Terminal className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-white">API Reference</h2>
@@ -389,7 +389,7 @@ app.post('/webhook', (req, res) => {
                                             <a
                                                 key={i}
                                                 href="#"
-                                                className="p-5 rounded-2xl bg-gray-900 border border-gray-800 hover:border-purple-500/50 transition-all group"
+                                                className="p-5 rounded-2xl bg-gray-900 border border-gray-800 hover:border-orange-500/50 transition-all group"
                                             >
                                                 <div className="flex items-center gap-3 mb-2">
                                                     <span className={`text-xs font-black ${endpoint.color}`}>{endpoint.method}</span>
@@ -402,7 +402,7 @@ app.post('/webhook', (req, res) => {
 
                                     <a
                                         href="/api-reference"
-                                        className="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-purple-500 text-white font-black hover:bg-purple-600 transition-all"
+                                        className="mt-6 inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-orange-500 text-white font-black hover:bg-orange-600 transition-all"
                                     >
                                         View Full API Reference
                                         <ChevronRight className="w-4 h-4" />
@@ -412,7 +412,7 @@ app.post('/webhook', (req, res) => {
                                 {/* Webhooks */}
                                 <div className="mb-16">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center text-orange-400">
                                             <Webhook className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-white">Webhooks</h2>
@@ -431,7 +431,7 @@ app.post('/webhook', (req, res) => {
                                                 { event: 'dispute.created', desc: 'Triggered when a dispute is opened' },
                                             ].map((item, i) => (
                                                 <div key={i} className="flex items-start gap-4 p-4 rounded-xl bg-black border border-gray-800">
-                                                    <code className="text-sm text-purple-400 font-mono">{item.event}</code>
+                                                    <code className="text-sm text-orange-400 font-mono">{item.event}</code>
                                                     <span className="text-sm text-gray-500">— {item.desc}</span>
                                                 </div>
                                             ))}
@@ -454,7 +454,7 @@ app.post('/webhook', (req, res) => {
                                 {/* SDKs */}
                                 <div className="mb-16">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center text-orange-400">
                                             <Code className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-white">SDKs & Libraries</h2>
@@ -467,10 +467,10 @@ app.post('/webhook', (req, res) => {
                                             { name: 'PHP', version: 'v3.1.0', install: 'composer require flapapay/sdk', icon: <Globe className="w-5 h-5" /> },
                                             { name: 'React Native', version: 'v1.2.0', install: 'npm i @flapapay/react-native', icon: <Smartphone className="w-5 h-5" /> },
                                         ].map((sdk, i) => (
-                                            <div key={i} className="p-6 rounded-2xl bg-gray-900 border border-gray-800 hover:border-purple-500/50 transition-all">
+                                            <div key={i} className="p-6 rounded-2xl bg-gray-900 border border-gray-800 hover:border-orange-500/50 transition-all">
                                                 <div className="flex items-center justify-between mb-4">
                                                     <div className="flex items-center gap-3">
-                                                        <div className="text-purple-400">{sdk.icon}</div>
+                                                        <div className="text-orange-400">{sdk.icon}</div>
                                                         <div>
                                                             <h3 className="text-lg font-black text-white">{sdk.name}</h3>
                                                             <p className="text-xs text-gray-500">v{sdk.version}</p>
@@ -492,16 +492,16 @@ app.post('/webhook', (req, res) => {
                                 </div>
 
                                 {/* CTA */}
-                                <section className="bg-gradient-to-br from-purple-600 to-blue-700 rounded-3xl p-12 text-center">
+                                <section className="bg-gradient-to-br from-orange-500 to-yellow-600 rounded-3xl p-12 text-center">
                                     <h2 className="text-3xl font-black text-white mb-6">Ready to Start Building?</h2>
-                                    <p className="text-purple-100 font-medium mb-8 max-w-xl mx-auto">
+                                    <p className="text-orange-100 font-medium mb-8 max-w-xl mx-auto">
                                         Create your developer account and get API keys in minutes. Start testing in sandbox mode before going live.
                                     </p>
                                     <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                                        <a href="/signup" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-white text-purple-600 font-black hover:bg-purple-50 transition-all">
+                                        <a href="/signup" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-white text-orange-600 font-black hover:bg-orange-50 transition-all">
                                             Get API Keys
                                         </a>
-                                        <a href="/api-reference" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-purple-700 text-white font-black border border-purple-500 hover:bg-purple-600 transition-all">
+                                        <a href="/api-reference" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-orange-600 text-white font-black border border-orange-500 hover:bg-orange-700 transition-all">
                                             API Reference
                                         </a>
                                     </div>
