@@ -30,22 +30,22 @@ export const MerchantServiceAgreementPage: React.FC = () => {
     ];
 
     return (
-        <div className="min-h-screen bg-[#F9FAFB] font-sans selection:bg-purple-100">
+        <div className="min-h-screen bg-[#F9FAFB] font-sans selection:bg-orange-100">
             <Navbar />
 
             <main className="pt-20">
                 {/* Hero Section */}
                 <section className="relative overflow-hidden bg-white border-b border-gray-100 py-32">
-                    <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-gradient-to-br from-purple-100/30 to-transparent rounded-full -ml-64 -mt-64 blur-3xl pointer-events-none"></div>
+                    <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-100/30 to-transparent rounded-full -ml-64 -mt-64 blur-3xl pointer-events-none"></div>
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8 text-center">
-                        <div className="inline-flex items-center px-4 py-2 rounded-full bg-purple-50 border border-purple-100 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                            <span className="flex h-2 w-2 rounded-full bg-purple-500 mr-3 animate-pulse"></span>
-                            <span className="text-xs font-black text-purple-600 uppercase tracking-widest">Merchant Agreement</span>
+                        <div className="inline-flex items-center px-4 py-2 rounded-full bg-orange-50 border border-orange-100 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                            <span className="flex h-2 w-2 rounded-full bg-orange-500 mr-3 animate-pulse"></span>
+                            <span className="text-xs font-black text-orange-600 uppercase tracking-widest">Merchant Agreement</span>
                         </div>
                         <h1 className="text-5xl md:text-8xl font-black text-gray-900 mb-8 tracking-tight leading-tight">
                             Merchant Service <br />
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-purple-400">Agreement</span>
+                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-600 to-orange-400">Agreement</span>
                         </h1>
                         <p className="text-xl text-gray-500 max-w-2xl mx-auto font-medium leading-relaxed">
                             Last Updated: March 2026. This agreement governs your use of FlapaPay's merchant services, payment processing, and related financial products.
@@ -64,9 +64,9 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                         <a
                                             key={section.id}
                                             href={`#${section.id}`}
-                                            className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-gray-500 hover:bg-purple-50 hover:text-purple-600 transition-all group"
+                                            className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold text-gray-500 hover:bg-orange-50 hover:text-orange-600 transition-all group"
                                         >
-                                            <span className="text-gray-400 group-hover:text-purple-500 transition-colors">{section.icon}</span>
+                                            <span className="text-gray-400 group-hover:text-orange-500 transition-colors">{section.icon}</span>
                                             {section.title}
                                         </a>
                                     ))}
@@ -78,7 +78,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Overview */}
                                 <section id="overview" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <FileText className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">1. Overview</h2>
@@ -88,20 +88,20 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                             This Merchant Service Agreement ("Agreement") is a legally binding contract between you ("Merchant") and FlapaPay Inc. ("FlapaPay", "we", "us", "our") governing your access to and use of our payment processing services, merchant dashboard, and related financial products.
                                         </p>
                                         <div className="grid md:grid-cols-3 gap-6 mt-8">
-                                            <div className="p-6 rounded-2xl bg-purple-50 border border-purple-100">
-                                                <Globe className="w-8 h-8 text-purple-600 mb-4" />
-                                                <p className="text-sm font-black text-purple-900">Global Coverage</p>
-                                                <p className="text-xs text-purple-600 mt-2">50+ countries supported</p>
+                                            <div className="p-6 rounded-2xl bg-orange-50 border border-orange-100">
+                                                <Globe className="w-8 h-8 text-orange-600 mb-4" />
+                                                <p className="text-sm font-black text-orange-900">Global Coverage</p>
+                                                <p className="text-xs text-orange-600 mt-2">50+ countries supported</p>
                                             </div>
-                                            <div className="p-6 rounded-2xl bg-purple-50 border border-purple-100">
-                                                <Shield className="w-8 h-8 text-purple-600 mb-4" />
-                                                <p className="text-sm font-black text-purple-900">PCI-DSS Compliant</p>
-                                                <p className="text-xs text-purple-600 mt-2">Level 1 certified</p>
+                                            <div className="p-6 rounded-2xl bg-orange-50 border border-orange-100">
+                                                <Shield className="w-8 h-8 text-orange-600 mb-4" />
+                                                <p className="text-sm font-black text-orange-900">PCI-DSS Compliant</p>
+                                                <p className="text-xs text-orange-600 mt-2">Level 1 certified</p>
                                             </div>
-                                            <div className="p-6 rounded-2xl bg-purple-50 border border-purple-100">
-                                                <Clock className="w-8 h-8 text-purple-600 mb-4" />
-                                                <p className="text-sm font-black text-purple-900">24/7 Processing</p>
-                                                <p className="text-xs text-purple-600 mt-2">Always available</p>
+                                            <div className="p-6 rounded-2xl bg-orange-50 border border-orange-100">
+                                                <Clock className="w-8 h-8 text-orange-600 mb-4" />
+                                                <p className="text-sm font-black text-orange-900">24/7 Processing</p>
+                                                <p className="text-xs text-orange-600 mt-2">Always available</p>
                                             </div>
                                         </div>
                                     </div>
@@ -110,7 +110,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Eligibility */}
                                 <section id="eligibility" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <UserCheck className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">2. Merchant Eligibility</h2>
@@ -129,7 +129,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                                 'Maintain adequate systems to process transactions and refunds',
                                             ].map((item, i) => (
                                                 <li key={i} className="flex items-start gap-3">
-                                                    <CheckCircle2 className="w-5 h-5 text-purple-500 mt-0.5 shrink-0" />
+                                                    <CheckCircle2 className="w-5 h-5 text-orange-500 mt-0.5 shrink-0" />
                                                     <span className="text-gray-600 font-medium">{item}</span>
                                                 </li>
                                             ))}
@@ -140,7 +140,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Services */}
                                 <section id="services" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <Building2 className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">3. Services Provided</h2>
@@ -160,7 +160,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                                 { title: 'Escrow Services', desc: 'Secure held payments for marketplace transactions' },
                                                 { title: 'Analytics & Reports', desc: 'Real-time transaction data and financial insights' },
                                             ].map((service, i) => (
-                                                <div key={i} className="p-5 rounded-2xl bg-gray-50 border border-gray-100 hover:border-purple-200 hover:bg-purple-50 transition-all">
+                                                <div key={i} className="p-5 rounded-2xl bg-gray-50 border border-gray-100 hover:border-orange-200 hover:bg-orange-50 transition-all">
                                                     <p className="text-sm font-black text-gray-900 mb-2">{service.title}</p>
                                                     <p className="text-xs text-gray-500 font-medium">{service.desc}</p>
                                                 </div>
@@ -172,7 +172,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Fees */}
                                 <section id="fees" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <DollarSign className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">4. Fees & Settlement</h2>
@@ -208,7 +208,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Compliance */}
                                 <section id="compliance" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <Shield className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">5. Compliance & Security</h2>
@@ -227,7 +227,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                                 'Sanctions screening and prohibited persons lists',
                                             ].map((item, i) => (
                                                 <li key={i} className="flex items-start gap-3">
-                                                    <Lock className="w-5 h-5 text-purple-500 mt-0.5 shrink-0" />
+                                                    <Lock className="w-5 h-5 text-orange-500 mt-0.5 shrink-0" />
                                                     <span className="text-gray-600 font-medium">{item}</span>
                                                 </li>
                                             ))}
@@ -238,7 +238,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Obligations */}
                                 <section id="obligations" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <CheckCircle2 className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">6. Merchant Obligations</h2>
@@ -259,7 +259,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                                 'Maintain adequate customer support channels',
                                             ].map((item, i) => (
                                                 <li key={i} className="flex items-start gap-3">
-                                                    <CheckCircle2 className="w-5 h-5 text-purple-500 mt-0.5 shrink-0" />
+                                                    <CheckCircle2 className="w-5 h-5 text-orange-500 mt-0.5 shrink-0" />
                                                     <span className="text-gray-600 font-medium">{item}</span>
                                                 </li>
                                             ))}
@@ -270,7 +270,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Liability */}
                                 <section id="liability" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <AlertCircle className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">7. Liability & Indemnification</h2>
@@ -296,7 +296,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Termination */}
                                 <section id="termination" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <Clock className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">8. Termination</h2>
@@ -322,7 +322,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 {/* Support */}
                                 <section id="support" className="mb-20 scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600">
                                             <Headphones className="w-6 h-6" />
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900">9. Support & Disputes</h2>
@@ -352,16 +352,16 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                 </section>
 
                                 {/* Acceptance */}
-                                <section className="bg-gradient-to-br from-purple-600 to-purple-800 rounded-3xl p-12 text-center">
+                                <section className="bg-gradient-to-br from-orange-500 to-yellow-600 rounded-3xl p-12 text-center">
                                     <h2 className="text-3xl font-black text-white mb-6">Ready to Get Started?</h2>
-                                    <p className="text-purple-100 font-medium mb-8 max-w-xl mx-auto">
+                                    <p className="text-orange-100 font-medium mb-8 max-w-xl mx-auto">
                                         Join thousands of merchants processing payments with FlapaPay. Create your account and start accepting payments in minutes.
                                     </p>
                                     <div className="flex flex-col sm:flex-row gap-4 justify-center">
-                                        <a href="/signup" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-white text-purple-600 font-black hover:bg-purple-50 transition-all">
+                                        <a href="/signup" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-white text-orange-600 font-black hover:bg-orange-50 transition-all">
                                             Create Merchant Account
                                         </a>
-                                        <a href="/contact" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-purple-700 text-white font-black border border-purple-500 hover:bg-purple-600 transition-all">
+                                        <a href="/contact" className="inline-flex items-center justify-center px-8 py-4 rounded-2xl bg-orange-600 text-white font-black border border-orange-500 hover:bg-orange-700 transition-all">
                                             Contact Sales
                                         </a>
                                     </div>
