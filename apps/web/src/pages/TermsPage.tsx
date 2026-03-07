@@ -16,22 +16,22 @@ export const TermsPage: React.FC = () => {
     ];
 
     return (
-        <div className="min-h-screen bg-[#F9FAFB] font-sans selection:bg-purple-100">
+        <div className="min-h-screen bg-[#F9FAFB] font-sans selection:bg-orange-100">
             <Navbar />
 
             <main className="pt-20">
                 {/* Modern Hero Section */}
                 <section className="relative overflow-hidden bg-white border-b border-gray-100 py-32">
-                    <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-gradient-to-br from-purple-100/30 to-transparent rounded-full -ml-64 -mt-64 blur-3xl pointer-events-none"></div>
+                    <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-100/30 to-transparent rounded-full -ml-64 -mt-64 blur-3xl pointer-events-none"></div>
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8 text-center">
-                        <div className="inline-flex items-center px-4 py-2 rounded-full bg-purple-50 border border-purple-100 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                            <span className="flex h-2 w-2 rounded-full bg-purple-500 mr-3 animate-pulse"></span>
-                            <span className="text-xs font-black text-purple-600 uppercase tracking-widest">Platform Guidelines</span>
+                        <div className="inline-flex items-center px-4 py-2 rounded-full bg-orange-50 border border-orange-100 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+                            <span className="flex h-2 w-2 rounded-full bg-orange-500 mr-3 animate-pulse"></span>
+                            <span className="text-xs font-black text-orange-600 uppercase tracking-widest">Platform Guidelines</span>
                         </div>
                         <h1 className="text-5xl md:text-8xl font-black text-gray-900 mb-8 tracking-tight leading-tight">
                             The Rules of the <br />
-                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-purple-400">Financial Rails.</span>
+                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-600 to-orange-400">Financial Rails.</span>
                         </h1>
                         <p className="text-xl text-gray-500 max-w-2xl mx-auto font-medium leading-relaxed">
                             Last Updated: March 2026. By accessing FlapaPay, you agree to these Terms of Service. Please read them carefully to understand your rights and obligations.
@@ -52,17 +52,17 @@ export const TermsPage: React.FC = () => {
                                             href={`#${section.id}`}
                                             className="flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-bold text-gray-400 hover:text-gray-900 hover:bg-white transition-all group"
                                         >
-                                            <span className="text-gray-300 group-hover:text-purple-500 transition-colors uppercase tracking-widest text-[10px] font-black w-4 flex-shrink-0">
+                                            <span className="text-gray-300 group-hover:text-orange-500 transition-colors uppercase tracking-widest text-[10px] font-black w-4 flex-shrink-0">
                                                 {section.icon}
                                             </span>
                                             {section.title.split('. ')[1]}
                                         </a>
                                     ))}
 
-                                    <div className="mt-12 p-8 rounded-[40px] bg-gradient-to-br from-purple-600 to-purple-800 text-white shadow-2xl shadow-purple-500/20">
-                                        <Landmark className="w-8 h-8 mb-6 text-purple-200" />
+                                    <div className="mt-12 p-8 rounded-[40px] bg-gradient-to-br from-orange-500 to-yellow-600 text-white shadow-2xl shadow-orange-500/20">
+                                        <Landmark className="w-8 h-8 mb-6 text-orange-200" />
                                         <h4 className="text-lg font-black mb-2 leading-tight">Regulatory Compliance</h4>
-                                        <p className="text-xs font-medium text-purple-100 leading-relaxed mb-6 italic">We operate under strict financial licenses and strictly enforce AML/KYC protocols.</p>
+                                        <p className="text-xs font-medium text-orange-100 leading-relaxed mb-6 italic">We operate under strict financial licenses and strictly enforce AML/KYC protocols.</p>
                                         <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
                                             <div className="w-2/3 h-full bg-white"></div>
                                         </div>
@@ -75,12 +75,12 @@ export const TermsPage: React.FC = () => {
                                 {/* Acceptance */}
                                 <div id="acceptance" className="scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600 shadow-sm font-black">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600 shadow-sm font-black">
                                             01
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900 tracking-tight">Acceptance of Terms</h2>
                                     </div>
-                                    <div className="prose prose-lg prose-purple max-w-none text-gray-500 font-medium leading-relaxed space-y-6">
+                                    <div className="prose prose-lg prose-orange max-w-none text-gray-500 font-medium leading-relaxed space-y-6">
                                         <p>
                                             By creating an account, accessing the FlapaPay Dashboard, or utilizing our API, you enter into a legally binding agreement with FlapaPay. These terms govern your use of the "Service", including all website features, merchant tools, and payment processing capabilities.
                                         </p>
@@ -106,7 +106,7 @@ export const TermsPage: React.FC = () => {
                                             </p>
                                         </div>
                                         <div className="p-10 rounded-[40px] bg-gray-900 text-white shadow-xl">
-                                            <h4 className="text-sm font-black text-purple-400 uppercase tracking-widest mb-4">Account Safeguards</h4>
+                                            <h4 className="text-sm font-black text-orange-400 uppercase tracking-widest mb-4">Account Safeguards</h4>
                                             <p className="text-gray-400 text-sm font-medium leading-relaxed">
                                                 You are responsible for safeguarding the credentials and security PIN used to access the Service. You agree not to disclose your PIN to any third party. FlapaPay will never ask for your PIN via email or phone.
                                             </p>
@@ -122,7 +122,7 @@ export const TermsPage: React.FC = () => {
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900 tracking-tight">Financial Transactions</h2>
                                     </div>
-                                    <div className="prose prose-lg prose-purple max-w-none text-gray-500 font-medium leading-relaxed">
+                                    <div className="prose prose-lg prose-orange max-w-none text-gray-500 font-medium leading-relaxed">
                                         <p>All transactions processed through FlapaPay (Send Money, FX Swaps, Payouts) are subject to the following rules:</p>
                                         <ul className="list-none space-y-6 mt-8">
                                             <li className="flex gap-4">
@@ -171,7 +171,7 @@ export const TermsPage: React.FC = () => {
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900 tracking-tight">Fees & Payouts</h2>
                                     </div>
-                                    <div className="prose prose-lg prose-purple max-w-none text-gray-500 font-medium leading-relaxed space-y-6">
+                                    <div className="prose prose-lg prose-orange max-w-none text-gray-500 font-medium leading-relaxed space-y-6">
                                         <p>
                                             FlapaPay charges fees for its services as disclosed on the pricing page or within the platform interface prior to transaction execution.
                                         </p>
@@ -194,7 +194,7 @@ export const TermsPage: React.FC = () => {
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900 tracking-tight">Limitation of Liability</h2>
                                     </div>
-                                    <div className="prose prose-lg prose-purple max-w-none text-gray-500 font-medium leading-relaxed space-y-6 text-sm italic">
+                                    <div className="prose prose-lg prose-orange max-w-none text-gray-500 font-medium leading-relaxed space-y-6 text-sm italic">
                                         <p>
                                             TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, FLAPAPAY SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR REVENUES, WHETHER INCURRED DIRECTLY OR INDIRECTLY, OR ANY LOSS OF DATA, USE, GOODWILL, OR OTHER INTANGIBLE LOSSES.
                                         </p>
@@ -222,24 +222,24 @@ export const TermsPage: React.FC = () => {
                                 {/* Support */}
                                 <div id="support" className="scroll-mt-32">
                                     <div className="flex items-center gap-4 mb-8">
-                                        <div className="w-12 h-12 rounded-2xl bg-purple-100 flex items-center justify-center text-purple-600 shadow-sm font-black">
+                                        <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center text-orange-600 shadow-sm font-black">
                                             08
                                         </div>
                                         <h2 className="text-3xl font-black text-gray-900 tracking-tight">Technical Support</h2>
                                     </div>
-                                    <div className="prose prose-lg prose-purple max-w-none text-gray-500 font-medium leading-relaxed mb-10">
+                                    <div className="prose prose-lg prose-orange max-w-none text-gray-500 font-medium leading-relaxed mb-10">
                                         <p>
                                             Users can access technical support via the help center or by contacting support@flapapay.com. Support response times are dependent on the user's service tier.
                                         </p>
                                     </div>
 
                                     <div className="flex flex-col md:flex-row gap-4">
-                                        <a href="/help" className="flex-1 p-6 rounded-3xl bg-white border border-gray-100 hover:border-purple-500 transition-colors text-center group">
-                                            <p className="text-sm font-black text-gray-900 group-hover:text-purple-600">Help Center</p>
+                                        <a href="/help" className="flex-1 p-6 rounded-3xl bg-white border border-gray-100 hover:border-orange-500 transition-colors text-center group">
+                                            <p className="text-sm font-black text-gray-900 group-hover:text-orange-600">Help Center</p>
                                             <p className="text-xs text-gray-400 font-medium mt-1">Documentation & FAQs</p>
                                         </a>
-                                        <a href="mailto:support@flapapay.com" className="flex-1 p-6 rounded-3xl bg-white border border-gray-100 hover:border-purple-500 transition-colors text-center group">
-                                            <p className="text-sm font-black text-gray-900 group-hover:text-purple-600">Email Support</p>
+                                        <a href="mailto:support@flapapay.com" className="flex-1 p-6 rounded-3xl bg-white border border-gray-100 hover:border-orange-500 transition-colors text-center group">
+                                            <p className="text-sm font-black text-gray-900 group-hover:text-orange-600">Email Support</p>
                                             <p className="text-xs text-gray-400 font-medium mt-1">Direct Assistance</p>
                                         </a>
                                     </div>
@@ -247,7 +247,7 @@ export const TermsPage: React.FC = () => {
 
                                 {/* Governing Law */}
                                 <div className="p-12 rounded-[48px] bg-white border border-gray-100 text-center shadow-sm">
-                                    <Scale className="w-10 h-10 mx-auto mb-6 text-purple-600" />
+                                    <Scale className="w-10 h-10 mx-auto mb-6 text-orange-600" />
                                     <h3 className="text-2xl font-black text-gray-900 mb-4">Governing Law</h3>
                                     <p className="text-gray-500 font-medium max-w-lg mx-auto leading-relaxed">
                                         These Terms shall be governed by and defined following the laws of the Republic of Zambia. FlapaPay and yourself irrevocably consent that the courts of Zambia shall have exclusive jurisdiction to resolve any dispute.
