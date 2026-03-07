@@ -9,7 +9,7 @@ export const Footer: React.FC = () => {
                     {/* Logo & Info */}
                     <div className="col-span-2 lg:col-span-2">
                         <Link to="/" className="text-2xl font-black text-gray-900 flex items-center gap-2 mb-8">
-                            <span className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white text-xl">F</span>
+                            <img src="/assets/images/flapapaylogoicon.png" alt="FlapaPay" className="w-10 h-10" />
                             FlapaPay
                         </Link>
                         <p className="text-gray-500 max-w-xs mb-8 text-lg font-medium leading-relaxed">
