@@ -317,7 +317,7 @@ export const Settings = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#F9FAFB] flex font-sans selection:bg-orange-100">
+        <div className="min-h-screen bg-white flex font-sans selection:bg-orange-100" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <div className="hidden md:block w-72 shrink-0 border-r border-gray-100/50 bg-white/50 backdrop-blur-xl sticky top-0 h-screen">
                 <Sidebar />
             </div>
@@ -326,7 +326,7 @@ export const Settings = () => {
                 {/* Decorative background element */}
                 <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-100/20 via-emerald-100/10 to-transparent rounded-full -mr-64 -mt-64 blur-3xl pointer-events-none"></div>
 
-                <div className="max-w-5xl mx-auto space-y-10 relative">
+                <div className="max-w-7xl mx-auto space-y-10 relative">
                     <header className="space-y-4">
                         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                             <div className="space-y-1">

@@ -7,7 +7,7 @@ const { Client } = require('pg');
 require('dotenv').config();
 
 const app = express();
-const PORT = 3001; // Standard port for identity service
+const PORT = process.env.PORT || 3005;
 
 // Middleware
 app.use(cors());
@@ -209,8 +209,8 @@ app.get('/health', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, 'localhost', () => {
-    console.log(`Simple Auth Service running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Simple Auth Service running on http://192.168.87.152:${PORT}`);
     console.log('Available endpoints:');
     console.log('  POST /auth/register - Register a new user');
     console.log('  POST /auth/login - Login with email and password');

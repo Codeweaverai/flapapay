@@ -10,7 +10,8 @@ import {
     Search,
     Bell,
     Building2,
-    ShieldCheck
+    ShieldCheck,
+    UserCheck
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -28,6 +29,7 @@ export const AdminLayout: React.FC = () => {
         { name: 'User Management', icon: Users, path: '/admin/users' },
         { name: 'Transactions', icon: Receipt, path: '/admin/transactions' },
         { name: 'Merchants', icon: Building2, path: '/admin/merchants' },
+        { name: 'Sub-merchant KYC', icon: UserCheck, path: '/admin/sub-merchants' },
         { name: 'Escrows', icon: ShieldCheck, path: '/admin/escrows' },
         { name: 'Content (CMS)', icon: FileText, path: '/admin/cms' },
     ];

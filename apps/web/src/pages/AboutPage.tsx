@@ -45,7 +45,7 @@ export const AboutPage: React.FC = () => {
                             <div className="relative">
                                 <div className="aspect-[4/5] bg-gray-100 rounded-[64px] overflow-hidden shadow-2xl relative group">
                                     <img
-                                        src="https://images.unsplash.com/photo-1522071823991-b1ae5e6a3048?auto=format&fit=crop&w=800&q=80"
+                                        src="/assets/images/aboutus.jpg"
                                         className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-700"
                                         alt="Our Team"
                                     />
@@ -141,7 +141,7 @@ export const AboutPage: React.FC = () => {
                                 <Button size="lg" onClick={() => navigate('/signup')} className="bg-black text-white px-10 py-5 rounded-2xl font-black shadow-2xl active:scale-95 transition-all text-xl">
                                     Create Account
                                 </Button>
-                                <Button size="lg" variant="outline" className="px-10 py-5 rounded-2xl font-black border-black/10 text-black hover:bg-black/5 active:scale-95 transition-all text-xl">
+                                <Button size="lg" className="px-10 py-5 rounded-2xl font-black bg-black text-white hover:bg-gray-800 active:scale-95 transition-all text-xl">
                                     Talk to Sales
                                 </Button>
                             </div>

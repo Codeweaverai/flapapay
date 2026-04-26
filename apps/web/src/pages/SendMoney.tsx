@@ -31,6 +31,9 @@ export const SendMoney: React.FC = () => {
     const [error, setError] = useState('');
     const [successData, setSuccessData] = useState<any>(null);
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+    const [recentRecipients, setRecentRecipients] = useState<any[]>([]);
+
+    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3005';
 
     useEffect(() => {
         if (token) {
@@ -53,6 +56,11 @@ export const SendMoney: React.FC = () => {
                     }
                 })
                 .catch(err => console.error('Failed to load cards', err));
+
+            // Load recent recipients — non-blocking
+            api.get('/users/recent-recipients')
+                .then(res => setRecentRecipients(res.data || []))
+                .catch(() => {});
         }
     }, [token, user?.defaultPaymentMethodId]);
 
@@ -73,15 +81,14 @@ export const SendMoney: React.FC = () => {
         setIsLoading(true);
         setError('');
         try {
-            const res = await api.get(`/users/search?query=${searchQuery}`);
+            const res = await api.get(`/users/search?query=${encodeURIComponent(searchQuery)}`);
             setSearchResults(res.data);
-            if (!res.data || res.data.length === 0) setError('No user found with that email.');
         } catch (e) { setError('Search failed'); }
         finally { setIsLoading(false); }
     };
 
-    const handleSelectUser = (user: any) => {
-        setSelectedUser(user);
+    const handleSelectUser = (u: any) => {
+        setSelectedUser(u);
         setStep('AMOUNT');
         setError('');
     };
@@ -102,16 +109,37 @@ export const SendMoney: React.FC = () => {
         try {
             const currency = selectedCurrency;
 
+            // ── Unregistered recipient — escrow / Pay Anyone flow ──────────────
+            if (selectedUser?.registered === false) {
+                const res = await api.post('/payments/transfer-to-unregistered', {
+                    debitWalletId: selectedWalletId,
+                    recipientEmail: selectedUser.email,
+                    amount: parseFloat(amount),
+                    currency,
+                    description: description || 'Payment',
+                    pin,
+                });
+                setSuccessData({
+                    ...res.data,
+                    amount: `${currency} ${amount}`,
+                    pending: true,
+                    recipientEmail: selectedUser.email,
+                    expiresAt: res.data.expiresAt,
+                });
+                setStep('SUCCESS');
+                return;
+            }
+
+            // ── Registered recipient ────────────────────────────────────────────
             if (selectedMethod === 'wallet') {
                 const res = await api.post('/payments/transfer', {
                     debitWalletId: selectedWalletId,
                     recipientEmail: selectedUser.email,
                     amount: parseFloat(amount),
-                    currency: currency,
+                    currency,
                     description: description || 'Transfer',
-                    pin
+                    pin,
                 });
-
                 setSuccessData({ ...res.data, amount: `${currency} ${amount}` });
                 setStep('SUCCESS');
             } else {
@@ -120,18 +148,14 @@ export const SendMoney: React.FC = () => {
                     setIsLoading(false);
                     return;
                 }
-
-                // Note: For sends from card, we might not strictly need the PIN if Stripe handles security,
-                // but for consistency with the user request "approve transactions with PIN", we'll send it too.
                 const res = await api.post('/payments/send-from-card', {
                     paymentMethodId: selectedCardId,
                     recipientEmail: selectedUser.email,
                     amount: parseFloat(amount),
-                    currency: currency,
+                    currency,
                     description: description || 'Transfer from Card',
-                    pin
+                    pin,
                 });
-
                 setSuccessData({ ...res.data, amount: `${currency} ${amount}` });
                 setStep('SUCCESS');
             }
@@ -149,12 +173,13 @@ export const SendMoney: React.FC = () => {
     ];
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] flex">
+        <div className="min-h-screen bg-white flex" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <div className="hidden md:block w-72 shrink-0"><Sidebar /></div>
 
             <main className="flex-1 px-4 py-8 md:p-12 flex flex-col items-center">
+                <div className="max-w-5xl mx-auto w-full">
                 {/* Modern Stepper */}
-                <div className="w-full max-w-lg mb-12">
+                <div className="w-full max-w-2xl mb-12">
                     <div className="relative flex justify-between items-center px-2">
                         {steps.map((s, i) => (
                             <div key={s.key} className="flex flex-col items-center relative z-10">
@@ -176,7 +201,7 @@ export const SendMoney: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="w-full max-w-lg">
+                <div className="w-full max-w-2xl mx-auto">
                     {/* Header Animation Area */}
                     <div className="text-center mb-8 animate-fade-in-up">
                         <h1 className="text-4xl font-black text-black tracking-tight">
@@ -188,223 +213,300 @@ export const SendMoney: React.FC = () => {
                         </p>
                     </div>
 
-                    <div className="bg-gradient-to-br from-yellow-500 to-orange-600 rounded-[40px] shadow-[0_32px_128px_-16px_rgba(249,115,22,0.3)] border border-white/20 p-10 relative overflow-hidden group text-white">
-                        {/* Glassmorphism gradient accents */}
-                        <div className="absolute -top-24 -right-24 w-48 h-48 bg-blue-400/10 rounded-full blur-3xl group-hover:bg-blue-400/20 transition-all duration-1000"></div>
-                        <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-orange-400/10 rounded-full blur-3xl group-hover:bg-orange-400/20 transition-all duration-1000"></div>
+                    {/* ── Main Card — light gray with shadow ── */}
+                    <div className="bg-gray-50 rounded-[40px] shadow-[0_24px_64px_-8px_rgba(0,0,0,0.10),0_4px_16px_-4px_rgba(0,0,0,0.06)] border border-gray-100 p-10 relative overflow-hidden">
+                        {/* Subtle decorative blobs */}
+                        <div className="absolute -top-20 -right-20 w-48 h-48 bg-orange-100/60 rounded-full blur-3xl pointer-events-none"></div>
+                        <div className="absolute -bottom-20 -left-20 w-40 h-40 bg-blue-100/40 rounded-full blur-3xl pointer-events-none"></div>
 
                         {/* SEARCH STEP */}
                         {step === 'SEARCH' && (
-                            <div className="space-y-10 animate-fade-in">
-                                <div className="space-y-4 p-8 bg-white/10 backdrop-blur-md rounded-[32px] border border-white/20 shadow-xl relative overflow-hidden group/card text-white">
-                                    <div className="absolute top-0 right-0 p-6 opacity-10 group-hover/card:opacity-20 transition-opacity">
-                                        <svg className="w-24 h-24" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" /></svg>
-                                    </div>
-                                    <label className="text-xs font-black text-white/70 uppercase tracking-[0.2em] ml-1">Recipient Identity</label>
+                            <div className="space-y-8 animate-fade-in">
+                                {/* Search input card */}
+                                <div className="space-y-4 p-6 bg-white rounded-[28px] border border-gray-100 shadow-sm">
+                                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] ml-1">Recipient</label>
                                     <div className="relative flex gap-3">
                                         <input
                                             type="email"
                                             placeholder="Enter email address..."
-                                            className="flex-1 p-5 bg-white/10 rounded-2xl border-2 border-white/20 focus:border-white focus:bg-white/20 transition-all outline-none font-bold text-lg placeholder-white/40 text-white"
+                                            className="flex-1 p-5 bg-gray-50 rounded-2xl border-2 border-gray-100 focus:border-orange-400 focus:bg-white transition-all outline-none font-bold text-lg placeholder-gray-300 text-gray-900"
                                             value={searchQuery}
                                             onChange={(e) => setSearchQuery(e.target.value)}
                                             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                                         />
                                         <button
                                             onClick={handleSearch}
-                                            className="h-16 w-16 bg-black text-white rounded-2xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl group/btn"
+                                            className="h-16 w-16 bg-gray-900 text-white rounded-2xl flex items-center justify-center hover:bg-orange-500 hover:scale-105 active:scale-95 transition-all shadow-lg group/btn"
                                             disabled={isLoading}
                                         >
-                                            {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> :
-                                                <span className="text-2xl group-hover/btn:translate-x-1 transition-transform">→</span>}
+                                            {isLoading
+                                                ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                                : <span className="text-2xl group-hover/btn:translate-x-1 transition-transform">→</span>}
                                         </button>
                                     </div>
                                 </div>
 
-                                {error && <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-black border border-red-100 animate-shake">{error}</div>}
+                                {error && (
+                                    <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-black border border-red-100">{error}</div>
+                                )}
 
-                                <div className="space-y-4">
-                                    {searchResults.length > 0 && <p className="text-[10px] font-black text-white/50 uppercase tracking-widest ml-1">Results Found</p>}
-                                    {searchResults.map(u => (
-                                        <div key={u.id} onClick={() => handleSelectUser(u)} className="group flex items-center gap-4 p-5 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-[24px] cursor-pointer transition-all border-none shadow-xl hover:shadow-2xl hover:-translate-y-1 text-white">
-                                            <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center font-black text-white text-2xl shadow-sm transition-colors overflow-hidden border border-white/10">
-                                                {u.avatar_url ? (
-                                                    <img
-                                                        src={`${import.meta.env.VITE_API_URL || 'http://localhost:3005'}${u.avatar_url}`}
-                                                        alt={u.full_name}
-                                                        className="w-full h-full object-cover"
-                                                    />
-                                                ) : (
-                                                    u.full_name[0]
-                                                )}
-                                            </div>
+                                {/* Unregistered — Pay Anyone card */}
+                                {searchResults.length === 1 && searchResults[0].registered === false && (
+                                    <div className="p-6 bg-orange-50 border-2 border-orange-100 rounded-[28px] space-y-4">
+                                        <div className="flex items-start gap-3">
+                                            <div className="w-12 h-12 rounded-2xl bg-orange-100 flex items-center justify-center shrink-0 text-xl">✉️</div>
                                             <div className="flex-1">
-                                                <p className="font-black text-lg leading-tight">{u.full_name}</p>
-                                                <p className="text-sm font-bold text-white/70">{u.email}</p>
+                                                <p className="font-black text-gray-900 text-base leading-tight">{searchResults[0].email}</p>
+                                                <p className="text-orange-600 font-black text-[11px] uppercase tracking-widest mt-0.5">Not on FlapaPay yet</p>
                                             </div>
-                                            <span className="opacity-0 group-hover:opacity-100 transition-opacity font-black text-xs bg-black/20 px-3 py-1 rounded-full">SELECT</span>
                                         </div>
-                                    ))}
-                                </div>
+                                        <p className="text-gray-500 text-sm font-bold leading-relaxed">
+                                            We'll hold the funds and send them an email to claim. If they don't register within 30 days, you'll be fully refunded.
+                                        </p>
+                                        <button
+                                            onClick={() => handleSelectUser(searchResults[0])}
+                                            className="w-full py-4 bg-orange-500 text-white rounded-2xl font-black text-sm hover:bg-orange-600 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
+                                        >
+                                            Send Anyway →
+                                        </button>
+                                    </div>
+                                )}
+
+                                {/* Recent Recipients */}
+                                {recentRecipients.length > 0 && searchResults.length === 0 && (
+                                    <div className="space-y-4">
+                                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1 flex items-center gap-2">
+                                            <span>⏱</span> Recent
+                                        </p>
+                                        <div className="flex gap-4 overflow-x-auto pb-1 scrollbar-hide">
+                                            {recentRecipients.map(u => {
+                                                const initials = u.full_name
+                                                    ? u.full_name.split(' ').map((n: string) => n[0]).join('').toUpperCase()
+                                                    : (u.email?.[0] ?? '?').toUpperCase();
+                                                const firstName = (u.full_name ?? u.email ?? '').split(' ')[0];
+                                                const avatarSrc = u.avatar_url
+                                                    ? (u.avatar_url.startsWith('http') ? u.avatar_url : `${API_BASE}${u.avatar_url}`)
+                                                    : null;
+                                                return (
+                                                    <button
+                                                        key={u.id}
+                                                        onClick={() => handleSelectUser(u)}
+                                                        className="flex flex-col items-center gap-2 group shrink-0 w-16"
+                                                    >
+                                                        <div className="w-14 h-14 rounded-2xl overflow-hidden border-2 border-gray-200 shadow-md group-hover:border-orange-400 group-hover:scale-105 group-hover:shadow-lg transition-all duration-200">
+                                                            {avatarSrc ? (
+                                                                <img src={avatarSrc} alt={u.full_name} className="w-full h-full object-cover" />
+                                                            ) : (
+                                                                <div className="w-full h-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center font-black text-white text-lg">
+                                                                    {initials}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <span className="text-[11px] font-bold text-gray-500 group-hover:text-gray-900 transition-colors truncate w-full text-center">
+                                                            {firstName}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <div className="h-px bg-gray-100" />
+                                    </div>
+                                )}
+
+                                {/* Search results — registered users only */}
+                                {searchResults.filter(u => u.registered !== false).length > 0 && (
+                                    <div className="space-y-3">
+                                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Results Found</p>
+                                        {searchResults.filter(u => u.registered !== false).map(u => (
+                                            <div
+                                                key={u.id}
+                                                onClick={() => handleSelectUser(u)}
+                                                className="group flex items-center gap-4 p-5 bg-white rounded-[24px] cursor-pointer border border-gray-100 shadow-sm hover:shadow-md hover:border-orange-200 hover:-translate-y-0.5 transition-all"
+                                            >
+                                                <div className="w-14 h-14 rounded-2xl bg-orange-50 flex items-center justify-center font-black text-orange-500 text-2xl shadow-sm overflow-hidden border border-orange-100">
+                                                    {u.avatar_url ? (
+                                                        <img src={`${API_BASE}${u.avatar_url}`} alt={u.full_name} className="w-full h-full object-cover" />
+                                                    ) : u.full_name[0]}
+                                                </div>
+                                                <div className="flex-1">
+                                                    <p className="font-black text-gray-900 text-lg leading-tight">{u.full_name}</p>
+                                                    <p className="text-sm font-bold text-gray-400">{u.email}</p>
+                                                </div>
+                                                <span className="opacity-0 group-hover:opacity-100 transition-opacity font-black text-xs bg-orange-50 text-orange-500 border border-orange-100 px-3 py-1 rounded-full">
+                                                    SELECT →
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         )}
 
                         {/* AMOUNT STEP */}
                         {step === 'AMOUNT' && selectedUser && (
-                            <div className="space-y-8 animate-fade-in text-white">
-                                {/* Profile Card */}
-                                <div className="flex items-center gap-4 p-6 bg-white/10 backdrop-blur-md rounded-[32px] border border-white/20 shadow-xl relative group">
-                                    <div className="w-16 h-16 rounded-[20px] bg-white/20 text-white flex items-center justify-center font-black text-2xl shadow-lg ring-4 ring-white/10 overflow-hidden border border-white/20">
-                                        {selectedUser.avatar_url ? (
-                                            <img
-                                                src={`${import.meta.env.VITE_API_URL || 'http://localhost:3005'}${selectedUser.avatar_url}`}
-                                                alt={selectedUser.full_name}
-                                                className="w-full h-full object-cover"
-                                            />
-                                        ) : (
-                                            selectedUser.full_name[0]
-                                        )}
+                            <div className="space-y-6 animate-fade-in">
+
+                                {/* Recipient card */}
+                                <div className={`flex items-center gap-4 p-5 bg-white rounded-[28px] border shadow-sm ${selectedUser.registered === false ? 'border-orange-200' : 'border-gray-100'}`}>
+                                    <div className={`w-14 h-14 rounded-[18px] flex items-center justify-center font-black text-2xl overflow-hidden border shadow-sm ${selectedUser.registered === false ? 'bg-orange-50 text-orange-500 border-orange-100' : 'bg-orange-50 text-orange-500 border-orange-100'}`}>
+                                        {selectedUser.avatar_url
+                                            ? <img src={`${API_BASE}${selectedUser.avatar_url}`} alt={selectedUser.full_name} className="w-full h-full object-cover" />
+                                            : selectedUser.registered === false ? '✉️' : (selectedUser.full_name?.[0] ?? '?')}
                                     </div>
-                                    <div className="flex-1">
-                                        <p className="font-black text-xl text-white">{selectedUser.full_name}</p>
-                                        <div className="flex items-center gap-1.5">
-                                            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                                            <p className="text-[10px] font-black text-white/70 uppercase tracking-widest">Verified Merchant</p>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="font-black text-gray-900 text-base leading-tight truncate">
+                                            {selectedUser.registered === false ? selectedUser.email : selectedUser.full_name}
+                                        </p>
+                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                            <span className={`w-1.5 h-1.5 rounded-full ${selectedUser.registered === false ? 'bg-orange-400' : 'bg-green-500 animate-pulse'}`} />
+                                            <p className={`text-[10px] font-black uppercase tracking-widest ${selectedUser.registered === false ? 'text-orange-500' : 'text-gray-400'}`}>
+                                                {selectedUser.registered === false ? 'Will be notified by email' : 'FlapaPay User'}
+                                            </p>
                                         </div>
                                     </div>
                                     <button
                                         onClick={() => setStep('SEARCH')}
-                                        className="h-10 w-10 flex items-center justify-center rounded-xl bg-black/20 text-white hover:bg-black/40 transition-all border border-white/10"
+                                        className="h-9 w-9 flex items-center justify-center rounded-xl bg-gray-100 text-gray-400 hover:bg-gray-200 hover:text-gray-700 transition-all text-sm font-black shrink-0"
                                         title="Change Recipient"
-                                    >
-                                        ✕
-                                    </button>
+                                    >✕</button>
                                 </div>
 
-                                {/* Amount Input Area */}
-                                <div className="text-center space-y-4">
-                                    <div className="inline-block relative">
-                                        <div className="flex items-baseline justify-center gap-2">
-                                            <span className="text-4xl font-black text-orange-500">{selectedCurrency === 'ZMW' ? 'K' : selectedCurrency === 'NGN' ? '₦' : '$'}</span>
-                                            <input
-                                                type="number"
-                                                autoFocus
-                                                className="w-full text-center text-7xl font-black bg-transparent border-none focus:ring-0 outline-none p-0 placeholder-gray-100 min-w-[200px] text-gray-900"
-                                                placeholder="0.00"
-                                                value={amount}
-                                                onChange={(e) => setAmount(e.target.value)}
-                                            />
-                                        </div>
-                                        <div className="h-1 w-24 bg-gray-100 mx-auto rounded-full mt-2 overflow-hidden">
-                                            <div className="h-full bg-black w-0 group-focus-within:w-full transition-all duration-500"></div>
-                                        </div>
+                                {/* Amount input */}
+                                <div className="text-center space-y-3 py-4">
+                                    <div className="flex items-baseline justify-center gap-2">
+                                        <span className="text-4xl font-black text-orange-500">
+                                            {selectedCurrency === 'ZMW' ? 'K' : selectedCurrency === 'NGN' ? '₦' : '$'}
+                                        </span>
+                                        <input
+                                            type="number"
+                                            autoFocus
+                                            className="text-center text-7xl font-black bg-transparent border-none focus:ring-0 outline-none p-0 placeholder-gray-200 min-w-[200px] text-gray-900"
+                                            placeholder="0.00"
+                                            value={amount}
+                                            onChange={(e) => setAmount(e.target.value)}
+                                        />
                                     </div>
+                                    <div className="h-0.5 w-20 bg-gray-200 mx-auto rounded-full" />
                                     <input
                                         type="text"
-                                        className="w-full mt-4 p-4 text-center font-bold text-gray-500 bg-gray-50/50 rounded-2xl border-none outline-none focus:bg-white focus:shadow-sm transition-all"
-                                        placeholder="Add a private note (optional)"
+                                        className="w-full p-4 text-center font-bold text-gray-500 bg-white rounded-2xl border border-gray-100 outline-none focus:border-gray-200 focus:shadow-sm transition-all"
+                                        placeholder="Add a note (optional)"
                                         value={description}
                                         onChange={(e) => setDescription(e.target.value)}
                                     />
                                 </div>
 
-                                {/* Funding Source Grid */}
+                                {/* Payment method toggle — card disabled for unregistered recipients */}
                                 <div className="space-y-4">
-                                    <label className="text-[10px] font-black text-white/50 uppercase tracking-widest ml-1">Payment Method</label>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <button
-                                            onClick={() => setSelectedMethod('wallet')}
-                                            className={`group relative p-6 rounded-[28px] border-2 transition-all duration-300 overflow-hidden ${selectedMethod === 'wallet' ? 'border-black bg-black text-white shadow-xl -translate-y-1' : 'border-gray-100 text-gray-400 hover:border-gray-200 hover:bg-white'
+                                    <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Payment Method</label>
+                                    {selectedUser?.registered === false && (
+                                        <div className="flex items-center gap-2 px-3 py-2 bg-orange-50 rounded-xl border border-orange-100">
+                                            <span className="text-orange-400 text-xs">ℹ</span>
+                                            <p className="text-orange-600 text-[10px] font-black uppercase tracking-widest">Wallet payment only for unregistered recipients</p>
+                                        </div>
+                                    )}
+                                    <div className="grid grid-cols-2 gap-3">
+                                        {[
+                                            { key: 'wallet', emoji: '💰', label: 'My Wallets', sub: 'Instant Transfer' },
+                                            { key: 'card',   emoji: '💳', label: 'Saved Card',  sub: 'Card Network' },
+                                        ].map(m => (
+                                            <button
+                                                key={m.key}
+                                                onClick={() => {
+                                                    if (m.key === 'card' && selectedUser?.registered === false) return;
+                                                    setSelectedMethod(m.key as 'wallet' | 'card');
+                                                }}
+                                                disabled={m.key === 'card' && selectedUser?.registered === false}
+                                                className={`relative p-5 rounded-[24px] border-2 transition-all duration-200 overflow-hidden text-left ${
+                                                    m.key === 'card' && selectedUser?.registered === false
+                                                        ? 'border-gray-50 bg-gray-50 text-gray-200 cursor-not-allowed opacity-40'
+                                                        : selectedMethod === m.key
+                                                            ? 'border-gray-900 bg-gray-900 text-white shadow-xl -translate-y-0.5'
+                                                            : 'border-gray-100 bg-white text-gray-400 hover:border-gray-200'
                                                 }`}
-                                        >
-                                            <div className={`absolute -right-4 -bottom-4 text-4xl opacity-5 group-hover:opacity-10 transition-opacity ${selectedMethod === 'wallet' ? 'opacity-20' : ''}`}>💰</div>
-                                            <p className="font-black text-sm uppercase tracking-widest">My Wallets</p>
-                                            <p className={`text-[10px] font-bold mt-1 ${selectedMethod === 'wallet' ? 'text-orange-400' : 'text-gray-300'}`}>Instant Transfer</p>
-                                        </button>
-                                        <button
-                                            onClick={() => setSelectedMethod('card')}
-                                            className={`group relative p-6 rounded-[28px] border-2 transition-all duration-300 overflow-hidden ${selectedMethod === 'card' ? 'border-black bg-black text-white shadow-xl -translate-y-1' : 'border-gray-100 text-gray-400 hover:border-gray-200 hover:bg-white'
-                                                }`}
-                                        >
-                                            <div className={`absolute -right-4 -bottom-4 text-4xl opacity-5 group-hover:opacity-10 transition-opacity ${selectedMethod === 'card' ? 'opacity-20' : ''}`}>💳</div>
-                                            <p className="font-black text-sm uppercase tracking-widest">Saved Card</p>
-                                            <p className={`text-[10px] font-bold mt-1 ${selectedMethod === 'card' ? 'text-orange-400' : 'text-gray-300'}`}>Card Network</p>
-                                        </button>
+                                            >
+                                                <span className="absolute -right-2 -bottom-2 text-3xl opacity-10">{m.emoji}</span>
+                                                <p className="font-black text-sm uppercase tracking-widest">{m.label}</p>
+                                                <p className={`text-[10px] font-bold mt-1 ${selectedMethod === m.key ? 'text-orange-400' : 'text-gray-300'}`}>{m.sub}</p>
+                                            </button>
+                                        ))}
                                     </div>
 
                                     {selectedMethod === 'wallet' ? (
-                                        <div className="relative group/select animate-slide-up">
+                                        <div className="relative">
                                             <select
-                                                className="w-full p-5 bg-gray-50 rounded-2xl border-none outline-none font-black text-gray-800 appearance-none shadow-inner"
+                                                className="w-full p-5 bg-white rounded-2xl border border-gray-100 outline-none font-black text-gray-800 appearance-none shadow-sm cursor-pointer"
                                                 value={selectedWalletId}
                                                 onChange={(e) => setSelectedWalletId(e.target.value)}
                                             >
                                                 {wallets.map(w => (
-                                                    <option key={w.id} value={w.id}>{w.currency} Wallet (Bal: {parseFloat(w.balance).toLocaleString()})</option>
+                                                    <option key={w.id} value={w.id}>{w.currency} Wallet — Balance: {parseFloat(w.balance).toLocaleString()}</option>
                                                 ))}
                                             </select>
-                                            <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 font-black">∨</div>
+                                            <div className="absolute right-5 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 font-black text-sm">∨</div>
                                         </div>
                                     ) : (
-                                        <div className="animate-slide-up space-y-3">
-                                            {savedCards.length > 0 ? (
-                                                <div className="grid grid-cols-1 gap-3">
-                                                    {savedCards.map((card) => (
-                                                        <button
-                                                            key={card.id}
-                                                            onClick={() => setSelectedCardId(card.id)}
-                                                            className={`flex items-center justify-between p-5 rounded-2xl border-2 transition-all ${selectedCardId === card.id ? 'border-black bg-white shadow-md' : 'border-gray-100 hover:border-gray-200 bg-gray-50/50'
-                                                                }`}
-                                                        >
-                                                            <div className="flex items-center gap-4">
-                                                                <div className="w-12 h-8 bg-black rounded-lg flex items-center justify-center text-[10px] font-black text-white uppercase tracking-tighter shadow-sm">
-                                                                    {card.card.brand}
-                                                                </div>
-                                                                <span className="font-black text-gray-800 leading-none">•••• {card.card.last4}</span>
-                                                            </div>
-                                                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${selectedCardId === card.id ? 'border-green-500 bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.4)]' : 'border-gray-200'}`}>
-                                                                {selectedCardId === card.id && <div className="w-1.5 h-1.5 rounded-full bg-white animate-scale-in" />}
-                                                            </div>
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <div className="p-5 bg-orange-50 border border-orange-100 rounded-[24px] text-orange-700 text-[11px] font-black flex items-center gap-3 uppercase tracking-wider">
-                                                    <span className="text-xl">!</span>
-                                                    <span>Missing saved payment methods.</span>
+                                        <div className="space-y-3">
+                                            {savedCards.length > 0 ? savedCards.map(card => (
+                                                <button
+                                                    key={card.id}
+                                                    onClick={() => setSelectedCardId(card.id)}
+                                                    className={`w-full flex items-center justify-between p-5 rounded-2xl border-2 transition-all ${
+                                                        selectedCardId === card.id
+                                                            ? 'border-gray-900 bg-white shadow-md'
+                                                            : 'border-gray-100 bg-white hover:border-gray-200'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="w-12 h-8 bg-gray-900 rounded-lg flex items-center justify-center text-[10px] font-black text-white uppercase shadow-sm">
+                                                            {card.card.brand}
+                                                        </div>
+                                                        <span className="font-black text-gray-800">•••• {card.card.last4}</span>
+                                                    </div>
+                                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${selectedCardId === card.id ? 'border-green-500 bg-green-500' : 'border-gray-200'}`}>
+                                                        {selectedCardId === card.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                                    </div>
+                                                </button>
+                                            )) : (
+                                                <div className="p-5 bg-orange-50 border border-orange-100 rounded-[20px] text-orange-600 text-[11px] font-black flex items-center gap-3 uppercase tracking-wider">
+                                                    <span className="text-xl">!</span> No saved payment methods.
                                                 </div>
                                             )}
                                         </div>
                                     )}
                                 </div>
 
-                                {/* Floating Action Section */}
-                                <div className="pt-6 border-t border-gray-100">
+                                {/* ── Bottom transparent action area ── */}
+                                <div className="relative -mx-10 -mb-10 mt-2 px-10 pb-10 pt-6 bg-gradient-to-b from-transparent to-white/70 backdrop-blur-sm border-t border-gray-100/80 rounded-b-[40px]">
                                     <div className="flex justify-between items-end mb-6">
                                         <div>
-                                            <p className="text-[10px] font-black text-white/60 uppercase tracking-widest mb-1">Total to Deduct</p>
-                                            <p className="text-3xl font-black text-white leading-none">
+                                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Total to Deduct</p>
+                                            <p className="text-3xl font-black text-gray-900 leading-none">
                                                 {selectedCurrency === 'ZMW' ? 'K' : selectedCurrency === 'NGN' ? '₦' : '$'}
                                                 {amount ? (parseFloat(amount) * 1.01).toLocaleString(undefined, { minimumFractionDigits: 2 }) : '0.00'}
                                             </p>
                                         </div>
                                         <div className="text-right">
-                                            <p className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-1">Fee (1%)</p>
-                                            <p className="text-sm font-black text-white/50">+{selectedCurrency === 'ZMW' ? 'K' : selectedCurrency === 'NGN' ? '₦' : '$'}{(parseFloat(amount || '0') * 0.01).toFixed(2)}</p>
+                                            <p className="text-[10px] font-black text-gray-300 uppercase tracking-widest mb-1">Fee (1%)</p>
+                                            <p className="text-sm font-black text-gray-400">
+                                                +{selectedCurrency === 'ZMW' ? 'K' : selectedCurrency === 'NGN' ? '₦' : '$'}{(parseFloat(amount || '0') * 0.01).toFixed(2)}
+                                            </p>
                                         </div>
                                     </div>
 
-                                    {error && <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-xs font-black border border-red-100 mb-6">{error}</div>}
+                                    {error && <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-xs font-black border border-red-100 mb-5">{error}</div>}
 
                                     <Button
-                                        className="w-full h-18 text-xl font-black bg-black text-white rounded-[28px] shadow-2xl hover:scale-[1.02] active:scale-[0.98] transition-all disabled:bg-white/10 disabled:text-white/30 border-b-4 border-gray-900"
+                                        className="w-full py-5 text-lg font-black bg-gray-900 text-white rounded-[28px] shadow-xl hover:bg-orange-500 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-30"
                                         onClick={handlePay}
                                         isLoading={isLoading}
                                         disabled={!amount || parseFloat(amount) <= 0 || (selectedMethod === 'card' && savedCards.length === 0)}
                                     >
                                         Authorize Transfer
                                     </Button>
-                                    <p className="text-[10px] text-white/40 font-extrabold mt-6 text-center uppercase tracking-[0.2em]">Secured by FlapaPay Encryption Protocol</p>
+                                    <p className="text-[10px] text-gray-300 font-extrabold mt-5 text-center uppercase tracking-[0.2em]">
+                                        Secured by FlapaPay Encryption Protocol
+                                    </p>
                                 </div>
                             </div>
                         )}
@@ -412,56 +514,107 @@ export const SendMoney: React.FC = () => {
                         {/* SUCCESS STEP */}
                         {step === 'SUCCESS' && successData && (
                             <div className="text-center py-6 animate-scale-in">
-                                <div className="relative inline-block mb-10">
-                                    <div className="w-28 h-28 bg-green-500 rounded-[40px] flex items-center justify-center mx-auto shadow-xl ring-4 ring-green-50">
-                                        <svg className="w-14 h-14 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    </div>
-                                    <div className="absolute -top-2 -right-2 w-10 h-10 bg-white shadow-lg rounded-2xl flex items-center justify-center animate-bounce">
-                                        ✨
-                                    </div>
-                                </div>
-                                <h2 className="text-4xl font-black mb-4 tracking-tight text-white">Success!</h2>
-                                <div className="space-y-1 mb-10">
-                                    <p className="text-white/60 font-bold uppercase text-[10px] tracking-[0.3em]">Transaction Amount</p>
-                                    <p className="text-5xl font-black text-white">{successData.amount}</p>
-                                </div>
 
-                                <div className="bg-white/10 backdrop-blur-md border border-white/20 p-8 rounded-[32px] mb-10 text-left relative overflow-hidden group">
-                                    <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rotate-45 transform translate-x-16 -translate-y-16"></div>
-                                    <div className="space-y-6 relative z-10">
-                                        <div>
-                                            <p className="text-[10px] font-black text-white/50 uppercase tracking-widest mb-1">Recipient</p>
-                                            <p className="font-black text-white text-lg">{selectedUser.full_name}</p>
+                                {/* ── Pending / Unregistered ── */}
+                                {successData.pending ? (
+                                    <>
+                                        <div className="relative inline-block mb-8">
+                                            <div className="w-28 h-28 bg-orange-500 rounded-[40px] flex items-center justify-center mx-auto shadow-xl ring-4 ring-orange-50">
+                                                <svg className="w-14 h-14 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                </svg>
+                                            </div>
+                                            <div className="absolute -top-2 -right-2 w-10 h-10 bg-white shadow-lg rounded-2xl flex items-center justify-center">✉️</div>
                                         </div>
-                                        <div>
-                                            <p className="text-[10px] font-black text-white/50 uppercase tracking-widest mb-1">Transaction Ref</p>
-                                            <p className="font-mono text-white bg-white/10 p-3 rounded-xl border border-white/20 text-sm shadow-sm">{successData.reference}</p>
-                                        </div>
-                                    </div>
-                                </div>
 
-                                <div className="flex flex-col gap-4">
-                                    <Button className="w-full h-16 rounded-[24px] font-black text-lg bg-white text-orange-600 shadow-xl hover:-translate-y-1 transition-all" onClick={() => {
-                                        setStep('SEARCH');
-                                        setAmount('');
-                                        setSearchQuery('');
-                                        navigate('/dashboard');
-                                    }}>Done</Button>
-                                    <button
-                                        onClick={() => {
-                                            if (successData?.reference) {
-                                                window.open(`http://localhost:3005/v1/transfers/${successData.reference}/pdf`, '_blank');
-                                            }
-                                        }}
-                                        className="text-white/70 font-black text-xs uppercase tracking-widest hover:text-white transition-colors py-2 flex items-center justify-center gap-2 group"
-                                    >
-                                        <svg className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                        </svg>
-                                        Download Receipt PDF
-                                    </button>
+                                        <h2 className="text-3xl font-black mb-2 tracking-tight text-gray-900">Payment Pending</h2>
+                                        <p className="text-gray-400 font-bold text-sm mb-6">Waiting to be claimed</p>
+
+                                        <div className="space-y-1 mb-8">
+                                            <p className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em]">Amount Held</p>
+                                            <p className="text-5xl font-black text-gray-900">{successData.amount}</p>
+                                        </div>
+
+                                        <div className="bg-orange-50 border border-orange-100 p-6 rounded-[28px] mb-6 text-left space-y-4">
+                                            <div>
+                                                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Recipient</p>
+                                                <p className="font-black text-gray-900">{successData.recipientEmail}</p>
+                                            </div>
+                                            <div className="h-px bg-orange-100" />
+                                            <div>
+                                                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Status</p>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-2 h-2 bg-orange-400 rounded-full animate-pulse" />
+                                                    <p className="font-black text-orange-600 text-sm uppercase tracking-wide">Awaiting Claim</p>
+                                                </div>
+                                            </div>
+                                            {successData.expiresAt && (
+                                                <>
+                                                    <div className="h-px bg-orange-100" />
+                                                    <div>
+                                                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Expires</p>
+                                                        <p className="font-bold text-gray-700 text-sm">
+                                                            {new Date(successData.expiresAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+                                                        </p>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+
+                                        <p className="text-gray-400 text-xs font-bold mb-6 leading-relaxed">
+                                            We emailed <span className="font-black text-gray-600">{successData.recipientEmail}</span> with a link to claim their funds. If unclaimed, you'll be fully refunded.
+                                        </p>
+                                    </>
+                                ) : (
+                                    /* ── Standard completed transfer ── */
+                                    <>
+                                        <div className="relative inline-block mb-8">
+                                            <div className="w-28 h-28 bg-green-500 rounded-[40px] flex items-center justify-center mx-auto shadow-xl ring-4 ring-green-50">
+                                                <svg className="w-14 h-14 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                                </svg>
+                                            </div>
+                                            <div className="absolute -top-2 -right-2 w-10 h-10 bg-white shadow-lg rounded-2xl flex items-center justify-center animate-bounce">✨</div>
+                                        </div>
+
+                                        <h2 className="text-4xl font-black mb-3 tracking-tight text-gray-900">Transfer Sent!</h2>
+                                        <div className="space-y-1 mb-8">
+                                            <p className="text-gray-400 font-bold uppercase text-[10px] tracking-[0.3em]">Amount</p>
+                                            <p className="text-5xl font-black text-gray-900">{successData.amount}</p>
+                                        </div>
+
+                                        <div className="bg-white/60 backdrop-blur-sm border border-gray-100 p-8 rounded-[32px] mb-8 text-left shadow-sm">
+                                            <div className="space-y-5">
+                                                <div>
+                                                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Recipient</p>
+                                                    <p className="font-black text-gray-900 text-lg">{selectedUser?.full_name}</p>
+                                                </div>
+                                                <div className="h-px bg-gray-100" />
+                                                <div>
+                                                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Transaction Ref</p>
+                                                    <p className="font-mono text-gray-700 bg-gray-50 p-3 rounded-xl border border-gray-100 text-sm">{successData.reference}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+
+                                <div className="flex flex-col gap-3">
+                                    <Button
+                                        className="w-full h-14 rounded-[24px] font-black text-base bg-gray-900 text-white shadow-lg hover:-translate-y-0.5 hover:bg-orange-500 transition-all"
+                                        onClick={() => { setStep('SEARCH'); setAmount(''); setSearchQuery(''); setSearchResults([]); setSelectedUser(null); navigate('/dashboard'); }}
+                                    >Done</Button>
+                                    {!successData.pending && (
+                                        <button
+                                            onClick={() => successData?.reference && window.open(`${API_BASE}/v1/transfers/${successData.reference}/pdf`, '_blank')}
+                                            className="text-gray-400 font-black text-xs uppercase tracking-widest hover:text-gray-700 transition-colors py-2 flex items-center justify-center gap-2 group"
+                                        >
+                                            <svg className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                            </svg>
+                                            Download Receipt PDF
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -477,13 +630,14 @@ export const SendMoney: React.FC = () => {
                         </button>
                     )}
                 </div>
+                </div>
             </main>
 
             <PinApprovalModal
                 isOpen={isPinModalOpen}
                 onClose={() => setIsPinModalOpen(false)}
                 onSuccess={handlePinSuccess}
-                description={`Approve transfer of ${selectedCurrency} ${amount} to ${selectedUser?.full_name}`}
+                description={`Approve ${selectedUser?.registered === false ? 'pending payment' : 'transfer'} of ${selectedCurrency} ${amount} to ${selectedUser?.registered === false ? selectedUser?.email : selectedUser?.full_name}`}
             />
         </div>
     );

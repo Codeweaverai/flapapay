@@ -17,10 +17,8 @@ interface Wallet {
 const CURRENCIES = [
     { code: 'USD', name: 'US Dollar', country: 'US' },
     { code: 'ZMW', name: 'Zambian Kwacha', country: 'ZM' },
-    { code: 'NGN', name: 'Nigerian Naira', country: 'NG' },
     { code: 'EUR', name: 'Euro', country: 'EU' },
     { code: 'GBP', name: 'British Pound', country: 'GB' },
-    { code: 'KES', name: 'Kenyan Shilling', country: 'KE' },
 ];
 
 export const FXLiquidityPool: React.FC = () => {
@@ -46,7 +44,11 @@ export const FXLiquidityPool: React.FC = () => {
     const fetchWallets = async () => {
         try {
             const res = await api.get('/auth/me');
-            setWallets(res.data.wallets || []);
+            const supportedCurrencies = ['USD', 'ZMW', 'EUR', 'GBP'];
+            const filteredWallets = (res.data.wallets || []).filter((wallet: Wallet) => 
+                supportedCurrencies.includes(wallet.currency)
+            );
+            setWallets(filteredWallets);
         } catch (err) {
             console.error('Failed to fetch wallets');
         }
@@ -124,7 +126,7 @@ export const FXLiquidityPool: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#F9FAFB] flex font-sans selection:bg-orange-100">
+        <div className="min-h-screen bg-white flex font-sans selection:bg-orange-100" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             {/* Sidebar (Desktop) */}
             <div className="hidden md:block w-72 shrink-0 border-r border-gray-100/50 bg-white/50 backdrop-blur-xl sticky top-0 h-screen">
                 <Sidebar />
@@ -134,7 +136,7 @@ export const FXLiquidityPool: React.FC = () => {
                 {/* Decorative background element */}
                 <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-emerald-100/20 via-orange-100/10 to-transparent rounded-full -mr-64 -mt-64 blur-3xl pointer-events-none"></div>
 
-                <div className="relative z-10">
+                <div className="max-w-7xl mx-auto relative z-10">
                     <header className="flex items-center justify-between mb-10">
                         <div>
                             <h1 className="text-3xl font-bold text-gray-900">FX Liquidity Pool</h1>
@@ -142,7 +144,7 @@ export const FXLiquidityPool: React.FC = () => {
                         </div>
                     </header>
 
-                    <div className="max-w-xl mx-auto mt-10">
+                    <div className="max-w-2xl mx-auto mt-10">
                         {/* Header */}
                         <div className="mb-10 text-center">
                             <div className="inline-flex items-center gap-3 px-6 py-2 rounded-full bg-emerald-50 border border-emerald-100 mb-6 shadow-sm">

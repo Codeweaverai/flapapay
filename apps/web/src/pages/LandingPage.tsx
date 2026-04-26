@@ -10,7 +10,7 @@ import { EmailTransferSection } from '../components/sections/EmailTransferSectio
 import { VirtualCardShowcase } from '../components/sections/VirtualCardShowcase';
 import { FXLiquiditySection } from '../components/sections/FXLiquiditySection';
 import { BusinessSolutions } from '../components/sections/BusinessSolutions';
-import { MobileAppSection } from '../components/sections/MobileAppSection';
+import { MobileAppShowcase } from '../components/sections/MobileAppShowcase';
 
 export const LandingPage: React.FC = () => {
     return (
@@ -24,7 +24,7 @@ export const LandingPage: React.FC = () => {
                 <VirtualCardShowcase />
                 <FXLiquiditySection />
                 <BusinessSolutions />
-                <MobileAppSection />
+                <MobileAppShowcase />
                 <Stats />
                 <Features />
                 <CTA />

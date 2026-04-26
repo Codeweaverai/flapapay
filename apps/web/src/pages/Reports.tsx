@@ -31,9 +31,32 @@ export const Reports: React.FC = () => {
         const fetchSummary = async () => {
             try {
                 const res = await api.get('/reports/summary');
-                setData(res.data);
-                if (res.data.assets.length > 0) {
-                    setSelectedWalletId(res.data.assets[0].id);
+                const supportedCurrencies = ['USD', 'ZMW', 'EUR', 'GBP'];
+                
+                // Filter and deduplicate assets - keep only one wallet per currency
+                const allAssets = res.data.assets || [];
+                const uniqueAssetsMap = new Map<string, Wallet>();
+                
+                allAssets.forEach((wallet: Wallet) => {
+                    if (supportedCurrencies.includes(wallet.currency) && !uniqueAssetsMap.has(wallet.currency)) {
+                        uniqueAssetsMap.set(wallet.currency, wallet);
+                    }
+                });
+                
+                const filteredAssets = Array.from(uniqueAssetsMap.values());
+                
+                // Filter distribution data
+                const filteredDistribution = (res.data.distribution || []).filter((item: any) => 
+                    supportedCurrencies.includes(item.name)
+                );
+                
+                setData({
+                    ...res.data,
+                    assets: filteredAssets,
+                    distribution: filteredDistribution
+                });
+                if (filteredAssets.length > 0) {
+                    setSelectedWalletId(filteredAssets[0].id);
                 }
             } catch (err) {
                 console.error('Failed to fetch reports', err);
@@ -61,7 +84,7 @@ export const Reports: React.FC = () => {
         }
     }, [selectedWalletId]);
 
-    const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+    const COLORS = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6']; // USD (amber), ZMW (emerald), EUR (blue), GBP (purple)
 
     const handleCSVExport = (walletId?: string) => {
         const url = walletId
@@ -75,12 +98,13 @@ export const Reports: React.FC = () => {
     const selectedWallet = data?.assets.find(a => a.id === selectedWalletId);
 
     return (
-        <div className="min-h-screen bg-gray-50 flex">
+        <div className="min-h-screen bg-white flex" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <div className="hidden md:block w-72 shrink-0">
                 <Sidebar />
             </div>
 
             <main className="flex-1 px-12 py-10 overflow-y-auto">
+                <div className="max-w-7xl mx-auto">
                 <header className="flex items-center justify-between mb-10">
                     <div>
                         <h1 className="text-3xl font-bold text-gray-900">Financial Reports</h1>
@@ -240,6 +264,7 @@ export const Reports: React.FC = () => {
                             </tbody>
                         </table>
                     </div>
+                </div>
                 </div>
             </main>
         </div>

@@ -20,6 +20,13 @@ interface PaymentLink {
     payments: number;
 }
 
+interface ConnectedAccount {
+    id: string;
+    businessName: string;
+    email: string;
+    status: string;
+}
+
 export const PaymentLinks: React.FC = () => {
     const { user } = useAuth();
     const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -33,6 +40,12 @@ export const PaymentLinks: React.FC = () => {
     const [acceptCard, setAcceptCard] = useState(true);
     const [acceptMobileMoney, setAcceptMobileMoney] = useState(true);
     const [isCreating, setIsCreating] = useState(false);
+
+    // Marketplace Split State
+    const [splitEnabled, setSplitEnabled] = useState(false);
+    const [splitAccountId, setSplitAccountId] = useState('');
+    const [platformFeePercent, setPlatformFeePercent] = useState(2.5);
+    const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
 
     // Real Data State
     const [links, setLinks] = useState<PaymentLink[]>([]);
@@ -67,8 +80,24 @@ export const PaymentLinks: React.FC = () => {
                 console.error('Failed to load wallets');
             }
         };
+        const fetchConnectedAccounts = async () => {
+            try {
+                const [accountsRes, configRes] = await Promise.all([
+                    api.get('/v1/connect/accounts', { headers: { 'x-flapapay-test-mode': 'false' } }),
+                    api.get('/v1/connect/config')
+                ]);
+                const active = (accountsRes.data || []).filter((a: ConnectedAccount) => a.status === 'ACTIVE');
+                setConnectedAccounts(active);
+                if (configRes.data?.platform_fee_percent) {
+                    setPlatformFeePercent(parseFloat(configRes.data.platform_fee_percent));
+                }
+            } catch {
+                // Connect not configured yet — no-op
+            }
+        };
         fetchWallets();
         fetchLinks();
+        fetchConnectedAccounts();
     }, []);
 
     const handleCreateLink = async (e: React.FormEvent) => {
@@ -76,7 +105,12 @@ export const PaymentLinks: React.FC = () => {
         setIsCreating(true);
 
         try {
-            const payload = {
+            const amountNum = parseFloat(amount);
+            const feeAmount = splitEnabled && splitAccountId
+                ? parseFloat(((amountNum * platformFeePercent) / 100).toFixed(2))
+                : 0;
+
+            const payload: any = {
                 title,
                 amount,
                 currency,
@@ -84,6 +118,11 @@ export const PaymentLinks: React.FC = () => {
                 allows_mobile_money: acceptMobileMoney,
                 allows_card: acceptCard
             };
+
+            if (splitEnabled && splitAccountId) {
+                payload.transfer_data = { destination: splitAccountId };
+                payload.application_fee_amount = feeAmount;
+            }
 
             await api.post('/payment-links', payload);
 
@@ -102,7 +141,7 @@ export const PaymentLinks: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 flex font-sans">
+        <div className="min-h-screen bg-white flex font-sans" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             {/* Sidebar */}
             <div className="hidden md:block w-72 shrink-0">
                 <Sidebar />
@@ -130,7 +169,7 @@ export const PaymentLinks: React.FC = () => {
                     </div>
                 </header>
 
-                <div className="max-w-5xl mx-auto">
+                <div className="max-w-7xl mx-auto">
                     {activeTab === 'create' ? (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                             {/* Configuration Form */}
@@ -233,9 +272,87 @@ export const PaymentLinks: React.FC = () => {
                                         </div>
                                     </div>
 
+                                    {/* Marketplace Split Section */}
+                                    <div className="pt-4 border-t border-gray-100">
+                                        <div
+                                            className={`p-4 rounded-xl border-2 transition-all cursor-pointer flex items-center justify-between mb-3 ${splitEnabled ? 'border-orange-400 bg-orange-50' : 'border-gray-100 bg-white'}`}
+                                            onClick={() => setSplitEnabled(!splitEnabled)}
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-10 h-10 bg-white rounded-full shadow-sm flex items-center justify-center">
+                                                    <svg className="w-5 h-5 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                                    </svg>
+                                                </div>
+                                                <div>
+                                                    <p className="font-bold text-gray-900 text-sm">Marketplace Split</p>
+                                                    <p className="text-xs text-gray-500">Route payment to a connected sub-merchant</p>
+                                                </div>
+                                            </div>
+                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${splitEnabled ? 'border-orange-500 bg-orange-500' : 'border-gray-300'}`}>
+                                                {splitEnabled && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                                            </div>
+                                        </div>
+
+                                        {splitEnabled && (
+                                            <div className="space-y-3 p-4 bg-orange-50 rounded-xl border border-orange-100">
+                                                {connectedAccounts.length === 0 ? (
+                                                    <p className="text-xs text-orange-600 font-medium text-center py-2">
+                                                        No active sub-merchants found. <a href="/merchant/connect" className="underline font-bold">Add one in Connect →</a>
+                                                    </p>
+                                                ) : (
+                                                    <>
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-gray-600 mb-1">Route to Sub-merchant</label>
+                                                            <select
+                                                                value={splitAccountId}
+                                                                onChange={(e) => setSplitAccountId(e.target.value)}
+                                                                className="w-full px-3 py-2.5 rounded-lg bg-white border border-orange-200 text-sm font-medium outline-none focus:ring-2 focus:ring-orange-400"
+                                                                required={splitEnabled}
+                                                            >
+                                                                <option value="">Select sub-merchant...</option>
+                                                                {connectedAccounts.map(a => (
+                                                                    <option key={a.id} value={a.id}>{a.businessName} ({a.email})</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-xs font-bold text-gray-600 mb-1">Platform Fee %</label>
+                                                            <div className="flex items-center gap-2">
+                                                                <input
+                                                                    type="number"
+                                                                    min="0"
+                                                                    max="20"
+                                                                    step="0.1"
+                                                                    value={platformFeePercent}
+                                                                    onChange={(e) => setPlatformFeePercent(parseFloat(e.target.value) || 0)}
+                                                                    className="w-24 px-3 py-2 rounded-lg bg-white border border-orange-200 text-sm font-bold outline-none focus:ring-2 focus:ring-orange-400"
+                                                                />
+                                                                <span className="text-orange-600 font-black">%</span>
+                                                            </div>
+                                                        </div>
+                                                        {amount && parseFloat(amount) > 0 && (
+                                                            <div className="text-xs space-y-1 pt-2 border-t border-orange-200">
+                                                                <p className="text-gray-600">
+                                                                    <span className="font-bold text-gray-800">{currency} {parseFloat(amount).toFixed(2)}</span> collected
+                                                                </p>
+                                                                <p className="text-orange-600 font-bold">
+                                                                    → {currency} {((parseFloat(amount) * platformFeePercent) / 100).toFixed(2)} platform fee ({platformFeePercent}%)
+                                                                </p>
+                                                                <p className="text-emerald-600 font-bold">
+                                                                    → {currency} {(parseFloat(amount) - (parseFloat(amount) * platformFeePercent) / 100).toFixed(2)} to sub-merchant
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
                                     <button
                                         type="submit"
-                                        disabled={isCreating}
+                                        disabled={isCreating || (splitEnabled && !splitAccountId && connectedAccounts.length > 0)}
                                         className="w-full py-4 bg-black text-white rounded-2xl font-bold shadow-lg hover:shadow-xl transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center"
                                     >
                                         {isCreating ? (

@@ -4,7 +4,9 @@ import { Sidebar } from '../components/layout/Sidebar';
 import { useAuth } from '../contexts/AuthContext';
 import {
     Eye, EyeOff, Lock, Unlock, Plus, Minus,
-    Layers, CreditCard, Coins
+    Layers, CreditCard, Coins, TrendingUp, Shield, 
+    Globe, MoreHorizontal, ChevronRight, Receipt,
+    ArrowDownToLine, ArrowUpFromLine, Check, ArrowLeft
 } from 'lucide-react';
 import { PinApprovalModal } from '../components/ui/PinApprovalModal';
 
@@ -48,6 +50,7 @@ export const VirtualCards: React.FC = () => {
     const [isActionLoading, setIsActionLoading] = useState(false);
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
     const [pendingRevealCardId, setPendingRevealCardId] = useState<string | null>(null);
+    const [activeCardId, setActiveCardId] = useState<string | null>(null);
 
     // Details state
     const [revealedDetails, setRevealedDetails] = useState<Record<string, CardDetails>>({});
@@ -60,7 +63,11 @@ export const VirtualCards: React.FC = () => {
     const fetchCards = async () => {
         try {
             const res = await api.get('/v1/issuing/cards');
-            setCards(res.data || []);
+            const cardsData = res.data || [];
+            setCards(cardsData);
+            if (cardsData.length > 0 && !activeCardId) {
+                setActiveCardId(cardsData[0].id);
+            }
         } catch (error) {
             console.error('Failed to fetch cards', error);
         } finally {
@@ -167,45 +174,42 @@ export const VirtualCards: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 flex font-sans">
-            <div className="hidden md:block w-72 shrink-0">
+        <div className="min-h-screen bg-[#F8FAFC] flex font-sans overflow-hidden">
+            <div className="hidden md:block w-72 shrink-0 h-screen sticky top-0">
                 <Sidebar />
             </div>
 
-            <main className="flex-1 p-8 overflow-y-auto">
-                <header className="flex items-center justify-between mb-10">
-                    <div>
-                        <h1 className="text-3xl font-black text-gray-900">Virtual Cards</h1>
-                        <p className="text-gray-500 mt-1 uppercase tracking-widest text-[10px] font-bold">Manage your digital payment methods</p>
-                    </div>
-                    <div className="flex items-center gap-6">
-                        <div className="hidden lg:flex flex-col items-end leading-none">
-                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Issuance Fee</span>
-                            <span className="text-orange-600 font-black mt-1">$0.50 USD</span>
+            <main className="flex-1 p-4 md:p-8 overflow-y-auto h-screen no-scrollbar">
+                <div className="max-w-7xl mx-auto">
+                    <header className="flex flex-col md:flex-row md:items-center justify-between mb-10 gap-4">
+                        <div>
+                            <h1 className="text-3xl font-black text-gray-900">Virtual Cards</h1>
+                            <p className="text-gray-500 mt-1 uppercase tracking-widest text-[10px] font-bold">Premium Digital Payment Management</p>
                         </div>
                         <button
                             onClick={() => setShowCreateModal(true)}
-                            className="group px-6 py-4 bg-black text-white rounded-[20px] font-bold shadow-xl hover:shadow-2xl transition-all active:scale-95 flex items-center gap-3 overflow-hidden relative"
+                            className="group px-6 py-4 bg-black text-white rounded-[20px] font-bold shadow-xl hover:shadow-2xl transition-all active:scale-95 flex items-center gap-3"
                         >
-                            <div className="absolute inset-0 bg-gradient-to-r from-orange-500/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                            <Plus className="w-5 h-5 relative z-10" />
-                            <span className="relative z-10">Issue New Card</span>
+                            <Plus className="w-5 h-5" />
+                            <span>Issue New Card</span>
                         </button>
-                    </div>
-                </header>
+                    </header>
 
-                <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-8">
                     {isLoading ? (
-                        [1, 2, 3].map(i => (
-                            <div key={i} className="h-[300px] bg-white rounded-[40px] animate-pulse border border-gray-100 shadow-sm"></div>
-                        ))
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                            <div className="lg:col-span-2 space-y-6">
+                                <div className="h-[300px] bg-white rounded-[40px] animate-pulse border border-gray-100"></div>
+                                <div className="h-[200px] bg-white rounded-[40px] animate-pulse border border-gray-100"></div>
+                            </div>
+                            <div className="h-[600px] bg-white rounded-[40px] animate-pulse border border-gray-100"></div>
+                        </div>
                     ) : cards.length === 0 ? (
-                        <div className="col-span-full py-24 bg-white rounded-[48px] border border-dashed border-gray-200 shadow-sm flex flex-col items-center justify-center text-center">
+                        <div className="py-24 bg-white rounded-[48px] border border-dashed border-gray-200 shadow-sm flex flex-col items-center justify-center text-center">
                             <div className="w-24 h-24 bg-gray-50 text-gray-400 rounded-full flex items-center justify-center mb-6">
                                 <CreditCard size={48} strokeWidth={1} />
                             </div>
                             <h2 className="text-2xl font-bold text-gray-900 mb-2">No Cards Issued</h2>
-                            <p className="text-gray-500 max-w-sm mb-10">Get a USD or ZMW virtual card instantly to pay on Amazon, Netflix, or any global merchant.</p>
+                            <p className="text-gray-500 max-w-sm mb-10">Get a USD or ZMW virtual card instantly to pay globally.</p>
                             <button
                                 onClick={() => setShowCreateModal(true)}
                                 className="px-10 py-4 bg-orange-600 text-white rounded-2xl font-bold shadow-lg hover:bg-orange-700 transition-all active:scale-95"
@@ -214,118 +218,273 @@ export const VirtualCards: React.FC = () => {
                             </button>
                         </div>
                     ) : (
-                        cards.map(card => {
-                            const isRevealed = !!revealedDetails[card.id];
-                            const details = revealedDetails[card.id];
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+                            {/* Left Column: Management */}
+                            <div className="lg:col-span-2 space-y-8">
+                                {(() => {
+                                    const card = cards.find(c => c.id === activeCardId) || cards[0];
+                                    const isRevealed = !!revealedDetails[card.id];
+                                    const details = revealedDetails[card.id];
 
-                            return (
-                                <div key={card.id} className="group flex flex-col gap-4">
-                                    {/* Card Visual */}
-                                    <div className={`relative h-[260px] w-full rounded-[32px] overflow-hidden p-8 flex flex-col justify-between shadow-2xl transition-all ${card.status === 'ACTIVE' ? 'bg-black' : 'bg-gray-900 opacity-80'}`}>
+                                    return (
+                                        <>
+                                            {/* Premium Card Display */}
+                                            <div className="relative group">
+                                                <div className={`relative h-[280px] w-full rounded-[40px] overflow-hidden p-10 flex flex-col justify-between shadow-2xl transition-all duration-700 ${card.status === 'ACTIVE' ? '' : 'opacity-80'}`} 
+                                                     style={{ 
+                                                        background: 'linear-gradient(135deg, #1c1c1e 0%, #0a0a0b 100%)',
+                                                        border: '1px solid rgba(255,255,255,0.08)'
+                                                     }}>
+                                                    
+                                                    {/* Decorative Elements (Glowing Blobs) */}
+                                                    <div className="absolute top-[-60px] right-[-60px] w-[180px] h-[180px] bg-orange-500/10 rounded-full blur-[60px] transition-all group-hover:bg-orange-500/20"></div>
+                                                    <div className="absolute bottom-[-60px] left-[-60px] w-[160px] h-[160px] bg-orange-500/5 rounded-full blur-[50px]"></div>
 
-                                        {/* Top Row: Logos */}
-                                        <div className="flex justify-between items-start z-10 relative">
-                                            {/* FlapaPay Logo (Top Left) */}
-                                            <img src="/assets/images/flapapaylogoicon.png" className="h-16 w-16 object-contain" alt="FlapaPay" />
+                                                    {/* Top Row: Brand & Reveal */}
+                                                    <div className="flex justify-between items-start z-10 relative">
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center p-2 shadow-lg shadow-black/50">
+                                                                <img src="/assets/images/flapapaylogoicon.png" className="w-full h-full object-contain" alt="FP" />
+                                                            </div>
+                                                            <span className="text-white font-black tracking-tight text-lg">FlapaPay</span>
+                                                        </div>
 
-                                            <div className="flex items-center gap-4">
-                                                {/* Eye Toggle */}
+                                                        <div className="flex items-center gap-4">
+                                                            <button
+                                                                onClick={() => revealDetails(card.id)}
+                                                                className="w-10 h-10 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center backdrop-blur-md transition-all text-white border border-white/10"
+                                                            >
+                                                                {isRevealed ? <EyeOff size={18} /> : <Eye size={18} />}
+                                                            </button>
+                                                            <div className="flex items-center">
+                                                                <div className="w-10 h-10 rounded-full bg-[#eb001b] opacity-90"></div>
+                                                                <div className="w-10 h-10 rounded-full bg-[#f79e1b] opacity-90 -ml-4"></div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Middle: Prominent Balance */}
+                                                    <div className="z-10 relative mt-4">
+                                                        <p className="text-[10px] font-bold text-white/40 uppercase tracking-[0.2em] mb-1">Available Balance</p>
+                                                        <p className="text-4xl font-black text-white tracking-tighter">
+                                                            {card.currency} {Number(card.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                                        </p>
+                                                    </div>
+
+                                                    {/* Card Number Area */}
+                                                    <div className="z-10 relative">
+                                                        <div className="h-[1px] w-full bg-white/10 mb-6"></div>
+                                                        <p className="text-xl font-mono tracking-[0.3em] font-bold text-white/90 drop-shadow-lg">
+                                                            {isRevealed ? (
+                                                                (details?.pan || '0000000000000000').replace(/(.{4})/g, '$1 ').trim()
+                                                            ) : (
+                                                                `••••  ••••  ••••  ${card.last4}`
+                                                            )}
+                                                        </p>
+                                                    </div>
+
+                                                    {/* Bottom Row: Details */}
+                                                    <div className="flex justify-between items-end z-10 relative">
+                                                        <div className="flex gap-12">
+                                                            <div>
+                                                                <p className="text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1">Card Holder</p>
+                                                                <p className="text-white text-[11px] font-black uppercase tracking-widest leading-none">{user?.fullName || 'FlapaPay User'}</p>
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1">Expiry</p>
+                                                                <p className="text-white text-[11px] font-bold tracking-widest font-mono leading-none">
+                                                                    {isRevealed ? details?.expiry : '••/••'}
+                                                                </p>
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1">CVV</p>
+                                                                <p className="text-white text-[11px] font-bold tracking-[0.2em] font-mono leading-none">
+                                                                    {isRevealed ? details?.cvv : '•••'}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Status Overlay */}
+                                                    {card.status !== 'ACTIVE' && (
+                                                        <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] z-20 flex items-center justify-center">
+                                                            <div className="bg-red-500/20 backdrop-blur-md border border-red-500/50 px-6 py-2 rounded-full flex items-center gap-2 shadow-2xl">
+                                                                <Lock size={14} className="text-red-500" />
+                                                                <span className="text-red-500 text-xs font-black uppercase tracking-widest">{card.status}</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            {/* Action Tray */}
+                                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                                                 <button
-                                                    onClick={() => revealDetails(card.id)}
-                                                    className="w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center backdrop-blur-md transition-colors text-white"
+                                                    onClick={() => { setSelectedCard(card); setShowFundModal(true); }}
+                                                    disabled={card.status !== 'ACTIVE'}
+                                                    className="group flex flex-col items-center justify-center gap-3 p-4 bg-orange-600 rounded-[30px] text-white shadow-lg hover:shadow-orange-600/30 transition-all hover:scale-[1.02] active:scale-95 disabled:grayscale"
                                                 >
-                                                    {isRevealed ? <EyeOff size={20} /> : <Eye size={20} />}
+                                                    <div className="p-3 bg-white/20 rounded-2xl group-hover:scale-110 transition-transform">
+                                                        <ArrowDownToLine size={20} />
+                                                    </div>
+                                                    <span className="text-xs font-black uppercase tracking-wider">Fund Card</span>
                                                 </button>
 
-                                                {/* Mastercard Logo (Top Right) */}
-                                                <img src="/assets/images/mastercard.svg" className="h-14 w-14 object-contain" alt="Mastercard" />
+                                                <button
+                                                    onClick={() => { setSelectedCard(card); setShowWithdrawModal(true); }}
+                                                    disabled={card.status !== 'ACTIVE' || Number(card.amount) <= 0}
+                                                    className="group flex flex-col items-center justify-center gap-3 p-4 bg-white border border-blue-100 rounded-[30px] text-blue-600 shadow-sm hover:shadow-blue-600/10 transition-all hover:scale-[1.02] active:scale-95 disabled:opacity-50"
+                                                >
+                                                    <div className="p-3 bg-blue-50 rounded-2xl group-hover:scale-110 transition-transform">
+                                                        <ArrowUpFromLine size={20} />
+                                                    </div>
+                                                    <span className="text-xs font-black uppercase tracking-wider">Withdraw</span>
+                                                </button>
+
+                                                <button
+                                                    onClick={() => revealDetails(card.id)}
+                                                    className="group flex flex-col items-center justify-center gap-3 p-4 bg-white border border-gray-100 rounded-[30px] text-gray-600 shadow-sm hover:shadow-xl transition-all hover:scale-[1.02] active:scale-95"
+                                                >
+                                                    <div className="p-3 bg-gray-50 rounded-2xl group-hover:scale-110 transition-transform">
+                                                        {isRevealed ? <EyeOff size={20} /> : <Eye size={20} />}
+                                                    </div>
+                                                    <span className="text-xs font-black uppercase tracking-wider">{isRevealed ? 'Hide Details' : 'Show Details'}</span>
+                                                </button>
+
+                                                <button
+                                                    onClick={() => {/* Mock navigate to transactions */}}
+                                                    className="group flex flex-col items-center justify-center gap-3 p-4 bg-white border border-purple-100 rounded-[30px] text-purple-600 shadow-sm hover:shadow-purple-600/10 transition-all hover:scale-[1.02] active:scale-95"
+                                                >
+                                                    <div className="p-3 bg-purple-50 rounded-2xl group-hover:scale-110 transition-transform">
+                                                        <Receipt size={20} />
+                                                    </div>
+                                                    <span className="text-xs font-black uppercase tracking-wider">Transactions</span>
+                                                </button>
                                             </div>
-                                        </div>
 
-                                        {/* Middle: Card Number */}
-                                        <div className="mt-2 z-10 relative">
-                                            <p className="text-gray-400 text-[10px] font-bold uppercase tracking-[0.3em] mb-3 leading-none">Card Number</p>
-                                            <p className="text-2xl font-mono tracking-[0.15em] font-bold text-white drop-shadow-md">
-                                                {isRevealed ? (
-                                                    // Show full number with spacing
-                                                    (details?.pan || '0000000000000000').replace(/(.{4})/g, '$1 ').trim()
-                                                ) : (
-                                                    // Masked version
-                                                    `**** **** **** ${card.last4}`
-                                                )}
-                                            </p>
-                                        </div>
+                                            {/* Card Stats */}
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                <div className="bg-white rounded-[32px] p-8 border border-gray-100 shadow-sm">
+                                                    <div className="flex items-center gap-3 mb-6">
+                                                        <div className="w-10 h-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600">
+                                                            <TrendingUp size={20} />
+                                                        </div>
+                                                        <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Monthly Spending Limit</span>
+                                                    </div>
+                                                    <div className="flex items-baseline gap-1 mb-4">
+                                                        <span className="text-3xl font-black text-gray-900">$5,000</span>
+                                                        <span className="text-sm font-bold text-gray-400">/mo</span>
+                                                    </div>
+                                                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden mb-3">
+                                                        <div className="h-full bg-gradient-to-r from-green-400 to-emerald-500 rounded-full" style={{ width: '65%' }}></div>
+                                                    </div>
+                                                    <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest">
+                                                        <span className="text-gray-400">$3,240 used</span>
+                                                        <span className="text-green-600">$1,760 avail</span>
+                                                    </div>
+                                                </div>
 
-                                        {/* Bottom Row: Expiry, CVV, Balance */}
-                                        <div className="flex justify-between items-end z-10 relative">
-                                            <div className="flex flex-col gap-4">
+                                                <div className="bg-white rounded-[32px] p-8 border border-gray-100 shadow-sm">
+                                                    <div className="flex items-center gap-3 mb-6">
+                                                        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600">
+                                                            <Shield size={20} />
+                                                        </div>
+                                                        <span className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Security Engine</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-3 mb-6">
+                                                        <div className="h-10 px-4 bg-green-500 text-white rounded-2xl flex items-center gap-2 font-bold text-sm shadow-lg shadow-green-500/20">
+                                                            <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                                                            Shield Active
+                                                        </div>
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 leading-relaxed">3D Secure 2.0 is mandatory for all transactions. Fraud protection is monitoring your account 24/7.</p>
+                                                </div>
+                                            </div>
+
+                                            {/* Card Controls */}
+                                            <div className="space-y-4">
+                                                <h3 className="text-lg font-black text-gray-900 px-2 tracking-tight">Advanced Controls</h3>
+                                                <div className="grid grid-cols-1 gap-3">
+                                                    {[
+                                                        { icon: <Lock className="text-orange-600" />, title: 'Freeze Card', label: 'Temporarily block payments', color: 'bg-orange-50', action: () => toggleCardStatus(card), toggle: card.status !== 'ACTIVE' },
+                                                        { icon: <TrendingUp className="text-purple-600" />, title: 'Spending Limits', label: 'Set daily & monthly caps', color: 'bg-purple-50' },
+                                                        { icon: <Globe className="text-blue-600" />, title: 'Online Transactions', label: 'Toggle international usage', color: 'bg-blue-50', toggle: true },
+                                                        { icon: <MoreHorizontal className="text-gray-600" />, title: 'Card Settings', label: 'PIN, Notifications & Privacy', color: 'bg-gray-50' }
+                                                    ].map((control, idx) => (
+                                                        <button key={idx} onClick={control.action} className="w-full bg-white border border-gray-100 hover:border-gray-300 rounded-[28px] p-6 flex items-center justify-between transition-all group hover:translate-x-1">
+                                                            <div className="flex items-center gap-5">
+                                                                <div className={`w-14 h-14 ${control.color} rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-sm`}>
+                                                                    {control.icon}
+                                                                </div>
+                                                                <div className="text-left">
+                                                                    <p className="text-sm font-bold text-gray-900">{control.title}</p>
+                                                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-0.5">{control.label}</p>
+                                                                </div>
+                                                            </div>
+                                                            {control.toggle !== undefined ? (
+                                                                <div className={`w-12 h-6 rounded-full transition-colors relative ${control.toggle ? 'bg-green-500' : 'bg-gray-200'}`}>
+                                                                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${control.toggle ? 'right-1' : 'left-1 shadow-sm'}`}></div>
+                                                                </div>
+                                                            ) : (
+                                                                <ChevronRight className="text-gray-300" size={20} />
+                                                            )}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+                            </div>
+
+                            {/* Right Column: Card Selector */}
+                            <div className="space-y-8">
+                                <div className="bg-white rounded-[40px] p-8 border border-gray-100 shadow-sm sticky top-8">
+                                    <h3 className="text-lg font-black text-gray-900 mb-6 px-2">Your Cards</h3>
+                                    <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 no-scrollbar">
+                                        {cards.map(c => (
+                                            <button
+                                                key={c.id}
+                                                onClick={() => setActiveCardId(c.id)}
+                                                className={`w-full group relative p-6 rounded-[32px] transition-all duration-500 text-left border-2 flex flex-col gap-3 ${
+                                                    activeCardId === c.id 
+                                                    ? 'bg-black text-white border-black shadow-2xl scale-[1.02]' 
+                                                    : 'bg-white text-gray-900 border-gray-50 hover:border-gray-200'
+                                                }`}
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center p-1.5 ${activeCardId === c.id ? 'bg-white/20' : 'bg-gray-100'}`}>
+                                                        <img src="/assets/images/flapapaylogoicon.png" className="w-full h-full object-contain" alt="FP" />
+                                                    </div>
+                                                    <div className="flex -space-x-2">
+                                                        <div className="w-6 h-6 rounded-full bg-[#eb001b] opacity-90"></div>
+                                                        <div className="w-6 h-6 rounded-full bg-[#f79e1b] opacity-90"></div>
+                                                    </div>
+                                                </div>
                                                 <div>
-                                                    <p className="text-gray-400 text-[9px] font-bold uppercase tracking-widest mb-1 leading-none">Card Holder</p>
-                                                    <p className="text-white text-sm font-black uppercase tracking-widest">{user?.fullName || 'FlapaPay User'}</p>
+                                                    <p className={`text-[10px] font-bold uppercase tracking-widest ${activeCardId === c.id ? 'text-white/40' : 'text-gray-400'}`}>Card Balance</p>
+                                                    <p className="text-xl font-black">{c.currency} {Number(c.amount).toFixed(2)}</p>
                                                 </div>
-                                                <div className="flex gap-10">
-                                                    <div>
-                                                        <p className="text-gray-400 text-[9px] font-bold uppercase tracking-widest mb-1">Expiry</p>
-                                                        <p className="text-white text-base font-bold tracking-widest font-mono">
-                                                            {isRevealed ? details?.expiry : `${card.expiry_month}/${card.expiry_year}`}
-                                                        </p>
-                                                    </div>
-                                                    <div>
-                                                        <p className="text-gray-400 text-[9px] font-bold uppercase tracking-widest mb-1">CVV</p>
-                                                        <p className="text-white text-base font-bold tracking-[0.2em] font-mono">
-                                                            {isRevealed ? details?.cvv : '***'}
-                                                        </p>
-                                                    </div>
+                                                <div className="flex justify-between items-center mt-2">
+                                                    <span className="font-mono text-xs opacity-60">•••• {c.last4}</span>
+                                                    {activeCardId === c.id && <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>}
                                                 </div>
-                                            </div>
-                                            <div className="flex flex-col items-end">
-                                                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-none mb-1">Balance</p>
-                                                <p className="text-2xl font-black text-white">{card.currency} {Number(card.amount).toFixed(2)}</p>
-                                            </div>
-                                        </div>
-
-                                        {/* Glass Overlay for Status (if blocked) */}
-                                        {card.status !== 'ACTIVE' && (
-                                            <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px] z-20 flex items-center justify-center">
-                                                <div className="bg-red-500 h-10 px-6 rounded-full flex items-center gap-2 shadow-2xl border border-red-400">
-                                                    <Lock size={16} className="text-white" />
-                                                    <span className="text-white text-xs font-black uppercase tracking-widest">{card.status}</span>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    {/* Action Tray */}
-                                    <div className="grid grid-cols-3 gap-2 px-2">
-                                        <button
-                                            onClick={() => { setSelectedCard(card); setShowFundModal(true); }}
-                                            disabled={card.status !== 'ACTIVE'}
-                                            className="h-12 bg-white border border-gray-100 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-sm hover:shadow-md hover:border-orange-200 transition-all active:scale-95 disabled:opacity-50"
+                                            </button>
+                                        ))}
+                                        
+                                        <button 
+                                            onClick={() => setShowCreateModal(true)}
+                                            className="w-full p-6 rounded-[32px] border-2 border-dashed border-gray-200 text-gray-400 hover:text-orange-600 hover:border-orange-200 transition-all flex flex-col items-center justify-center gap-2 group"
                                         >
-                                            <Plus className="text-orange-600" size={16} />
-                                            <span className="text-[9px] font-bold uppercase text-gray-500">Fund</span>
-                                        </button>
-                                        <button
-                                            onClick={() => { setSelectedCard(card); setShowWithdrawModal(true); }}
-                                            disabled={card.status !== 'ACTIVE' || Number(card.amount) <= 0}
-                                            className="h-12 bg-white border border-gray-100 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-sm hover:shadow-md hover:border-blue-200 transition-all active:scale-95 disabled:opacity-50"
-                                        >
-                                            <Minus className="text-blue-600" size={16} />
-                                            <span className="text-[9px] font-bold uppercase text-gray-500">Refund</span>
-                                        </button>
-                                        <button
-                                            onClick={() => toggleCardStatus(card)}
-                                            className={`h-12 rounded-2xl flex flex-col items-center justify-center gap-1 shadow-sm hover:shadow-md transition-all active:scale-95 ${card.status === 'ACTIVE' ? 'bg-white border border-gray-100' : 'bg-green-500 text-white border-transparent'}`}
-                                        >
-                                            {card.status === 'ACTIVE' ? <Lock className="text-red-500" size={16} /> : <Unlock size={16} />}
-                                            <span className={`text-[9px] font-bold uppercase ${card.status === 'ACTIVE' ? 'text-gray-500' : 'text-white'}`}>
-                                                {card.status === 'ACTIVE' ? 'Block' : 'Unblock'}
-                                            </span>
+                                            <div className="w-10 h-10 rounded-full bg-gray-50 group-hover:bg-orange-50 flex items-center justify-center transition-colors">
+                                                <Plus size={20} />
+                                            </div>
+                                            <span className="text-[10px] font-bold uppercase tracking-widest">Issue New Card</span>
                                         </button>
                                     </div>
                                 </div>
-                            );
-                        })
+                            </div>
+                        </div>
                     )}
                 </div>
             </main>
@@ -450,10 +609,10 @@ export const VirtualCards: React.FC = () => {
                                             </span>
                                         </div>
                                     </div>
-                                    <p className="mt-1.5 text-[10px] text-gray-500 flex items-center gap-1">
-                                        <div className="w-0.5 h-0.5 bg-orange-500 rounded-full"></div>
+                                    <span className="mt-1.5 text-[10px] text-gray-500 flex items-center gap-1">
+                                        <span className="w-0.5 h-0.5 bg-orange-500 rounded-full inline-block"></span>
                                         Funds deducted from your {cardCurrency} wallet
-                                    </p>
+                                    </span>
                                 </div>
 
                                 {/* Fee Summary Card */}

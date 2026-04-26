@@ -725,7 +725,13 @@ export const SignInPage: React.FC<{ initialTab?: 'login' | 'register' }> = ({ in
     const navigate = useNavigate();
     const { login } = useAuth();
     const [activeTab, setActiveTab] = useState<'login' | 'register'>(initialTab);
-    const [email, setEmail] = useState('');
+
+    // Pre-fill email and detect claimToken from URL (e.g. /signup?email=x&claimToken=y)
+    const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const claimTokenFromUrl = searchParams.get('claimToken') || '';
+    const emailFromUrl = searchParams.get('email') || '';
+
+    const [email, setEmail] = useState(emailFromUrl);
     const [password, setPassword] = useState('');
     const [firstName, setFirstName] = useState('');
     const [lastName, setLastName] = useState('');
@@ -816,7 +822,7 @@ export const SignInPage: React.FC<{ initialTab?: 'login' | 'register' }> = ({ in
         try {
             const fullPhoneNumber = `${countryCode}${phone.replace(/\D/g, '')}`;
 
-            await api.post('/auth/register', {
+            const res = await api.post('/auth/register', {
                 email,
                 password,
                 firstName,
@@ -825,7 +831,12 @@ export const SignInPage: React.FC<{ initialTab?: 'login' | 'register' }> = ({ in
                 pin
             });
 
-            alert('Account created! Redirecting to login...');
+            const credited = res.data.creditedPayments || 0;
+            if (credited > 0) {
+                setSuccessMessage(`Account created! ${credited} pending payment${credited > 1 ? 's have' : ' has'} been credited to your wallet.`);
+            } else {
+                setSuccessMessage('Account created! Redirecting to login...');
+            }
             setActiveTab('login');
         } catch (error: any) {
             setErrorMessage(error.response?.data?.error || 'Failed to sign up.');
@@ -998,26 +1009,37 @@ export const SignInPage: React.FC<{ initialTab?: 'login' | 'register' }> = ({ in
                                         onForgotPassword={() => setIsForgotPassword(true)}
                                     />
                                 ) : (
-                                    <RegisterForm
-                                        firstName={firstName}
-                                        setFirstName={setFirstName}
-                                        lastName={lastName}
-                                        setLastName={setLastName}
-                                        email={email}
-                                        setEmail={setEmail}
-                                        phone={phone}
-                                        setPhone={setPhone}
-                                        countryCode={countryCode}
-                                        setCountryCode={setCountryCode}
-                                        password={password}
-                                        setPassword={setPassword}
-                                        showPassword={showPassword}
-                                        togglePasswordVisibility={togglePasswordVisibility}
-                                        handleSignUp={handleSignUp}
-                                        isSubmitting={isSubmitting}
-                                        pin={pin}
-                                        setPin={setPin}
-                                    />
+                                    <>
+                                        {claimTokenFromUrl && (
+                                            <div className="bg-orange-500/15 border border-orange-500/30 backdrop-blur-md rounded-2xl p-4 mb-6 flex items-start gap-3">
+                                                <span className="text-orange-400 text-lg mt-0.5">💰</span>
+                                                <div>
+                                                    <p className="text-orange-400 text-[11px] font-black uppercase tracking-widest mb-1">Funds Waiting For You</p>
+                                                    <p className="text-white/70 text-xs font-bold">Create your account to automatically claim your pending payment.</p>
+                                                </div>
+                                            </div>
+                                        )}
+                                        <RegisterForm
+                                            firstName={firstName}
+                                            setFirstName={setFirstName}
+                                            lastName={lastName}
+                                            setLastName={setLastName}
+                                            email={email}
+                                            setEmail={setEmail}
+                                            phone={phone}
+                                            setPhone={setPhone}
+                                            countryCode={countryCode}
+                                            setCountryCode={setCountryCode}
+                                            password={password}
+                                            setPassword={setPassword}
+                                            showPassword={showPassword}
+                                            togglePasswordVisibility={togglePasswordVisibility}
+                                            handleSignUp={handleSignUp}
+                                            isSubmitting={isSubmitting}
+                                            pin={pin}
+                                            setPin={setPin}
+                                        />
+                                    </>
                                 )}
                             </>
                         )}

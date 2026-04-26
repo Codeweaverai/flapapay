@@ -211,13 +211,13 @@ export const AddMoney: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 flex font-sans text-gray-900">
+        <div className="min-h-screen bg-white flex font-sans text-gray-900" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <div className="hidden md:block w-72 shrink-0 transition-all duration-300">
                 <Sidebar />
             </div>
 
             <main className="flex-1 p-8 overflow-y-auto">
-                <div className="max-w-3xl mx-auto">
+                <div className="max-w-5xl mx-auto">
                     {/* Header */}
                     <div className="mb-8">
                         <button onClick={() => navigate('/dashboard')} className="text-gray-500 hover:text-black mb-4 flex items-center gap-2 font-medium transition-colors">

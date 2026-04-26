@@ -6,6 +6,9 @@ module.exports = {
     ],
     theme: {
         extend: {
+            fontFamily: {
+                sans: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            },
             colors: {
                 primary: 'var(--color-primary)',
                 'primary-dark': 'var(--color-primary-dark)',

@@ -18,17 +18,17 @@ const caseStudies = [
         metric: "2.5M",
         metricLabel: "Transactions/mo",
         description: "ShopRite integrated FlapaPay Connect to accept 15+ different mobile money wallets through a single API.",
-        image: "https://images.unsplash.com/photo-1534452203294-49c8ad1bc56c?auto=format&fit=crop&w=800&q=80"
+        image: "/assets/images/SHOPRITE.jpg"
     }
 ];
 
 const partners = [
-    { name: "MTN", logo: "https://upload.wikimedia.org/wikipedia/commons/9/93/MTN_Logo.svg" },
+    { name: "MTN", logo: "/assets/images/MTN_Logo.svg" },
     { name: "Airtel", logo: "https://upload.wikimedia.org/wikipedia/commons/3/3a/Airtel_logo-01.png" },
-    { name: "Zamtel", logo: "https://upload.wikimedia.org/wikipedia/en/thumb/5/5a/Zamtel_logo.png/220px-Zamtel_logo.png" },
-    { name: "Standard Chartered", logo: "https://upload.wikimedia.org/wikipedia/en/thumb/0/0c/Standard_Chartered_%282021%29.svg/1200px-Standard_Chartered_%282021%29.svg.png" },
-    { name: "Absa", logo: "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/Absa_Group_Logo.svg/1200px-Absa_Group_Logo.svg.png" },
-    { name: "Mastercard", logo: "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2a/Mastercard-logo.svg/1280px-Mastercard-logo.svg.png" }
+    { name: "Zamtel", logo: "/assets/images/zamtel.png" },
+    { name: "Standard Chartered", logo: "/assets/images/STANCHART.svg" },
+    { name: "Absa", logo: "https://cdn.brandfetch.io/idIIZJY7QN/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1667792595017" },
+    { name: "Indo Zambia Bank", logo: "/assets/images/indozambiabank.png" }
 ];
 
 export const CustomersPage: React.FC = () => {
@@ -38,36 +38,40 @@ export const CustomersPage: React.FC = () => {
 
             <main className="pt-20">
                 {/* Customers Hero */}
-                <section className="py-24 bg-gray-50 overflow-hidden">
+                <section className="py-24 bg-black overflow-hidden">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
                         <div className="text-center mb-20">
-                            <h1 className="text-5xl md:text-7xl font-black text-gray-900 mb-8 leading-tight">
+                            <h1 className="text-5xl md:text-7xl font-black text-white mb-8 leading-tight">
                                 Powering growth for <br />
                                 <span className="text-orange-500">thousands</span> of businesses.
                             </h1>
-                            <p className="text-xl text-gray-500 max-w-2xl mx-auto mb-10">
+                            <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-10">
                                 From local SMEs to pan-African enterprises, FlapaPay is the infrastructure behind the fastest-growing companies.
                             </p>
                             <div className="flex justify-center gap-4">
-                                <Button size="lg" className="bg-black text-white px-10 py-5 rounded-2xl font-black shadow-xl active:scale-95 transition-all text-xl">
+                                <Button size="lg" className="bg-orange-500 text-white px-10 py-5 rounded-2xl font-black shadow-xl active:scale-95 transition-all text-xl">
                                     Read Success Stories
                                 </Button>
                             </div>
                         </div>
 
                         {/* Partner Wall */}
-                        <div className="bg-white rounded-[48px] p-12 shadow-sm border border-gray-100 mb-24">
+                        <div className="bg-white rounded-[48px] p-12 shadow-sm border border-gray-100">
                             <p className="text-center text-sm font-black text-gray-400 uppercase tracking-[0.3em] mb-12">Trusted by global partners</p>
-                            <div className="grid grid-cols-2 lg:grid-cols-6 gap-12 items-center opacity-70 grayscale">
+                            <div className="grid grid-cols-2 lg:grid-cols-6 gap-12 items-center">
                                 {partners.map((partner, i) => (
                                     <div key={i} className="flex justify-center group cursor-pointer">
-                                        <img src={partner.logo} alt={partner.name} className="h-8 md:h-12 w-auto group-hover:grayscale-0 group-hover:scale-110 transition-all duration-500" />
+                                        <img src={partner.logo} alt={partner.name} className="h-8 md:h-12 w-auto group-hover:scale-110 transition-all duration-500" />
                                     </div>
                                 ))}
                             </div>
                         </div>
+                    </div>
+                </section>
 
-                        {/* Case Study Spolight */}
+                {/* Case Study Spotlight */}
+                <section className="py-24 bg-white">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
                         <div className="space-y-32">
                             {caseStudies.map((caseStudy, i) => (
                                 <div key={i} className={`flex flex-col lg:flex-row gap-20 items-center ${i % 2 === 1 ? 'lg:flex-row-reverse' : ''}`}>

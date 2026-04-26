@@ -156,14 +156,14 @@ export const Notifications: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 flex">
+        <div className="min-h-screen bg-white flex" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             {/* Sidebar (Desktop) */}
             <div className="hidden md:block w-72 shrink-0">
                 <Sidebar />
             </div>
 
             <main className="flex-1 p-4 md:p-8 overflow-y-auto">
-                <div className="max-w-4xl mx-auto">
+                <div className="max-w-7xl mx-auto">
                     {/* Header */}
                     <header className="mb-8 flex items-center justify-between">
                         <div>

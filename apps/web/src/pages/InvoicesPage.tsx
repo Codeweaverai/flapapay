@@ -79,7 +79,7 @@ export const InvoicesPage: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#F8F9FC]">
+        <div className="min-h-screen bg-white" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <Sidebar />
 
             <div className="md:ml-72 transition-all duration-300">

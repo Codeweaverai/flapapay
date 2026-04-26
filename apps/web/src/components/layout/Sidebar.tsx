@@ -25,11 +25,6 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
         },
 
         {
-            label: 'Connect', path: '/merchant/connect', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            )
-        },
-        {
             label: 'Payment Links', path: '/pay-links', icon: (
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
             )
@@ -37,6 +32,14 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
         {
             label: 'Cards', path: '/link-card', icon: (
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
+            )
+        },
+        {
+            label: 'Virtual Cards', path: '/virtual-cards', icon: (
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 3.5l.5 2 2 .5-2 .5-.5 2-.5-2-2-.5 2-.5.5-2z" />
+                </svg>
             )
         },
         {
@@ -50,11 +53,6 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
             )
         },
         {
-            label: 'Compliance', path: '/merchant/compliance-requirements', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-            )
-        },
-        {
             label: 'Notifications', path: '/notifications', icon: (
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
             )
@@ -65,14 +63,14 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
             )
         },
         {
-            label: 'Escrow', path: '/escrow', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+            label: 'Connect', path: '/merchant/connect', icon: (
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
             )
-        }
+        },
     ];
 
     return (
-        <aside className={`fixed inset-y-0 left-0 bg-slate-100 border-r border-slate-200/60 w-72 z-50 transition-all duration-500 transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 flex flex-col overflow-hidden`}>
+        <aside className={`fixed inset-y-0 left-0 bg-white border-r border-gray-100 w-72 z-50 transition-all duration-500 transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 flex flex-col overflow-hidden`} style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             {/* Soft Ambient Effects for Light Mode */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full blur-[80px]"></div>
             <div className="absolute bottom-64 left-0 w-24 h-24 bg-orange-500/5 rounded-full blur-[60px]"></div>
@@ -81,7 +79,7 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
             <div className="flex flex-col items-center justify-center pt-14 pb-12 px-8 z-10">
                 <div
                     onClick={() => navigate('/dashboard')}
-                    className="group relative w-20 h-20 bg-white border border-slate-100 rounded-[28px] flex items-center justify-center shadow-xl shadow-slate-200 transition-all duration-700 hover:scale-110 hover:border-orange-500/30 cursor-pointer overflow-hidden"
+                    className="group relative w-20 h-20 bg-white border border-gray-100 rounded-[28px] flex items-center justify-center shadow-xl shadow-gray-200 transition-all duration-700 hover:scale-110 hover:border-amber-500/30 cursor-pointer overflow-hidden"
                 >
                     <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
                     <img
@@ -91,12 +89,12 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
                     />
                 </div>
                 <div className="mt-4 flex flex-col items-center">
-                    <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-2">Terminal</h2>
+                    <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest ml-2">Terminal</h2>
                 </div>
             </div>
 
             <div className="px-12 mb-6">
-                <div className="h-[1px] bg-gradient-to-r from-transparent via-slate-200 to-transparent w-full"></div>
+                <div className="h-[1px] bg-gradient-to-r from-transparent via-gray-200 to-transparent w-full"></div>
             </div>
 
             <nav className="p-6 pt-2 space-y-2 flex-1 overflow-y-auto no-scrollbar z-10">
@@ -107,20 +105,20 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
                             key={item.path}
                             onClick={() => navigate(item.path)}
                             className={`flex items-center w-full px-5 py-4 rounded-[20px] transition-all duration-500 group relative ${isActive
-                                ? 'bg-white text-orange-600 border border-slate-100 shadow-[0_10px_30px_rgba(0,0,0,0.04)]'
-                                : 'text-slate-400 hover:text-slate-900 hover:bg-white'} hover:translate-x-2`}
+                                ? 'bg-white text-amber-600 border border-gray-100 shadow-[0_10px_30px_rgba(0,0,0,0.04)]'
+                                : 'text-gray-400 hover:text-gray-900 hover:bg-white/80'} hover:translate-x-2`}
                         >
                             {isActive && (
-                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-orange-600 rounded-r-full shadow-[0_0_15px_rgba(234,88,12,0.3)]"></div>
+                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-amber-600 rounded-r-full shadow-[0_0_15px_rgba(245,158,11,0.3)]"></div>
                             )}
-                            <span className={`mr-4 transition-all duration-500 ${isActive ? 'text-orange-600 scale-110' : 'text-slate-300 group-hover:text-slate-900 group-hover:scale-110'}`}>
+                            <span className={`mr-4 transition-all duration-500 ${isActive ? 'text-amber-600 scale-110' : 'text-gray-300 group-hover:text-gray-900 group-hover:scale-110'}`}>
                                 {item.icon}
                             </span>
-                            <span className={`text-[11px] font-black uppercase tracking-[0.15em] ${isActive ? 'text-slate-900' : ''}`}>
+                            <span className={`text-[11px] font-black uppercase tracking-[0.15em] ${isActive ? 'text-gray-900' : ''}`}>
                                 {item.label}
                             </span>
                             {isActive && (
-                                <span className="ml-auto flex h-1.5 w-1.5 rounded-full bg-orange-600 animate-pulse"></span>
+                                <span className="ml-auto flex h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse"></span>
                             )}
                         </button>
                     )
@@ -130,7 +128,7 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
 
             {/* Security Footer */}
             <div className="mt-auto p-8 transition-opacity">
-                <p className="text-sm font-black text-slate-800 uppercase tracking-widest text-center">Security Engine v1.0</p>
+                <p className="text-sm font-black text-gray-800 uppercase tracking-widest text-center">Security Engine v1.0</p>
             </div>
         </aside>
     );

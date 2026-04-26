@@ -56,7 +56,7 @@ export const RequestFunds: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#F8F9FC] flex font-sans selection:bg-orange-500 selection:text-white">
+        <div className="min-h-screen bg-white flex font-sans selection:bg-orange-500 selection:text-white" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <div className="hidden md:block w-72 shrink-0 border-r border-gray-100 bg-white shadow-[4px_0_24px_rgba(0,0,0,0.01)] z-10 relative">
                 <Sidebar />
             </div>
@@ -66,7 +66,7 @@ export const RequestFunds: React.FC = () => {
                 <div className="absolute top-0 inset-x-0 h-[500px] bg-gradient-to-b from-orange-50/50 to-transparent pointer-events-none" />
                 <div className="absolute -top-40 -right-40 w-96 h-96 bg-orange-500/[0.03] rounded-full blur-[100px] pointer-events-none" />
 
-                <div className="max-w-2xl mx-auto p-8 lg:p-12 relative z-10 h-full flex flex-col justify-center min-h-screen">
+                <div className="max-w-5xl mx-auto p-8 lg:p-12 relative z-10 h-full flex flex-col justify-center min-h-screen">
 
                     {/* Header */}
                     <div className="mb-10 animate-in fade-in slide-in-from-top-4 duration-700">

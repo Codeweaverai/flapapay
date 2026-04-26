@@ -66,7 +66,7 @@ export const Dashboard: React.FC = () => {
     if (isLoading) return <div className="flex items-center justify-center min-h-screen bg-gray-50">Loading...</div>;
 
     return (
-        <div className="min-h-screen bg-[#F9FAFB] flex font-sans selection:bg-orange-100">
+        <div className="min-h-screen bg-white flex font-sans selection:bg-orange-100" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             {/* Sidebar (Desktop) */}
             <div className="hidden md:block w-72 shrink-0 border-r border-gray-100/50 bg-white/50 backdrop-blur-xl sticky top-0 h-screen">
                 <Sidebar />
@@ -78,7 +78,7 @@ export const Dashboard: React.FC = () => {
                 {/* Decorative background element */}
                 <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-orange-100/20 via-emerald-100/10 to-transparent rounded-full -mr-64 -mt-64 blur-3xl pointer-events-none"></div>
 
-                <div className="relative z-10">
+                <div className="max-w-7xl mx-auto relative z-10">
                     <header className="flex items-center justify-between mb-10">
                         <div>
                             <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
@@ -175,26 +175,36 @@ export const Dashboard: React.FC = () => {
                     </header>
 
                     {/* Quick Actions */}
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-10">
-                        <button onClick={() => navigate('/send')} className="p-4 bg-black text-white rounded-2xl shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-1 text-left">
-                            <svg className="w-8 h-8 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
-                            <span className="font-bold block">Send Money</span>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-6 mb-10">
+                        <button onClick={() => navigate('/send')} className="group p-6 bg-gradient-to-br from-orange-500 to-amber-600 text-white rounded-2xl shadow-lg hover:shadow-2xl hover:shadow-orange-500/30 transition-all duration-300 transform hover:-translate-y-2 text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
+                            </div>
+                            <span className="font-bold text-sm block">Send Money</span>
                         </button>
-                        <button onClick={() => navigate('/add-money')} className="p-4 bg-white text-black border border-gray-100 rounded-2xl shadow-sm hover:shadow-md transition-all transform hover:-translate-y-1 text-left">
-                            <svg className="w-8 h-8 mb-4 text-[var(--color-primary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-                            <span className="font-bold block">Add Money</span>
+                        <button onClick={() => navigate('/add-money')} className="group p-6 bg-gradient-to-br from-emerald-500 to-green-600 text-white rounded-2xl shadow-lg hover:shadow-2xl hover:shadow-emerald-500/30 transition-all duration-300 transform hover:-translate-y-2 text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                            </div>
+                            <span className="font-bold text-sm block">Add Money</span>
                         </button>
-                        <button onClick={() => navigate('/request-funds')} className="p-4 bg-white text-black border border-gray-100 rounded-2xl shadow-sm hover:shadow-md transition-all transform hover:-translate-y-1 text-left">
-                            <svg className="w-8 h-8 mb-4 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
-                            <span className="font-bold block">Request Funds</span>
+                        <button onClick={() => navigate('/request-funds')} className="group p-6 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-2xl shadow-lg hover:shadow-2xl hover:shadow-blue-500/30 transition-all duration-300 transform hover:-translate-y-2 text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                            </div>
+                            <span className="font-bold text-sm block">Request Funds</span>
                         </button>
-                        <button onClick={() => navigate('/link-card')} className="p-4 bg-white text-black border border-gray-100 rounded-2xl shadow-sm hover:shadow-md transition-all transform hover:-translate-y-1 text-left">
-                            <svg className="w-8 h-8 mb-4 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
-                            <span className="font-bold block">Link Cards</span>
+                        <button onClick={() => navigate('/link-card')} className="group p-6 bg-gradient-to-br from-purple-500 to-pink-600 text-white rounded-2xl shadow-lg hover:shadow-2xl hover:shadow-purple-500/30 transition-all duration-300 transform hover:-translate-y-2 text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
+                            </div>
+                            <span className="font-bold text-sm block">Link Cards</span>
                         </button>
-                        <button onClick={() => navigate('/invoices')} className="p-4 bg-white text-black border border-gray-100 rounded-2xl shadow-sm hover:shadow-md transition-all transform hover:-translate-y-1 text-left">
-                            <svg className="w-8 h-8 mb-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                            <span className="font-bold block">Invoices</span>
+                        <button onClick={() => navigate('/invoices')} className="group p-6 bg-gradient-to-br from-rose-500 to-red-600 text-white rounded-2xl shadow-lg hover:shadow-2xl hover:shadow-rose-500/30 transition-all duration-300 transform hover:-translate-y-2 text-center">
+                            <div className="w-16 h-16 mx-auto mb-4 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                                <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            </div>
+                            <span className="font-bold text-sm block">Invoices</span>
                         </button>
                     </div>
 
@@ -253,128 +263,147 @@ export const Dashboard: React.FC = () => {
                     {/* Wallets */}
                     <section className="mb-12">
                         <h2 className="text-xl font-bold text-gray-900 mb-6">Your Wallets</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {wallets.map((wallet) => {
-                                // Determine background class based on currency
-                                let bgClass = "bg-white border-gray-100"; // Default
-                                let textClass = "text-gray-900";
-                                let labelClass = "text-gray-500";
-                                let iconBg = "bg-gray-50 text-gray-700";
-                                let subText = "text-gray-900";
-                                let countryCode = 'US';
-
-                                if (wallet.currency === 'USD') {
-                                    bgClass = "bg-gradient-to-r from-yellow-500 to-orange-600 border-none text-white";
-                                    textClass = "text-white";
-                                    labelClass = "text-yellow-100";
-                                    iconBg = "bg-white/20 text-white";
-                                    subText = "text-white";
-                                    countryCode = 'US';
-                                } else if (wallet.currency === 'ZMW') {
-                                    bgClass = "bg-green-500 border-none text-white"; // Solid light green
-                                    textClass = "text-white";
-                                    labelClass = "text-green-100";
-                                    iconBg = "bg-white/20 text-white";
-                                    subText = "text-white";
-                                    countryCode = 'ZM';
-                                } else if (wallet.currency === 'NGN') {
-                                    bgClass = "bg-purple-400 border-none text-white"; // Light purple for NGN
-                                    textClass = "text-white";
-                                    labelClass = "text-purple-100";
-                                    iconBg = "bg-white/20 text-white";
-                                    subText = "text-white";
-                                    countryCode = 'NG';
-                                } else if (wallet.currency === 'EUR') {
-                                    bgClass = "bg-blue-600 border-none text-white";
-                                    textClass = "text-white";
-                                    labelClass = "text-blue-100";
-                                    iconBg = "bg-white/20 text-white";
-                                    subText = "text-white";
-                                    countryCode = 'EU';
-                                } else if (wallet.currency === 'GBP') {
-                                    bgClass = "bg-purple-600 border-none text-white";
-                                    textClass = "text-white";
-                                    labelClass = "text-purple-100";
-                                    iconBg = "bg-white/20 text-white";
-                                    subText = "text-white";
-                                    countryCode = 'GB';
-                                } else if (wallet.currency === 'KES') {
-                                    countryCode = 'KE';
-                                } else if (wallet.currency === 'GHS') {
-                                    countryCode = 'GH';
-                                }
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            {(() => {
+                                const supportedCurrencies = ['USD', 'ZMW', 'GBP', 'EUR'];
+                                const existingWallets = wallets.filter(wallet => supportedCurrencies.includes(wallet.currency));
+                                const hasAllWallets = supportedCurrencies.every(currency => 
+                                    existingWallets.some(wallet => wallet.currency === currency)
+                                );
 
                                 return (
-                                    <div key={wallet.id} className={`${bgClass} rounded-[24px] p-6 shadow-sm border relative overflow-hidden group hover:shadow-lg transition-all`}>
-                                        <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-                                            <span className={`text-6xl font-bold ${textClass}`}>{wallet.currency}</span>
-                                        </div>
-                                        <div className="relative z-10">
-                                            <div className="flex items-center justify-between mb-4">
-                                                <div className={`w-10 h-10 rounded-full ${iconBg} flex items-center justify-center font-bold overflow-hidden shadow-sm`}>
-                                                    <ReactCountryFlag countryCode={countryCode} svg style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                    <>
+                                        {existingWallets.map((wallet) => {
+                                            // Determine background class based on currency
+                                            let bgClass = "bg-white border-gray-100";
+                                            let textClass = "text-gray-900";
+                                            let labelClass = "text-gray-500";
+                                            let iconBg = "bg-gray-50 text-gray-700";
+                                            let subText = "text-gray-900";
+                                            let countryCode = 'US';
+
+                                            if (wallet.currency === 'USD') {
+                                                bgClass = "bg-gradient-to-br from-yellow-400 to-orange-500 border-none text-white shadow-lg shadow-orange-500/20";
+                                                textClass = "text-white";
+                                                labelClass = "text-yellow-100";
+                                                iconBg = "bg-white/20 text-white";
+                                                subText = "text-white";
+                                                countryCode = 'US';
+                                            } else if (wallet.currency === 'ZMW') {
+                                                bgClass = "bg-gradient-to-br from-emerald-400 to-green-600 border-none text-white shadow-lg shadow-emerald-500/20";
+                                                textClass = "text-white";
+                                                labelClass = "text-emerald-100";
+                                                iconBg = "bg-white/20 text-white";
+                                                subText = "text-white";
+                                                countryCode = 'ZM';
+                                            } else if (wallet.currency === 'EUR') {
+                                                bgClass = "bg-gradient-to-br from-blue-400 to-blue-600 border-none text-white shadow-lg shadow-blue-500/20";
+                                                textClass = "text-white";
+                                                labelClass = "text-blue-100";
+                                                iconBg = "bg-white/20 text-white";
+                                                subText = "text-white";
+                                                countryCode = 'EU';
+                                            } else if (wallet.currency === 'GBP') {
+                                                bgClass = "bg-gradient-to-br from-purple-400 to-purple-600 border-none text-white shadow-lg shadow-purple-500/20";
+                                                textClass = "text-white";
+                                                labelClass = "text-purple-100";
+                                                iconBg = "bg-white/20 text-white";
+                                                subText = "text-white";
+                                                countryCode = 'GB';
+                                            }
+
+                                            return (
+                                                <div key={wallet.id} className={`${bgClass} rounded-2xl p-4 shadow-md relative overflow-hidden group hover:shadow-xl hover:-translate-y-1 transition-all duration-300`}>
+                                                    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+                                                        <span className={`text-4xl font-bold ${textClass}`}>{wallet.currency}</span>
+                                                    </div>
+                                                    <div className="relative z-10">
+                                                        <div className="flex items-center justify-between mb-3">
+                                                            <div className={`w-8 h-8 rounded-full ${iconBg} flex items-center justify-center font-bold overflow-hidden shadow-sm`}>
+                                                                <ReactCountryFlag countryCode={countryCode} svg style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                            </div>
+                                                            <div className="px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-bold">Active</div>
+                                                        </div>
+                                                        <div className="mb-4">
+                                                            <p className={`text-xs ${labelClass} font-medium`}>Available Balance</p>
+                                                            <p className={`text-2xl font-extrabold ${subText} mt-1`}>{parseFloat(wallet.balance).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-sm font-normal opacity-80">{wallet.currency}</span></p>
+                                                        </div>
+
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <button onClick={() => navigate('/add-money')} className="flex-1 py-1.5 px-3 rounded-lg text-xs font-bold bg-white/20 backdrop-blur-sm text-white hover:bg-white/30 transition-colors">
+                                                                Add Funds
+                                                            </button>
+                                                            <button onClick={() => navigate('/send')} className="flex-1 py-1.5 px-3 rounded-lg text-xs font-bold bg-white/20 backdrop-blur-sm text-white hover:bg-white/30 transition-colors">
+                                                                Transfer
+                                                            </button>
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                <div className="px-3 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-bold">Active</div>
-                                            </div>
-                                            <div className="mb-6">
-                                                <p className={`text-sm ${labelClass} font-medium`}>Available Balance</p>
-                                                <p className={`text-3xl font-extrabold ${subText} mt-1`}>{parseFloat(wallet.balance).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-lg font-normal opacity-80">{wallet.currency}</span></p>
-                                            </div>
+                                            );
+                                        })}
 
-                                            <div className="flex flex-wrap gap-2">
-                                                <button onClick={() => navigate('/add-money')} className={`flex-1 min-w-[100px] py-2 px-4 rounded-xl text-sm font-bold transition-transform active:scale-95 ${wallet.currency === 'USD' || wallet.currency === 'ZMW' || wallet.currency === 'NGN' || wallet.currency === 'EUR' || wallet.currency === 'GBP' ? 'bg-white text-black hover:bg-gray-50' : 'bg-black text-white hover:bg-gray-800'}`}>
-                                                    Add Funds
-                                                </button>
-                                                <button onClick={() => navigate('/send')} className={`flex-1 min-w-[100px] py-2 px-4 rounded-xl text-sm font-bold transition-transform active:scale-95 ${wallet.currency === 'USD' || wallet.currency === 'ZMW' || wallet.currency === 'NGN' || wallet.currency === 'EUR' || wallet.currency === 'GBP' ? 'bg-black/20 text-white hover:bg-black/30' : 'bg-gray-100 text-black hover:bg-gray-200'}`}>
-                                                    Transfer
-                                                </button>
+                                        {/* Add Wallet Card - Only show if not all wallets exist */}
+                                        {!hasAllWallets && (
+                                            <div className="bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200 p-4 flex flex-col items-center justify-center min-h-[200px] hover:border-gray-300 hover:bg-gray-100 transition-all shadow-sm">
+                                                {isAddingWallet ? (
+                                                    <div className="w-full max-w-[180px] animate-fade-in">
+                                                        <label className="text-xs font-bold text-gray-700 mb-2 block">Select Currency</label>
+                                                        <select
+                                                            className="block w-full rounded-lg border-gray-200 py-2 px-3 mb-3 text-xs bg-white focus:ring-2 focus:ring-black focus:border-transparent outline-none shadow-sm"
+                                                            value={newCurrency}
+                                                            onChange={(e) => setNewCurrency(e.target.value)}
+                                                        >
+                                                            {supportedCurrencies
+                                                                .filter(currency => !existingWallets.some(wallet => wallet.currency === currency))
+                                                                .map(currency => (
+                                                                    <option key={currency} value={currency}>
+                                                                        {currency === 'USD' && 'USD (US Dollar)'}
+                                                                        {currency === 'ZMW' && 'ZMW (Zambian Kwacha)'}
+                                                                        {currency === 'EUR' && 'EUR (Euro)'}
+                                                                        {currency === 'GBP' && 'GBP (British Pound)'}
+                                                                    </option>
+                                                                ))}
+                                                        </select>
+                                                        <div className="flex gap-2">
+                                                            <Button className="flex-1 bg-black text-white" size="sm" onClick={async () => {
+                                                                try {
+                                                                    await axios.post('http://localhost:3005/wallets', { currency: newCurrency }, {
+                                                                        headers: { Authorization: `Bearer ${token}` }
+                                                                    });
+                                                                    window.location.reload();
+                                                                } catch (e) { alert('Failed/Exists'); }
+                                                            }}>Add</Button>
+                                                            <Button className="flex-1" size="sm" variant="ghost" onClick={() => setIsAddingWallet(false)}>Cancel</Button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <button onClick={() => setIsAddingWallet(true)} className="flex flex-col items-center text-gray-400 hover:text-gray-600 transition-colors">
+                                                        <div className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center mb-3 text-xl">+</div>
+                                                        <span className="text-sm font-bold">Add Wallet</span>
+                                                    </button>
+                                                )}
                                             </div>
-                                        </div>
-                                    </div>
+                                        )}
+                                    </>
                                 );
-                            })}
-
-                            {/* Add Wallet Card */}
-                            <div className="bg-gray-50 rounded-[24px] border-2 border-dashed border-gray-200 p-6 flex flex-col items-center justify-center min-h-[240px] hover:border-gray-300 transition-colors">
-                                {isAddingWallet ? (
-                                    <div className="w-full max-w-[200px] animate-fade-in">
-                                        <label className="text-sm font-bold text-gray-700 mb-2 block">Select Currency</label>
-                                        <select
-                                            className="block w-full rounded-xl border-gray-200 py-3 px-4 mb-4 text-sm bg-white focus:ring-2 focus:ring-black focus:border-transparent outline-none shadow-sm"
-                                            value={newCurrency}
-                                            onChange={(e) => setNewCurrency(e.target.value)}
-                                        >
-                                            <option value="USD">USD (US Dollar)</option>
-                                            <option value="ZMW">ZMW (Zambian Kwacha)</option>
-                                            <option value="GBP">GBP (British Pound)</option>
-                                            <option value="KES">KES (Kenyan Shilling)</option>
-                                            <option value="GHS">GHS (Ghanaian Cedi)</option>
-                                        </select>
-                                        <div className="flex gap-2">
-                                            <Button className="flex-1 bg-black text-white" size="sm" onClick={async () => {
-                                                try {
-                                                    await axios.post('http://localhost:3005/wallets', { currency: newCurrency }, {
-                                                        headers: { Authorization: `Bearer ${token}` }
-                                                    });
-                                                    window.location.reload();
-                                                } catch (e) { alert('Failed/Exists'); }
-                                            }}>Add</Button>
-                                            <Button className="flex-1" size="sm" variant="ghost" onClick={() => setIsAddingWallet(false)}>Cancel</Button>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <button onClick={() => setIsAddingWallet(true)} className="flex flex-col items-center text-gray-400 hover:text-gray-600 transition-colors">
-                                        <div className="w-12 h-12 rounded-full bg-white shadow-sm flex items-center justify-center mb-4 text-2xl">+</div>
-                                        <span className="font-bold">Add Wallet</span>
-                                    </button>
-                                )}
-                            </div>
+                            })()}
                         </div>
                     </section>
 
                     {/* Recent Transactions */}
                     <section className="mb-8">
-                        <h2 className="text-xl font-bold text-gray-900 mb-6">Recent Activity</h2>
+                        <div className="flex items-center justify-between mb-6">
+                            <h2 className="text-xl font-bold text-gray-900">Recent Activity</h2>
+                            <button 
+                                onClick={() => navigate('/transactions')}
+                                className="flex items-center gap-2 text-sm font-bold text-emerald-600 hover:text-emerald-700 transition-colors group"
+                            >
+                                View All
+                                <svg className="w-4 h-4 transform group-hover:translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                            </button>
+                        </div>
                         <div className="bg-white rounded-[24px] shadow-sm border border-gray-100 overflow-hidden">
                             {transactions.length === 0 ? (
                                 <div className="p-12 text-center text-gray-400 flex flex-col items-center">

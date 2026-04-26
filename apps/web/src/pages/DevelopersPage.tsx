@@ -1,1071 +1,1277 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { Navbar } from '../components/layout/Navbar';
 import { Footer } from '../components/layout/Footer';
-import { Button } from '../components/ui/Button';
-import { AskAIAssistant } from '../components/AskAIAssistant';
 
-const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language: _language = 'bash' }) => {
-    const [copied, setCopied] = useState(false);
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-    const handleCopy = () => {
-        navigator.clipboard.writeText(code);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
+type SidebarSection =
+  | 'quickstart' | 'authentication' | 'create-session'
+  | 'retrieve-session' | 'list-sessions' | 'expire-session'
+  | 'subscription-mode' | 'marketplace-split'
+  | 'products' | 'prices' | 'webhook-confirm' | 'errors';
 
-    return (
-        <div className="bg-[#0D0D0D] rounded-2xl p-6 overflow-x-auto my-6 border border-white/5 group relative shadow-2xl">
-            <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleCopy}
-                    className={`text-xs border-white/10 ${copied ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
-                >
-                    {copied ? 'Copied!' : 'Copy'}
-                </Button>
-            </div>
-            <div className="flex gap-1.5 mb-4">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-500/50"></div>
-                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/50"></div>
-                <div className="w-2.5 h-2.5 rounded-full bg-green-500/50"></div>
-            </div>
-            <pre className="font-mono text-sm text-gray-400 leading-relaxed">
-                <code>{code}</code>
-            </pre>
+type Lang = 'curl' | 'node' | 'python' | 'php';
+
+const LANG_LABELS: Record<Lang, string> = { curl: 'cURL', node: 'Node.js', python: 'Python', php: 'PHP' };
+
+// ─── Code Block ──────────────────────────────────────────────────────────────
+
+const CodeBlock: React.FC<{ code: string; lang?: string; id?: string }> = ({ code, lang, id }) => {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  return (
+    <div className="rounded-2xl overflow-hidden border border-gray-800 shadow-lg">
+      <div className="flex items-center justify-between px-5 py-3 bg-gray-900 border-b border-gray-800">
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded-full bg-red-500/50" />
+          <div className="w-3 h-3 rounded-full bg-yellow-500/50" />
+          <div className="w-3 h-3 rounded-full bg-green-500/50" />
         </div>
-    );
+        <span className="text-[10px] font-bold text-gray-600 uppercase tracking-wider">{lang ?? 'code'}</span>
+        <button onClick={copy} className="text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gray-800 hover:bg-gray-700">
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="p-5 bg-black text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code>{code}</code></pre>
+    </div>
+  );
 };
 
-const Endpoint: React.FC<{ method: string; path: string; description: string }> = ({ method, path, description }) => (
-    <div className="group border border-gray-100 rounded-[32px] p-8 mb-8 hover:border-orange-500/30 hover:shadow-2xl hover:shadow-orange-500/5 transition-all duration-500 bg-white">
-        <div className="flex flex-col md:flex-row md:items-center gap-4 mb-4">
-            <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-widest ${method === 'GET' ? 'bg-blue-50 text-blue-600' :
-                method === 'POST' ? 'bg-orange-50 text-orange-600' :
-                    method === 'DELETE' ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-gray-600'
-                }`}>
-                {method}
-            </span>
-            <code className="font-mono text-gray-900 font-black text-lg">{path}</code>
+// ─── Multi-lang block ─────────────────────────────────────────────────────────
+
+const MultiLang: React.FC<{
+  id: string;
+  samples: Partial<Record<Lang, string>>;
+  response: string;
+  status?: number;
+}> = ({ id, samples, response, status = 200 }) => {
+  const langs = Object.keys(samples) as Lang[];
+  const [active, setActive] = useState<Lang>(langs[0]);
+  const [copied, setCopied] = useState<'req' | 'res' | null>(null);
+  const copy = (text: string, side: 'req' | 'res') => {
+    navigator.clipboard.writeText(text);
+    setCopied(side);
+    setTimeout(() => setCopied(null), 2000);
+  };
+  const code = samples[active] ?? '';
+
+  return (
+    <div className="rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
+      <div className="flex items-center justify-between bg-gray-950 border-b border-gray-800 px-2">
+        <div className="flex">
+          {langs.map(l => (
+            <button key={l} onClick={() => setActive(l)}
+              className={`px-5 py-3.5 text-xs font-bold border-b-2 transition-all ${active === l ? 'text-orange-400 border-orange-500 bg-orange-500/5' : 'text-gray-500 border-transparent hover:text-gray-300'}`}>
+              {LANG_LABELS[l]}
+            </button>
+          ))}
         </div>
-        <p className="text-gray-500 text-lg leading-relaxed">{description}</p>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-gray-800">
+        <div className="bg-black p-6">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Request</span>
+            <button onClick={() => copy(code, 'req')} className="text-[10px] font-bold text-gray-600 hover:text-orange-400 transition-colors">{copied === 'req' ? '✓ Copied' : 'Copy'}</button>
+          </div>
+          <pre className="font-mono text-[13px] text-gray-300 overflow-x-auto leading-relaxed"><code>{code}</code></pre>
+        </div>
+        <div className="bg-gray-950/60 p-6">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Response</span>
+            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${status < 400 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>{status} {status < 400 ? 'OK' : 'Error'}</span>
+          </div>
+          <pre className="font-mono text-[13px] text-gray-400 overflow-x-auto leading-relaxed"><code>{response}</code></pre>
+        </div>
+      </div>
     </div>
+  );
+};
+
+// ─── Parameter Table ──────────────────────────────────────────────────────────
+
+const ParamTable: React.FC<{ params: { name: string; type: string; required?: boolean; desc: string }[] }> = ({ params }) => (
+  <div className="rounded-2xl border border-gray-800 overflow-hidden">
+    <div className="px-5 py-3 bg-gray-950 border-b border-gray-800 grid grid-cols-[180px_100px_1fr] gap-4">
+      {['Parameter', 'Type', 'Description'].map(h => (
+        <span key={h} className="text-[10px] font-black text-gray-600 uppercase tracking-widest">{h}</span>
+      ))}
+    </div>
+    {params.map((p, i) => (
+      <div key={p.name} className={`px-5 py-4 grid grid-cols-[180px_100px_1fr] gap-4 items-start ${i % 2 === 0 ? 'bg-black/30' : 'bg-transparent'} border-b border-gray-800/50 last:border-0`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <code className="text-orange-400 text-xs font-bold">{p.name}</code>
+          {p.required && <span className="text-[9px] font-black text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded uppercase">req</span>}
+        </div>
+        <span className="text-[10px] font-mono text-gray-500 bg-gray-800/60 px-2 py-1 rounded self-start">{p.type}</span>
+        <span className="text-xs text-gray-400 leading-relaxed">{p.desc}</span>
+      </div>
+    ))}
+  </div>
 );
 
-const ParameterTable: React.FC<{ params: { name: string; type: string; desc: string; required?: boolean }[] }> = ({ params }) => (
-    <div className="bg-white rounded-[32px] border border-gray-100 overflow-hidden shadow-sm my-8">
-        <table className="w-full text-left">
-            <thead className="bg-gray-50 border-b border-gray-100">
-                <tr>
-                    <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400 font-mono">Parameter</th>
-                    <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400 font-mono">Type</th>
-                    <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400 font-mono">Description</th>
-                </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-                {params.map((p, i) => (
-                    <tr key={i} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="px-8 py-6">
-                            <code className="text-orange-600 font-bold">{p.name}</code>
-                            {p.required && <span className="ml-2 text-[10px] font-black text-red-500 bg-red-50 px-2 py-0.5 rounded-full uppercase tracking-tighter">Required</span>}
-                        </td>
-                        <td className="px-8 py-6"><span className="text-xs font-mono text-gray-400 px-2 py-1 bg-gray-50 rounded-lg">{p.type}</span></td>
-                        <td className="px-8 py-6 text-gray-500 text-sm leading-relaxed">{p.desc}</td>
-                    </tr>
+// ─── Section Header ───────────────────────────────────────────────────────────
+
+const SH: React.FC<{ tag?: string; title: string; subtitle?: string; method?: string; path?: string }> = ({ tag, title, subtitle, method, path }) => {
+  const methodColor: Record<string, string> = {
+    POST: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
+    GET:  'bg-blue-500/15 text-blue-400 border border-blue-500/30',
+  };
+  return (
+    <div className="mb-8 pb-6 border-b border-gray-800">
+      {tag && <span className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-3 block">{tag}</span>}
+      <h2 className="text-2xl font-black text-white mb-2">{title}</h2>
+      {(method || path) && (
+        <div className="flex items-center gap-3 mt-3">
+          {method && <span className={`text-[11px] font-black px-2.5 py-1 rounded-lg ${methodColor[method] ?? 'bg-gray-800 text-gray-400'}`}>{method}</span>}
+          {path && <code className="text-sm font-mono text-gray-300 bg-black/50 px-3 py-1 rounded-lg border border-gray-800">{path}</code>}
+        </div>
+      )}
+      {subtitle && <p className="text-gray-500 mt-3 leading-relaxed">{subtitle}</p>}
+    </div>
+  );
+};
+
+// ─── Info callout ─────────────────────────────────────────────────────────────
+
+const Callout: React.FC<{ type?: 'info' | 'warn' | 'tip'; children: React.ReactNode }> = ({ type = 'info', children }) => {
+  const styles = {
+    info: 'border-blue-500/20 bg-blue-500/5 text-blue-300',
+    warn: 'border-amber-500/20 bg-amber-500/5 text-amber-300',
+    tip:  'border-emerald-500/20 bg-emerald-500/5 text-emerald-300',
+  };
+  const icons = { info: 'ℹ', warn: '⚠', tip: '✦' };
+  return (
+    <div className={`flex items-start gap-3 p-4 rounded-xl border text-sm leading-relaxed ${styles[type]}`}>
+      <span className="text-lg mt-0.5">{icons[type]}</span>
+      <div>{children}</div>
+    </div>
+  );
+};
+
+// ─── Sidebar items ────────────────────────────────────────────────────────────
+
+const SIDEBAR: { label: string; id: SidebarSection; method?: string }[] = [
+  { label: 'Quick Start',           id: 'quickstart' },
+  { label: 'Authentication',        id: 'authentication' },
+  { label: 'Create Session',        id: 'create-session',     method: 'POST' },
+  { label: 'Retrieve Session',      id: 'retrieve-session',   method: 'GET' },
+  { label: 'List Sessions',         id: 'list-sessions',      method: 'GET' },
+  { label: 'Expire Session',        id: 'expire-session',     method: 'POST' },
+  { label: 'Subscription Mode',     id: 'subscription-mode',  method: 'POST' },
+  { label: 'Marketplace Split',     id: 'marketplace-split',  method: 'POST' },
+  { label: 'Products',              id: 'products',           method: 'POST' },
+  { label: 'Prices',                id: 'prices',             method: 'POST' },
+  { label: 'Webhook Confirmation',  id: 'webhook-confirm' },
+  { label: 'Error Codes',           id: 'errors' },
+];
+
+// ─── Playground ───────────────────────────────────────────────────────────────
+
+const Playground: React.FC = () => {
+  const [apiKey, setApiKey]       = useState('');
+  const [amount, setAmount]       = useState('5000');
+  const [currency, setCurrency]   = useState('ZMW');
+  const [email, setEmail]         = useState('customer@example.com');
+  const [mode, setMode]           = useState<'payment' | 'subscription'>('payment');
+  const [loading, setLoading]     = useState(false);
+  const [request, setRequest]     = useState<object | null>(null);
+  const [response, setResponse]   = useState<object | null>(null);
+  const [status, setStatus]       = useState<number | null>(null);
+  const [sessionUrl, setSessionUrl] = useState('');
+
+  const TEST_KEY = 'sk_test_6e4a1c2a940dc1de7629f61f2c28062ec1f2dcd419c83f17';
+  const activeKey = apiKey || TEST_KEY;
+  const isLive = activeKey.startsWith('sk_live') || activeKey.startsWith('flp_live');
+
+  const run = async () => {
+    setLoading(true); setResponse(null); setRequest(null); setStatus(null); setSessionUrl('');
+    const body = {
+      amount: parseInt(amount),
+      currency: currency.toLowerCase(),
+      success_url: 'http://localhost:5173/developers?checkout=success',
+      cancel_url:  'http://localhost:5173/developers?checkout=cancel',
+      payment_method_types: ['card', 'mobile_money'],
+      customer_email: email,
+      mode,
+    };
+    setRequest({ method: 'POST', url: '/v1/checkout/sessions', headers: { Authorization: `Bearer ${activeKey.slice(0, 16)}...` }, body });
+    try {
+      const res = await axios.post('http://localhost:3005/v1/checkout/sessions', body, {
+        headers: { Authorization: `Bearer ${activeKey}` },
+      });
+      setStatus(res.status);
+      setResponse(res.data);
+      if (res.data?.url) setSessionUrl(res.data.url);
+    } catch (err: any) {
+      setStatus(err.response?.status ?? 500);
+      setResponse(err.response?.data ?? { error: 'Network error — is the server running on port 3005?' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-3xl border border-orange-500/20 bg-gradient-to-b from-orange-500/5 to-transparent overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-8 py-5 border-b border-orange-500/15">
+        <div>
+          <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-1">Interactive Playground</p>
+          <p className="text-white font-black text-lg">POST /v1/checkout/sessions</p>
+        </div>
+        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold ${isLive ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-orange-500/30 bg-orange-500/10 text-orange-400'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-orange-400 animate-pulse'}`} />
+          {isLive ? 'Live Mode' : 'Test Mode'}
+        </div>
+      </div>
+
+      <div className="p-8 grid lg:grid-cols-2 gap-8">
+        {/* Controls */}
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 block">API Secret Key</label>
+            <div className="flex gap-2">
+              <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                placeholder="sk_test_flp_..."
+                className="flex-1 px-4 py-3 rounded-xl bg-black border border-gray-800 text-white text-sm font-mono placeholder-gray-700 focus:outline-none focus:border-orange-500/60 transition-colors" />
+              <button onClick={() => setApiKey(TEST_KEY)}
+                className="px-4 py-3 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-400 text-xs font-black hover:bg-orange-500/20 transition-colors">
+                Fill Test Key
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 block">Mode</label>
+              <div className="flex gap-1 p-1 bg-black border border-gray-800 rounded-xl">
+                {(['payment', 'subscription'] as const).map(m => (
+                  <button key={m} onClick={() => setMode(m)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-black transition-all ${mode === m ? 'bg-orange-500 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+                    {m}
+                  </button>
                 ))}
-            </tbody>
-        </table>
-    </div>
-);
-
-const MultiLangRequestResponse: React.FC<{
-    requestSamples: { id: string; name: string; code: string }[];
-    responseCode: string;
-}> = ({ requestSamples, responseCode }) => {
-    const [activeLang, setActiveLang] = useState(requestSamples[0].id);
-    const [copied, setCopied] = useState(false);
-
-    const activeCode = requestSamples.find(r => r.id === activeLang)?.code || '';
-
-    const handleCopy = () => {
-        navigator.clipboard.writeText(activeCode);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
-
-    return (
-        <div className="bg-[#0a0a0b] rounded-[32px] border border-white/10 shadow-2xl overflow-hidden mt-8">
-            {/* Header Tabs */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between bg-white/[0.02] border-b border-white/5">
-                <div className="flex overflow-x-auto scrollbar-hide">
-                    {requestSamples.map(sample => (
-                        <button
-                            key={sample.id}
-                            onClick={() => setActiveLang(sample.id)}
-                            className={`px-6 py-4 text-sm font-bold tracking-wide transition-colors whitespace-nowrap border-b-2 ${activeLang === sample.id
-                                ? 'text-orange-400 border-orange-400 bg-orange-400/5'
-                                : 'text-gray-500 border-transparent hover:text-gray-300 hover:bg-white/[0.02]'
-                                }`}
-                        >
-                            {sample.name}
-                        </button>
-                    ))}
-                </div>
-                <div className="px-4 py-2 hidden md:block">
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={handleCopy}
-                        className={`text-xs border-white/10 ${copied ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
-                    >
-                        {copied ? 'Copied!' : 'Copy'}
-                    </Button>
-                </div>
+              </div>
             </div>
-
-            {/* Content Area */}
-            <div className="grid grid-cols-1 xl:grid-cols-2 divide-y xl:divide-y-0 xl:divide-x divide-white/5">
-                {/* Request Side */}
-                <div className="p-6">
-                    <div className="mb-4">
-                        <span className="text-[10px] font-black tracking-widest text-gray-500 uppercase">Request</span>
-                    </div>
-                    <pre className="font-mono text-[13px] text-gray-300 overflow-x-auto leading-relaxed scrollbar-hide">
-                        <code>{activeCode}</code>
-                    </pre>
-                </div>
-
-                {/* Response Side */}
-                <div className="p-6 bg-black/40">
-                    <div className="mb-4 flex justify-between items-center">
-                        <span className="text-[10px] font-black tracking-widest text-gray-500 uppercase">Response</span>
-                        <span className="text-[10px] font-black tracking-widest text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">200 OK</span>
-                    </div>
-                    <pre className="font-mono text-[13px] text-gray-400 overflow-x-auto leading-relaxed scrollbar-hide">
-                        <code>{responseCode}</code>
-                    </pre>
-                </div>
+            <div>
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 block">Currency</label>
+              <select value={currency} onChange={e => setCurrency(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-black border border-gray-800 text-white text-sm font-bold focus:outline-none focus:border-orange-500/60 appearance-none">
+                <option value="ZMW">ZMW — Zambian Kwacha</option>
+                <option value="USD">USD — US Dollar</option>
+                <option value="KES">KES — Kenyan Shilling</option>
+                <option value="NGN">NGN — Nigerian Naira</option>
+                <option value="GHS">GHS — Ghanaian Cedi</option>
+              </select>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 block">Amount (minor units)</label>
+              <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-black border border-gray-800 text-white text-sm font-mono focus:outline-none focus:border-orange-500/60 transition-colors" />
+              <p className="text-[10px] text-gray-700 mt-1 font-mono">{currency} {(parseInt(amount || '0') / 100).toFixed(2)}</p>
+            </div>
+            <div>
+              <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 block">Customer Email</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-black border border-gray-800 text-white text-sm focus:outline-none focus:border-orange-500/60 transition-colors" />
+            </div>
+          </div>
+
+          <button onClick={run} disabled={loading}
+            className="w-full py-4 rounded-2xl bg-orange-500 hover:bg-orange-600 text-white font-black text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-3 shadow-lg shadow-orange-500/20">
+            {loading ? (
+              <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Sending Request...</>
+            ) : (
+              <>Execute → POST /v1/checkout/sessions</>
+            )}
+          </button>
+
+          {/* Generated request preview */}
+          <div className="rounded-xl border border-gray-800 bg-black/50 p-4">
+            <p className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-3">Generated Request Body</p>
+            <pre className="text-[11px] font-mono text-gray-500 leading-relaxed overflow-x-auto">{JSON.stringify({
+              mode, amount: parseInt(amount), currency: currency.toLowerCase(),
+              customer_email: email,
+              success_url: 'https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}',
+              cancel_url: 'https://yourapp.com/cancel',
+            }, null, 2)}</pre>
+          </div>
         </div>
-    );
+
+        {/* Response */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Server Response</p>
+            {status && (
+              <span className={`text-[10px] font-black px-3 py-1 rounded-full border ${status < 400 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
+                {status} {status < 400 ? 'OK' : 'Error'}
+              </span>
+            )}
+          </div>
+
+          <div className={`rounded-2xl border p-5 min-h-[320px] transition-colors ${status && status >= 400 ? 'border-red-500/20 bg-red-500/5' : 'border-gray-800 bg-black/60'}`}>
+            <pre className="font-mono text-[12px] leading-relaxed overflow-y-auto text-gray-300">
+              {response
+                ? JSON.stringify(response, null, 2)
+                : request
+                  ? '// Waiting for response...'
+                  : `// Fill in the fields and click Execute\n// to make a live API call against\n// http://localhost:3005\n\n// Responses appear here in real time.`}
+            </pre>
+          </div>
+
+          {/* Open checkout URL */}
+          {sessionUrl && (
+            <a href={sessionUrl} target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-between p-5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-600 hover:to-teal-700 transition-all group shadow-xl shadow-emerald-500/20">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-100 mb-1">Session created ✓</p>
+                <p className="font-black text-lg">Open Checkout Page →</p>
+                <p className="text-emerald-200 text-xs font-mono mt-1 truncate max-w-[280px]">{sessionUrl}</p>
+              </div>
+              <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-2xl group-hover:scale-110 transition-transform">↗</div>
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 };
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export const DevelopersPage: React.FC = () => {
-    const [activeTab, setActiveTab] = useState('quickstart');
+  const [activeSection, setActiveSection] = useState<SidebarSection>('quickstart');
+  const contentRef = useRef<HTMLDivElement>(null);
 
-    // Playground State
-    const [playgroundAmount, setPlaygroundAmount] = useState('2000');
-    const [playgroundCurrency, setPlaygroundCurrency] = useState('ZMW');
-    const [playgroundApiKey, setPlaygroundApiKey] = useState('');
-    const [playgroundResponse, setPlaygroundResponse] = useState<any>(null);
-    const [playgroundRequest, setPlaygroundRequest] = useState<any>(null);
-    const [playgroundStatus, setPlaygroundStatus] = useState<number | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [playgroundMode, setPlaygroundMode] = useState<'checkout' | 'connect' | 'marketplace'>('checkout');
-    const [connectEmail, setConnectEmail] = useState('vendor@example.com');
-    const [connectBusinessName, setConnectBusinessName] = useState('Green Solutions Ltd');
-    const [escrowSellerEmail, setEscrowSellerEmail] = useState('seller@marketplace.com');
-    const [escrowDescription, setEscrowDescription] = useState('Vintage Professional Camera');
+  const nav = (id: SidebarSection) => {
+    setActiveSection(id);
+    contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
-    // Payment Link Playground State
-    const [paymentLinkUrlInput, setPaymentLinkUrlInput] = useState('http://localhost:5173/pay/demo-link');
-    const [activeDemoUrl, setActiveDemoUrl] = useState('');
+  const methodColor: Record<string, string> = {
+    POST: 'bg-emerald-500/15 text-emerald-400',
+    GET:  'bg-blue-500/15 text-blue-400',
+  };
 
-    const handlePlaygroundCall = async () => {
-        setIsLoading(true);
-        setPlaygroundResponse(null);
-        setPlaygroundRequest(null);
-        setPlaygroundStatus(null);
+  return (
+    <div className="min-h-screen bg-[#080808] text-white font-sans">
+      <Navbar />
 
-        const demoKey = 'sk_test_6e4a1c2a940dc1de7629f61f2c28062ec1f2dcd419c83f17';
-        const authKey = playgroundApiKey || demoKey;
+      {/* Hero */}
+      <section className="relative pt-28 pb-20 border-b border-gray-800/60 overflow-hidden">
+        <div className="absolute inset-0 pointer-events-none">
+          <div className="absolute -top-20 left-1/3 w-[600px] h-[600px] bg-orange-600/6 rounded-full blur-[100px]" />
+          <div className="absolute inset-0 opacity-[0.025]" style={{ backgroundImage: 'linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px)', backgroundSize: '50px 50px' }} />
+        </div>
+        <div className="relative mx-auto max-w-7xl px-6 lg:px-10">
+          <div className="max-w-3xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 mb-6">
+              <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+              <span className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Checkout API — v1</span>
+            </div>
+            <h1 className="text-5xl lg:text-6xl font-black tracking-tight leading-tight mb-5">
+              Checkout Sessions<br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-yellow-400">API Reference</span>
+            </h1>
+            <p className="text-gray-400 text-lg leading-relaxed mb-8 max-w-2xl">
+              Complete reference for FlapaPay's Checkout Sessions API — create hosted payment pages,
+              subscriptions, and marketplace splits with full code examples in cURL, Node.js, Python, and PHP.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Link to="/documentation" className="px-5 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-gray-300 text-sm font-bold hover:border-orange-500/50 hover:text-white transition-all">
+                → Full Documentation
+              </Link>
+              <a href="#playground" onClick={() => nav('create-session')}
+                className="px-5 py-2.5 rounded-xl bg-orange-500 text-white text-sm font-bold hover:bg-orange-600 transition-all shadow-lg shadow-orange-500/20">
+                Try Playground
+              </a>
+              <a href="http://localhost:3005/v1/checkout/sessions" target="_blank" rel="noopener noreferrer"
+                className="px-5 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-gray-300 text-sm font-bold hover:border-orange-500/50 hover:text-white transition-all">
+                Base URL ↗
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
 
-        let url = '';
-        let body = {};
-        const method = 'POST';
+      {/* Body */}
+      <div className="mx-auto max-w-[1400px] flex">
 
-        if (playgroundMode === 'checkout') {
-            url = 'http://localhost:3005/v1/checkout/sessions';
-            body = {
-                amount: parseInt(playgroundAmount),
-                currency: playgroundCurrency.toLowerCase(),
-                success_url: 'http://localhost:5173/merchant/dashboard?success=true',
-                cancel_url: 'http://localhost:5173/developers?tab=checkout&cancel=true',
-                payment_method_types: ['card', 'mobile_money']
-            };
-        } else if (playgroundMode === 'connect') {
-            url = 'http://localhost:3005/v1/connect/accounts';
-            body = {
-                type: 'custom',
-                country: 'ZM',
-                email: connectEmail,
-                business_name: connectBusinessName,
-                capabilities: {
-                    card_payments: { requested: true },
-                    transfers: { requested: true }
-                }
-            };
-        } else {
-            url = 'http://localhost:3005/api/v1/escrows';
-            body = {
-                amount: parseInt(playgroundAmount),
-                currency: playgroundCurrency.toLowerCase(),
-                description: escrowDescription,
-                seller_email: escrowSellerEmail,
-                metadata: { marketplace: 'Developer Playground v1' }
-            };
-        }
+        {/* Sidebar */}
+        <aside className="hidden xl:block w-64 shrink-0">
+          <div className="sticky top-20 h-[calc(100vh-80px)] overflow-y-auto py-8 px-4 border-r border-gray-800/60">
+            <p className="text-[9px] font-black text-gray-700 uppercase tracking-[0.2em] mb-5 px-2">Checkout Sessions</p>
+            <nav className="space-y-0.5">
+              {SIDEBAR.map(item => (
+                <button key={item.id} onClick={() => nav(item.id)}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-sm font-bold transition-all group ${activeSection === item.id ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20' : 'text-gray-500 hover:text-gray-200 hover:bg-gray-900'}`}>
+                  <span>{item.label}</span>
+                  {item.method && (
+                    <span className={`text-[9px] font-black px-2 py-0.5 rounded ${activeSection === item.id ? methodColor[item.method] : 'bg-gray-800 text-gray-600'}`}>
+                      {item.method}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </nav>
 
-        const headers = { 'Authorization': `Bearer ${authKey.substring(0, 12)}...` };
-        setPlaygroundRequest({ method, url, headers, body });
-
-        try {
-            const response = await axios({
-                method,
-                url,
-                data: body,
-                headers: { 'Authorization': `Bearer ${authKey}` }
-            });
-
-            setPlaygroundStatus(response.status);
-            setPlaygroundResponse(response.data);
-        } catch (error: any) {
-            console.error('Playground Error:', error);
-            setPlaygroundStatus(error.response?.status || 500);
-            setPlaygroundResponse({
-                error: error.response?.data?.error || 'Failed to complete request',
-                code: error.code,
-                message: error.message,
-                tip: error.response?.status === 401 ? 'Your API key is invalid or unauthorized.' : 'Make sure the backend is running on port 3005'
-            });
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const sidebarItems = [
-        { section: 'GUIDES', items: ['Quickstart', 'Authentication', 'Errors', 'Webhooks'] },
-        { section: 'API REFERENCE', items: ['Charges', 'Checkout', 'Connect', 'Marketplace v1', 'Refunds', 'Payment Links', 'Customers', 'Wallets', 'Payouts'] }
-    ];
-
-    return (
-        <div className="min-h-screen bg-white">
-            <Navbar />
-
-            {/* Hero Section */}
-            <section className="pt-32 pb-24 bg-black text-white relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-orange-500 rounded-full blur-[200px] opacity-10 -translate-y-1/2 translate-x-1/4"></div>
-                <div className="max-w-7xl mx-auto px-6 lg:px-8 relative z-10">
-                    <div className="max-w-3xl">
-                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-white/10 border border-white/20 text-xs font-black text-orange-400 uppercase tracking-widest mb-8">
-                            Documentation
-                        </div>
-                        <h1 className="text-5xl md:text-7xl font-black mb-8 leading-tight tracking-tight">
-                            Build for the <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-yellow-400 text-shadow-glow">Next Era</span> of African Commerce.
-                        </h1>
-                        <p className="text-xl md:text-2xl text-gray-400 leading-relaxed mb-12">
-                            Integrate global payments, mobile money, and virtual cards with a single unified REST API.
-                            Developer-first, enterprise-ready.
-                        </p>
-                        <div className="flex flex-wrap gap-4">
-                            <Link to="/merchant/signup">
-                                <Button size="lg" className="bg-orange-500 text-white px-10 py-5 rounded-2xl font-black shadow-xl shadow-orange-500/20 active:scale-95 transition-all text-xl">
-                                    Create Test Account
-                                </Button>
-                            </Link>
-                            <Link to="/merchant/login">
-                                <Button size="lg" variant="outline" className="px-10 py-5 rounded-2xl font-black border-white/20 text-white hover:bg-white/10 active:scale-95 transition-all text-xl">
-                                    Log in to Dashboard
-                                </Button>
-                            </Link>
-                        </div>
-                        <p className="mt-6 text-gray-500 text-sm">
-                            Already have a developer account? <Link to="/merchant/login" className="text-orange-400 hover:underline">Sign in here</Link>
-                        </p>
-                    </div>
-                </div>
-            </section>
-
-            <div className="max-w-7xl mx-auto px-6 lg:px-8 py-20">
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-20">
-                    {/* Sidebar Nav */}
-                    <div className="hidden lg:block space-y-12 sticky top-32 self-start">
-                        {sidebarItems.map((group, idx) => (
-                            <div key={idx}>
-                                <h4 className="font-black text-gray-900 mb-6 text-sm uppercase tracking-[0.2em]">{group.section}</h4>
-                                <div className="space-y-2">
-                                    {group.items.map(item => (
-                                        <button
-                                            key={item}
-                                            onClick={() => setActiveTab(item.toLowerCase())}
-                                            className={`group flex items-center w-full text-left px-5 py-3 rounded-2xl text-lg font-bold transition-all duration-300 ${activeTab === item.toLowerCase()
-                                                ? 'bg-orange-50 text-orange-600 shadow-sm'
-                                                : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'
-                                                }`}
-                                        >
-                                            <span className={`w-1.5 h-1.5 rounded-full bg-orange-500 mr-4 transition-all duration-300 ${activeTab === item.toLowerCase() ? 'opacity-100 scale-100' : 'opacity-0 scale-0'
-                                                }`}></span>
-                                            {item}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    {/* Main Content */}
-                    <div className="lg:col-span-3">
-                        <div className="animate-in fade-in slide-in-from-bottom-5 duration-700">
-                            {activeTab === 'quickstart' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <h2 className="text-4xl font-black text-gray-900 mb-6">Quickstart</h2>
-                                        <p className="text-xl text-gray-500 leading-relaxed max-w-3xl">
-                                            The FlapaPay API is organized around REST. It has predictable resource-oriented URLs,
-                                            accepts JSON-encoded request bodies, and returns standard HTTP response codes.
-                                        </p>
-                                    </header>
-
-                                    <section className="space-y-8">
-                                        <div className="flex items-center gap-4 mb-4">
-                                            <div className="w-10 h-10 rounded-full bg-black text-white flex items-center justify-center font-black">1</div>
-                                            <h3 className="text-2xl font-black text-gray-900">Install the SDK</h3>
-                                        </div>
-                                        <CodeBlock code="npm install @flapapay/node-sdk --save" />
-                                    </section>
-
-                                    <section className="space-y-8">
-                                        <div className="flex items-center gap-4 mb-4">
-                                            <div className="w-10 h-10 rounded-full bg-black text-white flex items-center justify-center font-black">2</div>
-                                            <h3 className="text-2xl font-black text-gray-900">Authenticate</h3>
-                                        </div>
-                                        <p className="text-gray-500 text-lg leading-relaxed">
-                                            Use your Secret Key to authenticate requests. Manage keys in your Developer Dashboard.
-                                        </p>
-                                        <CodeBlock language="javascript" code={`const FlapaPay = require('@flapapay/node-sdk');\nconst client = new FlapaPay('sk_test_...');`} />
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'authentication' && (
-                                <div className="space-y-12">
-                                    <header>
-                                        <h2 className="text-4xl font-black text-gray-900 mb-6">Authentication</h2>
-                                        <p className="text-xl text-gray-500 leading-relaxed max-w-4xl">
-                                            The FlapaPay API uses API keys to authenticate requests. You can view and manage your API keys in the FlapaPay Dashboard.
-                                        </p>
-                                    </header>
-
-                                    <section className="bg-orange-50 rounded-[32px] p-8 border border-orange-100 italic">
-                                        <h4 className="font-black text-orange-900 mb-4 uppercase tracking-widest text-sm underline decoration-orange-500/20 underline-offset-4">Security Requirement</h4>
-                                        <p className="text-orange-800 leading-relaxed text-lg">
-                                            Your API keys carry many privileges, so be sure to keep them secure! Do not share your secret API keys in publicly accessible areas such as GitHub, client-side code, and so forth.
-                                        </p>
-                                    </section>
-
-                                    <section className="space-y-10">
-                                        <h3 className="text-3xl font-black text-gray-900">Types of Keys</h3>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                                            <div className="p-8 border border-gray-100 rounded-3xl bg-white hover:border-emerald-500/30 transition-all">
-                                                <div className="flex items-center gap-3 mb-4 text-emerald-600">
-                                                    <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
-                                                    <h4 className="font-black uppercase tracking-widest text-xs">Live Mode</h4>
-                                                </div>
-                                                <p className="text-gray-500 text-lg leading-relaxed">Used for real transactions. Prefixed with <code>sk_live_</code>.</p>
-                                            </div>
-                                            <div className="p-8 border border-gray-100 rounded-3xl bg-white hover:border-orange-500/30 transition-all">
-                                                <div className="flex items-center gap-3 mb-4 text-orange-600">
-                                                    <div className="w-3 h-3 rounded-full bg-orange-500"></div>
-                                                    <h4 className="font-black uppercase tracking-widest text-xs">Test Mode</h4>
-                                                </div>
-                                                <p className="text-gray-500 text-lg leading-relaxed">Used for integration and testing. Prefixed with <code>sk_test_</code>.</p>
-                                            </div>
-                                        </div>
-                                    </section>
-
-                                    <section>
-                                        <h3 className="text-3xl font-black text-gray-900 mb-8">Authentication Header</h3>
-                                        <p className="text-gray-500 text-lg mb-8 leading-relaxed max-w-3xl">All API requests must be made over HTTPS. Calls made over plain HTTP will fail. API requests without authentication will also fail.</p>
-                                        <CodeBlock code={`curl https://api.flapapay.com/v1/charges \\\n  -H "Authorization: Bearer YOUR_SECRET_KEY"`} />
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'checkout' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-blue-50 border border-blue-100 text-[10px] font-black text-blue-600 uppercase tracking-widest mb-6">
-                                            Unified Checkout
-                                        </div>
-                                        <h2 className="text-5xl font-black text-gray-900 mb-8 leading-tight">Checkout Sessions</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-3xl">
-                                            FlapaPay Checkout is a pre-built, hosted payment page optimized for conversion.
-                                            It supports Mobile Money, Cards, and Bank Transfers across Africa.
-                                        </p>
-                                    </header>
-
-                                    <section className="space-y-10">
-                                        <h3 className="text-3xl font-black text-gray-900 mb-10">Integration Flow</h3>
-                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                                            {[
-                                                { step: '1', title: 'Create Session', desc: 'Securely generate a unique checkout URL from your server.' },
-                                                { step: '2', title: 'Redirect User', desc: 'Send customers to FlapaPay\'s high-converting hosted interface.' },
-                                                { step: '3', title: 'Confirm Status', desc: 'User returns to your site. Webhooks confirm the payment status.' }
-                                            ].map((item, i) => (
-                                                <div key={i} className="group p-10 rounded-[40px] bg-gray-50 border border-gray-100 hover:bg-white hover:shadow-2xl transition-all duration-500">
-                                                    <div className="w-14 h-14 rounded-2xl bg-black text-white flex items-center justify-center font-black text-xl mb-6">{item.step}</div>
-                                                    <h4 className="font-black text-gray-900 mb-3 text-lg">{item.title}</h4>
-                                                    <p className="text-gray-500 leading-relaxed">{item.desc}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </section>
-
-                                    <section className="space-y-10">
-                                        <h3 className="text-3xl font-black text-gray-900">Create a Session</h3>
-                                        <Endpoint method="POST" path="/v1/checkout/sessions" description="Initialize a new checkout flow for your customer." />
-                                        <ParameterTable params={[
-                                            { name: 'amount', type: 'integer', desc: 'Amount in minor units (e.g., 2000 for 20.00).', required: true },
-                                            { name: 'currency', type: 'string', desc: 'ISO currency code (zmw, usd).', required: true },
-                                            { name: 'success_url', type: 'string', desc: 'URL to redirect after payment.', required: true },
-                                            { name: 'cancel_url', type: 'string', desc: 'URL to redirect if user cancels.', required: true }
-                                        ]} />
-                                        <MultiLangRequestResponse
-                                            requestSamples={[
-                                                { id: 'curl', name: 'cURL', code: `curl https://api.flapapay.com/v1/checkout/sessions \\\n  -u sk_test_...: \\\n  -d amount=5000 \\\n  -d currency=zmw \\\n  -d success_url="https://myshop.com/success" \\\n  -d cancel_url="https://myshop.com/cancel"` },
-                                                { id: 'node', name: 'Node.js', code: `const flapapay = require('flapapay')('sk_test_...');\n\nconst session = await flapapay.checkout.sessions.create({\n  amount: 5000,\n  currency: 'zmw',\n  success_url: 'https://myshop.com/success',\n  cancel_url: 'https://myshop.com/cancel',\n});` },
-                                                { id: 'python', name: 'Python', code: `import flapapay\nflapapay.api_key = "sk_test_..."\n\nsession = flapapay.checkout.Session.create(\n  amount=5000,\n  currency="zmw",\n  success_url="https://myshop.com/success",\n  cancel_url="https://myshop.com/cancel",\n)` },
-                                                { id: 'php', name: 'PHP', code: `$flapapay = new \\FlapaPay\\FlapaPay('sk_test_...');\n\n$session = $flapapay->checkout->sessions->create([\n  'amount' => 5000,\n  'currency' => 'zmw',\n  'success_url' => 'https://myshop.com/success',\n  'cancel_url' => 'https://myshop.com/cancel',\n]);` },
-                                                { id: 'ruby', name: 'Ruby', code: `require 'flapapay'\nFlapaPay.api_key = 'sk_test_...'\n\nsession = FlapaPay::Checkout::Session.create({\n  amount: 5000,\n  currency: 'zmw',\n  success_url: 'https://myshop.com/success',\n  cancel_url: 'https://myshop.com/cancel',\n})` },
-                                                { id: 'go', name: 'Go', code: `import "github.com/flapapay/flapapay-go/v1"\nimport "github.com/flapapay/flapapay-go/v1/checkout/session"\n\nflapapay.Key = "sk_test_..."\n\nparams := &session.CreateParams{\n  Amount: flapapay.Int64(5000),\n  Currency: flapapay.String(string(flapapay.CurrencyZmw)),\n  SuccessURL: flapapay.String("https://myshop.com/success"),\n  CancelURL: flapapay.String("https://myshop.com/cancel"),\n}\ns, err := session.New(params)` },
-                                                { id: 'java', name: 'Java', code: `import com.flapapay.FlapaPay;\nimport com.flapapay.model.checkout.Session;\nimport com.flapapay.param.checkout.SessionCreateParams;\n\nFlapaPay.apiKey = "sk_test_...";\n\nSessionCreateParams params =\n  SessionCreateParams.builder()\n    .setAmount(5000L)\n    .setCurrency("zmw")\n    .setSuccessUrl("https://myshop.com/success")\n    .setCancelUrl("https://myshop.com/cancel")\n    .build();\n\nSession session = Session.create(params);` }
-                                            ]}
-                                            responseCode={`{\n  "id": "cs_test_a1b2c3d4e5f6g7h8",\n  "object": "checkout.session",\n  "amount_total": 5000,\n  "currency": "zmw",\n  "payment_status": "unpaid",\n  "status": "open",\n  "url": "https://checkout.flapapay.com/c/pay/cs_test_a1b2...",\n  "success_url": "https://myshop.com/success",\n  "cancel_url": "https://myshop.com/cancel",\n  "created": 1678901234\n}`}
-                                        />
-                                    </section>
-
-                                    <div className="p-12 bg-black rounded-[50px] shadow-2xl relative overflow-hidden group">
-                                        <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-blue-500 rounded-full blur-[120px] opacity-20 -translate-y-1/2 translate-x-1/4 group-hover:scale-110 transition-transform duration-1000"></div>
-                                        <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
-                                            <div>
-                                                <h4 className="text-3xl font-black text-white mb-4">Try Checkout Now</h4>
-                                                <p className="text-gray-400 text-lg max-w-sm">Experience the hosted checkout interface in our playground below.</p>
-                                            </div>
-                                            <Button
-                                                onClick={() => {
-                                                    setPlaygroundMode('checkout');
-                                                    document.getElementById('playground-area')?.scrollIntoView({ behavior: 'smooth' });
-                                                }}
-                                                className="bg-white text-black px-12 py-6 rounded-2xl font-black shadow-xl hover:scale-105 transition-all"
-                                            >
-                                                Open Playground
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {activeTab === 'payment links' && (
-                                <div className="space-y-16 animate-in fade-in slide-in-from-bottom-4 duration-700">
-                                    <header>
-                                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-50 border border-emerald-100 text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-6">
-                                            No-Code & Low-Code
-                                        </div>
-                                        <h2 className="text-5xl font-black text-gray-900 mb-8 leading-tight">Payment Links & Widgets</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-3xl">
-                                            Generate secure payment URLs that you can share via SMS, WhatsApp, email, or embed directly into your website as a powerful payment widget. <span className="text-gray-900 font-bold">No backend API required!</span> Just generate links directly from your Merchant Dashboard.
-                                        </p>
-                                    </header>
-
-                                    <section className="space-y-10">
-                                        <div className="flex items-center gap-4 mb-4">
-                                            <div className="w-10 h-10 rounded-full bg-emerald-500 text-white flex items-center justify-center font-black">1</div>
-                                            <h3 className="text-3xl font-black text-gray-900">Create from Dashboard</h3>
-                                        </div>
-                                        <p className="text-gray-500 text-lg leading-relaxed max-w-4xl">
-                                            Forget complex integrations. Head over to <b>Payment Links</b> in your Merchant Dashboard, set an amount, and instantly generate a link. You can then copy the unique ID or the full URL.
-                                        </p>
-                                    </section>
-
-                                    <section className="space-y-10">
-                                        <div className="flex items-center gap-4 mb-4">
-                                            <div className="w-10 h-10 rounded-full bg-emerald-500 text-white flex items-center justify-center font-black">2</div>
-                                            <h3 className="text-3xl font-black text-gray-900">Embed on Website (Widget)</h3>
-                                        </div>
-                                        <p className="text-gray-500 text-lg leading-relaxed max-w-4xl">
-                                            You can embed any Payment Link directly into your HTML website as a slick, modal checkout widget. Your customers will pay without ever leaving your product page.
-                                        </p>
-
-                                        <div className="bg-slate-900 rounded-[2rem] p-8 mt-6 border border-slate-800 shadow-2xl">
-                                            <h4 className="text-slate-400 font-bold text-xs uppercase tracking-widest mb-4">HTML Example</h4>
-                                            <CodeBlock language="html" code={`<!-- 1. Include the FlapaPay Widget Script in your <head> or before closing </body> -->
-<script src="https://js.flapapay.com/v1/widget.js"></script>
-
-<!-- 2. Add a payment button -->
-<button id="buy-button">Buy Consultation - K500</button>
-
-<!-- 3. Initialize the Widget with your Payment Link ID -->
-<script>
-  document.getElementById('buy-button').addEventListener('click', () => {
-    FlapaPayWidget.open({
-      paymentLinkUrl: 'http://localhost:5173/pay/7fad513e-b308-496d-9c97-9d4790f2eb87',
-      onSuccess: function() { alert('Payment successful!'); }
-    });
-  });
-</script>`} />
-                                        </div>
-                                    </section>
-
-                                    <section className="space-y-10 pt-10 border-t border-gray-100">
-                                        <div className="flex items-center gap-4 mb-6">
-                                            <div className="w-10 h-10 rounded-full bg-orange-500 text-white flex items-center justify-center font-black">✨</div>
-                                            <h3 className="text-3xl font-black text-gray-900">Interactive Widget Playground</h3>
-                                        </div>
-                                        <p className="text-gray-500 text-lg leading-relaxed max-w-4xl">
-                                            Paste your generated Payment Link URL below to see it live in action. This represents exactly how your customers will see the checkout when they interact with your website widget.
-                                        </p>
-
-                                        <div className="grid grid-cols-1 xl:grid-cols-5 gap-10 bg-gray-50 rounded-[3rem] p-10 border border-gray-200">
-                                            {/* Configuration Side */}
-                                            <div className="xl:col-span-2 space-y-6">
-                                                <div>
-                                                    <label className="block text-sm font-bold text-gray-700 mb-2">Payment Link URL</label>
-                                                    <input
-                                                        type="text"
-                                                        value={paymentLinkUrlInput}
-                                                        onChange={(e) => setPaymentLinkUrlInput(e.target.value)}
-                                                        className="w-full bg-white border-2 border-gray-200 rounded-2xl px-6 py-4 text-lg font-bold text-gray-900 focus:border-orange-500 focus:ring-4 focus:ring-orange-500/10 transition-all outline-none"
-                                                        placeholder="http://localhost:5173/pay/..."
-                                                    />
-                                                </div>
-                                                <Button
-                                                    onClick={() => setActiveDemoUrl(paymentLinkUrlInput)}
-                                                    className="w-full py-4 bg-black text-white rounded-2xl font-black shadow-lg hover:shadow-xl hover:-translate-y-1 transition-all"
-                                                >
-                                                    Launch Live Preview
-                                                </Button>
-                                                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest text-center mt-4">
-                                                    Renders the real FlapaPay checkout interface
-                                                </p>
-                                            </div>
-
-                                            {/* Rendered Widget Side */}
-                                            <div className="xl:col-span-3 bg-white rounded-[2rem] p-4 shadow-sm border border-gray-100 relative overflow-hidden min-h-[500px] flex items-center justify-center">
-                                                {!activeDemoUrl ? (
-                                                    <div className="text-center opacity-50">
-                                                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-dashed border-gray-300">
-                                                            <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                                                        </div>
-                                                        <p className="text-gray-500 font-bold text-sm">Paste a URL to see the live checkout</p>
-                                                    </div>
-                                                ) : (
-                                                    <div className="animate-in fade-in zoom-in duration-500 w-full h-full absolute inset-0">
-                                                        <div className="absolute top-4 right-4 z-20">
-                                                            <button
-                                                                onClick={() => setActiveDemoUrl('')}
-                                                                className="w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center shadow-lg hover:bg-red-600 transition-colors font-black"
-                                                            >
-                                                                ✕
-                                                            </button>
-                                                        </div>
-                                                        <iframe
-                                                            src={activeDemoUrl}
-                                                            className="w-full h-full border-0 rounded-[1.5rem]"
-                                                            title="Payment Link Preview"
-                                                        />
-                                                    </div>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'connect' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-emerald-50 border border-emerald-100 text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-6">
-                                            Marketplace & Platforms
-                                        </div>
-                                        <h2 className="text-5xl font-black text-gray-900 mb-8 leading-tight">Connect</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-4xl">
-                                            Onboard vendors, split payments, and manage payouts at scale. Connect is the powerful engine behind Africa's leading platforms.
-                                        </p>
-                                    </header>
-
-                                    <section className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                                        <div className="p-10 bg-emerald-50 rounded-[40px] border border-emerald-100">
-                                            <h4 className="text-2xl font-black text-emerald-900 mb-4">Express Onboarding</h4>
-                                            <p className="text-emerald-800 leading-relaxed mb-6">Onboard sellers with FlapaPay-hosted KYC flows. We handle verify identities and bank accounts for you.</p>
-                                            <ul className="space-y-3">
-                                                {['Self-serve KYC', 'Instant Payout Access', 'Multi-currency Support'].map((f, i) => (
-                                                    <li key={i} className="flex items-center gap-3 text-emerald-900 font-bold">
-                                                        <svg className="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                                                        {f}
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        </div>
-                                        <div className="p-10 bg-gray-900 rounded-[40px] text-white">
-                                            <h4 className="text-2xl font-black mb-4 text-emerald-400 font-mono italic underline decoration-emerald-500/20 underline-offset-4 tracking-tighter">Split Payments</h4>
-                                            <p className="text-gray-400 leading-relaxed mb-6">Automatically route funds to multiple sellers while taking your platform fee in one transaction.</p>
-                                            <CodeBlock code={`// Split example\n{\n  "amount": 10000,\n  "splits": [\n    { "account": "acct_...", "amount": 8500 },\n    { "amount": 1500 } // Your fee\n  ]\n}`} />
-                                        </div>
-                                    </section>
-
-                                    <section className="space-y-10">
-                                        <h3 className="text-3xl font-black text-gray-900 mb-8">Provisioning Accounts</h3>
-                                        <Endpoint method="POST" path="/v1/connect/accounts" description="Create a new account for your vendor or marketplace participant." />
-                                        <ParameterTable params={[
-                                            { name: 'email', type: 'string', desc: 'Vendor\'s contact email.', required: true },
-                                            { name: 'business_name', type: 'string', desc: 'Display name of the vendor business.', required: true },
-                                            { name: 'country', type: 'string', desc: 'ISO country code (default: ZM).' }
-                                        ]} />
-                                        <MultiLangRequestResponse
-                                            requestSamples={[
-                                                { id: 'curl', name: 'cURL', code: `curl https://api.flapapay.com/v1/connect/accounts \\\n  -H "Authorization: Bearer sk_test_6e4a..." \\\n  -H "Content-Type: application/json" \\\n  -d '{\n  "type": "custom",\n  "country": "ZM",\n  "email": "taylor@example.com",\n  "business_name": "Taylor Solutions Ltd",\n  "capabilities": {\n    "card_payments": {"requested": true},\n    "transfers": {"requested": true}\n  }\n}'` },
-                                                { id: 'node', name: 'Node.js', code: `const flapapay = require('flapapay')('sk_test_6e4a...');\n\nconst account = await flapapay.connect.accounts.create({\n  type: 'custom',\n  country: 'ZM',\n  email: 'taylor@example.com',\n  business_name: 'Taylor Solutions Ltd',\n  capabilities: {\n    card_payments: { requested: true },\n    transfers: { requested: true },\n  },\n});` },
-                                                { id: 'python', name: 'Python', code: `import flapapay\nflapapay.api_key = "sk_test_6e4a..."\n\naccount = flapapay.connect.Account.create(\n  type="custom",\n  country="ZM",\n  email="taylor@example.com",\n  business_name="Taylor Solutions Ltd",\n  capabilities={\n    "card_payments": {"requested": True},\n    "transfers": {"requested": True},\n  },\n)` },
-                                                { id: 'php', name: 'PHP', code: `$flapapay = new \\FlapaPay\\FlapaPay('sk_test_6e4a...');\n\n$account = $flapapay->connect->accounts->create([\n  'type' => 'custom',\n  'country' => 'ZM',\n  'email' => 'taylor@example.com',\n  'business_name' => 'Taylor Solutions Ltd',\n  'capabilities' => [\n    'card_payments' => ['requested' => true],\n    'transfers' => ['requested' => true],\n  ],\n]);` },
-                                                { id: 'ruby', name: 'Ruby', code: `require 'flapapay'\nFlapaPay.api_key = 'sk_test_6e4a...'\n\naccount = FlapaPay::Connect::Account.create({\n  type: 'custom',\n  country: 'ZM',\n  email: 'taylor@example.com',\n  business_name: 'Taylor Solutions Ltd',\n  capabilities: {\n    card_payments: { requested: true },\n    transfers: { requested: true },\n  },\n})` },
-                                                { id: 'go', name: 'Go', code: `import "github.com/flapapay/flapapay-go/v1"\nimport "github.com/flapapay/flapapay-go/v1/connect/account"\n\nflapapay.Key = "sk_test_6e4a..."\n\nparams := &account.CreateParams{\n  Type: flapapay.String("custom"),\n  Country: flapapay.String("ZM"),\n  Email: flapapay.String("taylor@example.com"),\n  BusinessName: flapapay.String("Taylor Solutions Ltd"),\n  Capabilities: &account.CapabilitiesParams{\n    CardPayments: &account.CapabilitiesCardPaymentsParams{Requested: flapapay.Bool(true)},\n    Transfers: &account.CapabilitiesTransfersParams{Requested: flapapay.Bool(true)},\n  },\n}\na, err := account.New(params)` },
-                                                { id: 'java', name: 'Java', code: `import com.flapapay.FlapaPay;\nimport com.flapapay.model.connect.Account;\nimport com.flapapay.param.connect.AccountCreateParams;\n\nFlapaPay.apiKey = "sk_test_6e4a...";\n\nAccountCreateParams params =\n  AccountCreateParams.builder()\n    .setType("custom")\n    .setCountry("ZM")\n    .setEmail("taylor@example.com")\n    .setBusinessName("Taylor Solutions Ltd")\n    .setCapabilities(\n      AccountCreateParams.Capabilities.builder()\n        .setCardPayments(AccountCreateParams.Capabilities.CardPayments.builder().setRequested(true).build())\n        .setTransfers(AccountCreateParams.Capabilities.Transfers.builder().setRequested(true).build())\n        .build()\n    )\n    .build();\n\nAccount account = Account.create(params);` }
-                                            ]}
-                                            responseCode={`{\n  "id": "49144fa0-486c-47e7-9879-c10566fdad35",\n  "object": "account",\n  "type": "custom",\n  "capabilities": {\n    "transfers": {\n      "requested": true\n    },\n    "card_payments": {\n      "requested": true\n    }\n  },\n  "requirements": {\n    "currently_due": [\n      "business.tax_id",\n      "individual.id_number"\n    ],\n    "eventually_due": []\n  }\n}`}
-                                        />
-                                    </section>
-
-                                    <div className="p-12 bg-white rounded-[50px] border-4 border-emerald-500/10 shadow-2xl relative overflow-hidden group">
-                                        <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
-                                            <div className="text-center md:text-left">
-                                                <h4 className="text-3xl font-black text-gray-900 mb-4 tracking-tighter italic">Connect Sandbox</h4>
-                                                <p className="text-gray-500 text-xl max-w-sm leading-relaxed">Test the onboarding flow and account creation in real-time.</p>
-                                            </div>
-                                            <Button
-                                                onClick={() => {
-                                                    setPlaygroundMode('connect');
-                                                    document.getElementById('playground-area')?.scrollIntoView({ behavior: 'smooth' });
-                                                }}
-                                                className="bg-emerald-600 text-white px-12 py-6 rounded-2xl font-black shadow-xl hover:bg-emerald-700 transition-all"
-                                            >
-                                                Start Simulation
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {activeTab === 'charges' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <h2 className="text-4xl font-black text-gray-900 mb-6">Charges</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-4xl">
-                                            Directly process payments using mobile money numbers or card tokens.
-                                        </p>
-                                    </header>
-
-                                    <section className="space-y-10">
-                                        <Endpoint method="POST" path="/v1/charges" description="Charge a customer immediately using a source identifier." />
-                                        <ParameterTable params={[
-                                            { name: 'amount', type: 'integer', desc: 'The amount in the smallest unit.', required: true },
-                                            { name: 'currency', type: 'string', desc: 'ISO currency code (e.g., zmw).', required: true },
-                                            { name: 'source', type: 'string', desc: 'A mobile number (260...) or card token (tok_...).', required: true },
-                                            { name: 'description', type: 'string', desc: 'An arbitrary string to describe the charge.' }
-                                        ]} />
-                                        <CodeBlock code={`curl https://api.flapapay.com/v1/charges \\\n  -d amount=4500 \\\n  -d currency="zmw" \\\n  -d source="260977000000"`} />
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'payouts' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <h2 className="text-4xl font-black text-gray-900 mb-6">Payouts</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-4xl">
-                                            Automate disbursements to vendors, employees, or customers worldwide.
-                                        </p>
-                                    </header>
-
-                                    <section className="space-y-10">
-                                        <Endpoint method="POST" path="/v1/payouts" description="Send funds to a bank account or mobile money wallet." />
-                                        <ParameterTable params={[
-                                            { name: 'amount', type: 'integer', desc: 'The amount to send.', required: true },
-                                            { name: 'currency', type: 'string', desc: 'ISO currency code.', required: true },
-                                            { name: 'destination', type: 'string', desc: 'Recipient identifier (bank acct or phone).', required: true }
-                                        ]} />
-                                        <CodeBlock code={`curl https://api.flapapay.com/v1/payouts \\\n  -d amount=15000 \\\n  -d destination="260955000123"`} />
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'marketplace v1' && (
-                                <div className="space-y-16 animate-in fade-in slide-in-from-bottom-6 duration-700">
-                                    <header>
-                                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-indigo-50 border border-indigo-100 text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-6 shadow-sm">
-                                            Beta v1.0
-                                        </div>
-                                        <h2 className="text-5xl font-black text-gray-900 mb-8 leading-tight tracking-tight">Marketplace Escrow</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-4xl font-medium">
-                                            Integrate enterprise-grade escrow protocols into your platform. Perfect for marketplaces like eBay, service companies, or private trade.
-                                        </p>
-                                    </header>
-
-                                    {/* Lifecycle Breakdown */}
-                                    <section className="space-y-10">
-                                        <h3 className="text-3xl font-black text-gray-900 group flex items-center gap-3">
-                                            The Escrow Protocol
-                                            <span className="w-12 h-0.5 bg-indigo-500 rounded-full group-hover:w-20 transition-all"></span>
-                                        </h3>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                                            {[
-                                                { stage: '1. PENDING', desc: 'Awaiting payment confirmation' },
-                                                { stage: '2. FUNDED', desc: 'Securely held in FlapaPay Vault' },
-                                                { stage: '3. SHIPPED', desc: 'Seller has dispatched items' },
-                                                { stage: '4. RELEASED', desc: 'Final payout to seller account' }
-                                            ].map((s, i) => (
-                                                <div key={i} className="p-6 rounded-[2.5rem] bg-indigo-50/30 border border-indigo-100/50 hover:bg-white hover:shadow-xl transition-all">
-                                                    <div className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-2">{s.stage}</div>
-                                                    <p className="text-gray-900 font-bold leading-tight">{s.desc}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </section>
-
-                                    {/* Create Escrow */}
-                                    <section className="space-y-10">
-                                        <div className="flex flex-col gap-4">
-                                            <h3 className="text-3xl font-black text-gray-900">Initiate Escrow</h3>
-                                            <p className="text-gray-500 text-lg max-w-2xl">Create a secure transaction between a buyer and a seller. The funds are held by FlapaPay until both parties fulfill their obligations.</p>
-                                        </div>
-
-                                        <Endpoint method="POST" path="/api/v1/escrows" description="Creates a new marketplace escrow session and notifies the seller." />
-
-                                        <ParameterTable params={[
-                                            { name: 'amount', type: 'integer', desc: 'Amount in minor units (e.g. 10000 for 100.00)', required: true },
-                                            { name: 'currency', type: 'string', desc: 'ISO code (zmw, usd, ngn)', required: true },
-                                            { name: 'description', type: 'string', desc: 'Description of items/services.', required: true },
-                                            { name: 'seller_email', type: 'string', desc: 'Email of the seller to invite.', required: true },
-                                            { name: 'metadata', type: 'object', desc: 'Your own reference data.' }
-                                        ]} />
-
-                                        <MultiLangRequestResponse
-                                            requestSamples={[
-                                                { id: 'curl', name: 'cURL', code: `curl https://api.flapapay.com/api/v1/escrows \\\n  -H "Authorization: Bearer sk_test_..." \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "amount": 25000,\n    "currency": "zmw",\n    "description": "Custom Gaming PC Build",\n    "seller_email": "seller@vendor.com",\n    "metadata": { "order_id": "99331" }\n  }'` },
-                                                { id: 'node', name: 'Node.js', code: `const axios = require('axios');\n\nconst createEscrow = async () => {\n  const res = await axios.post('https://api.flapapay.com/api/v1/escrows', {\n    amount: 25000,\n    currency: 'zmw',\n    description: 'Custom Gaming PC Build',\n    seller_email: 'seller@vendor.com'\n  }, {\n    headers: { 'Authorization': 'Bearer sk_test_...' }\n  });\n  console.log(res.data.checkout_url);\n};` }
-                                            ]}
-                                            responseCode={`{\n  "id": "esc_8k20kX9a...",\n  "status": "PENDING_PAYMENT",\n  "checkout_url": "https://flapapay.com/escrow-gateway/esc_8k20...",\n  "expires_at": "2024-12-01T12:00:00Z"\n}`}
-                                        />
-                                    </section>
-
-                                    {/* Integration Best Practices */}
-                                    <section className="p-12 bg-gray-900 rounded-[3rem] text-white relative overflow-hidden">
-                                        <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
-                                        <div className="relative z-10">
-                                            <h4 className="text-2xl font-black mb-6 flex items-center gap-3">
-                                                <span className="text-indigo-400">💡</span>
-                                                Integration Flow for Marketplaces
-                                            </h4>
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-                                                <div className="space-y-4">
-                                                    <h5 className="font-black text-indigo-400 text-sm uppercase tracking-widest">Client Side</h5>
-                                                    <p className="text-gray-400 text-sm leading-relaxed">After creating the escrow via your backend, redirect your buyer to the <code>checkout_url</code> provided in the response. This renders the FlapaPay Secure Gateway.</p>
-                                                </div>
-                                                <div className="space-y-4">
-                                                    <h5 className="font-black text-indigo-400 text-sm uppercase tracking-widest">Server Side</h5>
-                                                    <p className="text-gray-400 text-sm leading-relaxed">Listen for <code>escrow.funded</code> and <code>escrow.released</code> webhooks to update your order status automatically.</p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </section>
-                                </div>
-                            )}
-
-                            {activeTab === 'errors' && (
-                                <div className="space-y-16">
-                                    <header>
-                                        <h2 className="text-4xl font-black text-gray-900 mb-6">Error Handling</h2>
-                                        <p className="text-2xl text-gray-500 leading-relaxed max-w-4xl">
-                                            FlapaPay uses standard HTTP response codes to indicate the success or failure of an API request.
-                                        </p>
-                                    </header>
-
-                                    <div className="bg-white rounded-[32px] border border-gray-100 overflow-hidden shadow-sm">
-                                        <table className="w-full text-left">
-                                            <thead className="bg-gray-50 border-b border-gray-100">
-                                                <tr>
-                                                    <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400 font-mono">Status Code</th>
-                                                    <th className="px-8 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400 font-mono">Meaning</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-100">
-                                                {[
-                                                    { code: '200 - OK', desc: 'Everything worked as expected.' },
-                                                    { code: '400 - Bad Request', desc: 'The request was unacceptable, often due to missing parameters.' },
-                                                    { code: '401 - Unauthorized', desc: 'No valid API key provided.' },
-                                                    { code: '402 - Request Failed', desc: 'The parameters were valid but the request failed.' },
-                                                    { code: '500 - Server Errors', desc: 'Something went wrong on FlapaPay\'s end.' }
-                                                ].map((err, i) => (
-                                                    <tr key={i} className="hover:bg-gray-50/50 transition-colors">
-                                                        <td className="px-8 py-6 font-mono text-sm font-bold text-gray-900">{err.code}</td>
-                                                        <td className="px-8 py-6 text-gray-500">{err.desc}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-
-                            {activeTab !== 'quickstart' && activeTab !== 'authentication' && activeTab !== 'charges' && activeTab !== 'checkout' && activeTab !== 'connect' && activeTab !== 'payouts' && activeTab !== 'errors' && (
-                                <div className="py-20 text-center">
-                                    <div className="w-24 h-24 rounded-[40px] bg-gray-50 flex items-center justify-center text-4xl mx-auto mb-8 border border-gray-100">📖</div>
-                                    <h3 className="text-3xl font-black text-gray-900 mb-4">{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Reference</h3>
-                                    <p className="text-xl text-gray-500 max-w-md mx-auto mb-10">We're updating our documentation for this module. Check back soon or contact support for the beta reference.</p>
-                                    <Button variant="outline" className="px-10 py-4 rounded-2xl font-black border-gray-200">Contact Developer Support</Button>
-                                </div>
-                            )}
-
-                            {/* Persistently Accessible Playground Area */}
-                            <div id="playground-area" className="mt-32 scroll-mt-32">
-                                <section className="p-16 bg-gray-50 rounded-[60px] border border-gray-100 relative overflow-hidden">
-                                    <div className="absolute top-0 right-0 p-12 opacity-[0.03] pointer-events-none">
-                                        <svg className="w-64 h-64" viewBox="0 0 24 24" fill="currentColor">
-                                            <path d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z" />
-                                        </svg>
-                                    </div>
-
-                                    <header className="text-center max-w-2xl mx-auto mb-16">
-                                        <h3 className="text-4xl font-black text-gray-900 mb-6 italic tracking-tight underline decoration-orange-500/20 underline-offset-8">API Playground</h3>
-                                        <p className="text-lg text-gray-500 leading-relaxed">
-                                            Choose a module to test our live endpoints. All requests use your selected environment (Test Mode by default).
-                                        </p>
-                                    </header>
-
-                                    {/* Select Playground Type */}
-                                    <div className="flex flex-wrap gap-4 p-2 bg-white/50 backdrop-blur-sm rounded-3xl w-fit border border-gray-100 mb-12 mx-auto shadow-sm">
-                                        <button
-                                            onClick={() => setPlaygroundMode('checkout')}
-                                            className={`px-10 py-4 rounded-2xl font-black transition-all ${playgroundMode === 'checkout' ? 'bg-black text-white shadow-2xl shadow-black/20' : 'text-gray-400 hover:text-gray-600'}`}>
-                                            Checkout API
-                                        </button>
-                                        <button
-                                            onClick={() => setPlaygroundMode('connect')}
-                                            className={`px-10 py-4 rounded-2xl font-black transition-all ${playgroundMode === 'connect' ? 'bg-black text-white shadow-2xl shadow-black/20' : 'text-gray-400 hover:text-gray-600'}`}>
-                                            Connect API
-                                        </button>
-                                        <button
-                                            onClick={() => setPlaygroundMode('marketplace')}
-                                            className={`px-10 py-4 rounded-2xl font-black transition-all ${playgroundMode === 'marketplace' ? 'bg-indigo-600 text-white shadow-2xl shadow-indigo-600/20' : 'text-gray-400 hover:text-gray-600'}`}>
-                                            Marketplace v1
-                                        </button>
-                                    </div>
-
-                                    {/* Form Section */}
-                                    <div className="space-y-10 max-w-6xl mx-auto">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-                                            <div className="lg:col-span-2 space-y-3">
-                                                <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2 group-hover:text-orange-500 transition-colors">API Secret Key</label>
-                                                <div className="relative group/key">
-                                                    <input
-                                                        type="password"
-                                                        value={playgroundApiKey}
-                                                        onChange={(e) => setPlaygroundApiKey(e.target.value)}
-                                                        className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-mono text-sm focus:border-orange-500/50 outline-none transition-all shadow-sm group-hover/key:border-orange-200"
-                                                        placeholder="sk_test_6e4a1c2a94..."
-                                                    />
-                                                    <div className="absolute right-6 top-1/2 -translate-y-1/2 flex items-center gap-3">
-                                                        <div className={`w-2.5 h-2.5 rounded-full shadow-sm ${((playgroundApiKey || 'sk_test_').startsWith('sk_live') || (playgroundApiKey || 'flp_test_').startsWith('flp_live')) ? 'bg-emerald-500 shadow-emerald-500/50' : 'bg-orange-500 shadow-orange-500/50 animate-pulse'
-                                                            }`}></div>
-                                                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">{
-                                                            ((playgroundApiKey || 'sk_test_').startsWith('sk_live') || (playgroundApiKey || 'flp_test_').startsWith('flp_live')) ? 'Live Mode' : 'Test Mode'
-                                                        }</span>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            {playgroundMode === 'checkout' && (
-                                                <>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Amount (Minor Units)</label>
-                                                        <input
-                                                            type="number"
-                                                            value={playgroundAmount}
-                                                            onChange={(e) => setPlaygroundAmount(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-black text-xl focus:border-orange-500/50 outline-none transition-all shadow-sm"
-                                                            placeholder="2000"
-                                                        />
-                                                    </div>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Currency</label>
-                                                        <select
-                                                            value={playgroundCurrency}
-                                                            onChange={(e) => setPlaygroundCurrency(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-black text-lg focus:border-orange-500/50 outline-none transition-all appearance-none cursor-pointer shadow-sm"
-                                                        >
-                                                            <option value="ZMW">ZMW (Kwacha)</option>
-                                                            <option value="USD">USD (Dollar)</option>
-                                                        </select>
-                                                    </div>
-                                                </>
-                                            )}
-
-                                            {playgroundMode === 'connect' && (
-                                                <>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Vendor Contact</label>
-                                                        <input
-                                                            type="email"
-                                                            value={connectEmail}
-                                                            onChange={(e) => setConnectEmail(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-bold focus:border-orange-500/50 outline-none transition-all shadow-sm"
-                                                            placeholder="vendor@platform.com"
-                                                        />
-                                                    </div>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Business Name</label>
-                                                        <input
-                                                            type="text"
-                                                            value={connectBusinessName}
-                                                            onChange={(e) => setConnectBusinessName(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-bold focus:border-orange-500/50 outline-none transition-all shadow-sm"
-                                                            placeholder="Apex Services Ltd"
-                                                        />
-                                                    </div>
-                                                </>
-                                            )}
-
-                                            {playgroundMode === 'marketplace' && (
-                                                <>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Seller Email</label>
-                                                        <input
-                                                            type="email"
-                                                            value={escrowSellerEmail}
-                                                            onChange={(e) => setEscrowSellerEmail(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-bold focus:border-indigo-500/50 outline-none transition-all shadow-sm"
-                                                            placeholder="seller@market.com"
-                                                        />
-                                                    </div>
-                                                    <div className="space-y-3">
-                                                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest px-2">Item Description</label>
-                                                        <input
-                                                            type="text"
-                                                            value={escrowDescription}
-                                                            onChange={(e) => setEscrowDescription(e.target.value)}
-                                                            className="w-full bg-white border-2 border-gray-100 rounded-[28px] px-8 py-6 text-gray-900 font-bold focus:border-indigo-500/50 outline-none transition-all shadow-sm"
-                                                            placeholder="e.g. iPhone 15 Pro"
-                                                        />
-                                                    </div>
-                                                </>
-                                            )}
-                                        </div>
-
-                                        <Button
-                                            disabled={isLoading}
-                                            onClick={handlePlaygroundCall}
-                                            className="w-full bg-orange-600 hover:bg-orange-700 text-white h-24 rounded-[32px] font-black text-2xl shadow-3xl shadow-orange-600/20 active:scale-[0.99] transition-all flex items-center justify-center gap-6 group"
-                                        >
-                                            {isLoading ? (
-                                                <div className="flex items-center gap-4">
-                                                    <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin"></div>
-                                                    <span>Sending Request...</span>
-                                                </div>
-                                            ) : (
-                                                <>
-                                                    <span>
-                                                        {playgroundMode === 'checkout' ? 'Execute Checkout Intent' :
-                                                            playgroundMode === 'connect' ? 'Provision Connected Account' :
-                                                                'Initiate Marketplace Escrow'}
-                                                    </span>
-                                                    <svg className="w-8 h-8 group-hover:translate-x-2 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                                                    </svg>
-                                                </>
-                                            )}
-                                        </Button>
-
-                                        {/* Visualization Grid */}
-                                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-10 mt-12">
-                                            <div className="space-y-4">
-                                                <div className="flex items-center justify-between px-4">
-                                                    <h5 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">HTTP Request</h5>
-                                                    <code className="text-[10px] text-gray-900 font-bold bg-white px-3 py-1 rounded-full border border-gray-100">
-                                                        POST {playgroundMode === 'checkout' ? '/v1/checkout/sessions' :
-                                                            playgroundMode === 'connect' ? '/v1/connect/accounts' :
-                                                                '/api/v1/escrows'}
-                                                    </code>
-                                                </div>
-                                                <div className="bg-[#0D0D0D] rounded-[40px] p-10 border border-white/5 shadow-2xl h-[450px] relative">
-                                                    <pre className="font-mono text-[13px] text-gray-400 h-full overflow-y-auto scrollbar-hide leading-relaxed">
-                                                        <code>
-                                                            {playgroundRequest
-                                                                ? `// Request Headers\n${JSON.stringify(playgroundRequest.headers, null, 2)}\n\n// POST Body\n${JSON.stringify(playgroundRequest.body, null, 2)}`
-                                                                : `// Ready to send request\n// Choose parameters above and execute.`}
-                                                        </code>
-                                                    </pre>
-                                                </div>
-                                            </div>
-
-                                            <div className="space-y-4">
-                                                <div className="flex items-center justify-between px-4">
-                                                    <h5 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Server Response</h5>
-                                                    {playgroundStatus && (
-                                                        <div className={`px-4 py-1.5 rounded-full font-black text-[10px] border ${playgroundStatus < 400 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
-                                                            {playgroundStatus} {playgroundStatus === 200 ? 'OK' : 'Error'}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className={`bg-[#0D0D0D] rounded-[40px] p-10 border shadow-2xl h-[450px] relative transition-colors duration-700 ${playgroundStatus && playgroundStatus >= 400 ? 'border-red-500/30' : 'border-white/5'}`}>
-                                                    <pre className="font-mono text-[13px] text-gray-400 h-full overflow-y-auto scrollbar-hide leading-relaxed">
-                                                        <code>
-                                                            {playgroundResponse
-                                                                ? JSON.stringify(playgroundResponse, null, 2)
-                                                                : `// Awaiting response...\n// Execute request to see live data.`}
-                                                        </code>
-                                                    </pre>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        {/* Gateway Integration Button */}
-                                        {(playgroundResponse?.url || playgroundResponse?.checkout_url) && (
-                                            <div className="mt-12 animate-in fade-in slide-in-from-bottom-10 duration-1000">
-                                                <a
-                                                    href={playgroundResponse.url || playgroundResponse.checkout_url}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white p-10 rounded-[48px] font-black text-2xl shadow-3xl shadow-emerald-500/20 flex items-center justify-between group/link transition-all active:scale-[0.98]"
-                                                >
-                                                    <div className="flex items-center gap-8">
-                                                        <div className="w-20 h-20 rounded-3xl bg-white/20 flex items-center justify-center backdrop-blur-md group-hover/link:scale-110 transition-transform">
-                                                            <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                                            </svg>
-                                                        </div>
-                                                        <div className="text-left">
-                                                            <p className="text-sm text-emerald-100 uppercase tracking-widest mb-1">Interactive Demo Available</p>
-                                                            <h6 className="text-3xl font-black">Open Life-like Checkout Page</h6>
-                                                        </div>
-                                                    </div>
-                                                    <div className="px-10 py-5 bg-white/10 rounded-2xl backdrop-blur-md group-hover/link:bg-white/20 transition-all font-black uppercase text-sm tracking-widest">
-                                                        Launch Interface
-                                                    </div>
-                                                </a>
-                                            </div>
-                                        )}
-                                    </div>
-                                </section>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+            <div className="mt-8 p-4 rounded-2xl bg-gray-950 border border-gray-800">
+              <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2">Base URL</p>
+              <code className="text-[11px] font-mono text-orange-400 block mb-1">http://localhost:3005</code>
+              <code className="text-[10px] font-mono text-gray-600">prod: api.flapapay.com</code>
             </div>
 
-            <AskAIAssistant />
-            <Footer />
-        </div>
+            <div className="mt-4 p-4 rounded-2xl bg-gray-950 border border-gray-800">
+              <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2">Other APIs</p>
+              <Link to="/documentation" className="text-xs font-bold text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-1">
+                Connect, Escrow, Webhooks →
+              </Link>
+            </div>
+          </div>
+        </aside>
+
+        {/* Content */}
+        <main ref={contentRef} className="flex-1 min-w-0 px-6 lg:px-12 py-12 space-y-20 max-w-4xl">
+
+          {/* ── QUICK START ─────────────────────────────── */}
+          {activeSection === 'quickstart' && (
+            <section>
+              <SH tag="Guide" title="Quick Start" subtitle="Go from zero to a working checkout in under 5 minutes." />
+              <div className="space-y-8">
+                {[
+                  {
+                    n: '01', title: 'Get your API key',
+                    desc: 'Sign up and find your keys under Dashboard → Developers → API Keys.',
+                    code: '# Test keys are prefixed sk_test_flp_\n# Live keys are prefixed sk_live_flp_\nexport FLAPAPAY_SECRET_KEY="sk_test_flp_..."',
+                    lang: 'bash',
+                  },
+                  {
+                    n: '02', title: 'Install the SDK',
+                    desc: 'Use the official SDK or call the REST API directly from any language.',
+                    code: '# Node.js\nnpm install @flapapay/node\n\n# Python\npip install flapapay',
+                    lang: 'bash',
+                  },
+                  {
+                    n: '03', title: 'Create a session on your server',
+                    desc: 'Never create sessions client-side — your secret key must stay on the server.',
+                    code: `import { FlapaPay } from '@flapapay/node';
+
+const flapa = new FlapaPay({ apiKey: process.env.FLAPAPAY_SECRET_KEY });
+
+// Express.js example
+app.post('/create-checkout', async (req, res) => {
+  const session = await flapa.checkout.sessions.create({
+    mode: 'payment',
+    line_items: [{ price: 'price_xxx', quantity: 1 }],
+    success_url: \`https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}\`,
+    cancel_url: 'https://yourapp.com/cancel',
+    metadata: { order_id: req.body.orderId },
+  });
+  res.json({ url: session.url });
+});`,
+                    lang: 'Node.js',
+                  },
+                  {
+                    n: '04', title: 'Redirect your customer',
+                    desc: 'Send the customer to session.url — FlapaPay handles the payment UI.',
+                    code: `// Client-side — after calling your /create-checkout endpoint
+const { url } = await fetch('/create-checkout', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ orderId: 'ORD-1234' }),
+}).then(r => r.json());
+
+window.location.href = url; // Redirect to hosted checkout`,
+                    lang: 'javascript',
+                  },
+                  {
+                    n: '05', title: 'Confirm via webhook (not just redirect)',
+                    desc: 'Always use webhooks as the authoritative confirmation — customers can close the browser before being redirected back.',
+                    code: `app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  const { WebhookVerifier } = require('@flapapay/node');
+  const event = WebhookVerifier.constructEvent(
+    req.body,
+    req.headers['flapapay-signature'],
+    process.env.FLAPAPAY_WEBHOOK_SECRET,
+  );
+  if (event.type === 'checkout.session.completed') {
+    const { metadata, payment_status } = event.data.object;
+    if (payment_status === 'paid') fulfillOrder(metadata.order_id);
+  }
+  res.json({ received: true });
+});`,
+                    lang: 'Node.js',
+                  },
+                ].map((s, i) => (
+                  <div key={i} className="flex gap-5">
+                    <div className="shrink-0 flex flex-col items-center">
+                      <div className="w-9 h-9 rounded-xl bg-orange-500/15 border border-orange-500/30 flex items-center justify-center text-orange-400 text-xs font-black">{s.n}</div>
+                      {i < 4 && <div className="w-px flex-1 bg-gray-800 mt-2 min-h-[20px]" />}
+                    </div>
+                    <div className="flex-1 pb-4">
+                      <p className="font-black text-white text-base mb-1">{s.title}</p>
+                      <p className="text-sm text-gray-500 mb-3 leading-relaxed">{s.desc}</p>
+                      <CodeBlock code={s.code} lang={s.lang} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ── AUTHENTICATION ──────────────────────────── */}
+          {activeSection === 'authentication' && (
+            <section>
+              <SH tag="Guide" title="Authentication" subtitle="Every request must include your API key in the Authorization header." />
+              <div className="space-y-6">
+                <Callout type="warn">
+                  <strong>Keep your secret key secure.</strong> Never commit it to source control, expose it client-side, or log it. If compromised, rotate it immediately from the Dashboard → Developers → API Keys.
+                </Callout>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  {[
+                    { label: 'Test Secret Key', prefix: 'sk_test_flp_...', desc: 'Use for development and testing. No real money moves.', color: 'border-orange-500/20 bg-orange-500/5' },
+                    { label: 'Live Secret Key', prefix: 'sk_live_flp_...', desc: 'Use in production. Real money moves.', color: 'border-emerald-500/20 bg-emerald-500/5' },
+                  ].map((k, i) => (
+                    <div key={i} className={`p-5 rounded-2xl border ${k.color}`}>
+                      <p className="text-xs font-black text-white mb-2">{k.label}</p>
+                      <code className="text-xs font-mono text-gray-400 block mb-2">{k.prefix}</code>
+                      <p className="text-xs text-gray-500">{k.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <CodeBlock lang="http" code={`POST /v1/checkout/sessions HTTP/1.1
+Host: localhost:3005
+Authorization: Bearer sk_test_flp_xxxxxxxxxxxxxxxxxxxx
+Content-Type: application/json
+x-flapapay-test-mode: true`} />
+                <Callout type="tip">
+                  Pass <code className="text-emerald-300 bg-emerald-500/10 px-1.5 py-0.5 rounded text-xs">x-flapapay-test-mode: true</code> with any key to force test mode — useful for staging environments that use a live key structure.
+                </Callout>
+              </div>
+            </section>
+          )}
+
+          {/* ── CREATE SESSION ──────────────────────────── */}
+          {activeSection === 'create-session' && (
+            <section>
+              <SH tag="Checkout Sessions" title="Create a Checkout Session" method="POST" path="/v1/checkout/sessions"
+                subtitle="Creates a hosted checkout page. Returns a session with a url — redirect your customer to this URL to complete payment." />
+              <div className="space-y-6">
+                <Callout type="info">
+                  Append <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">?session_id={'{CHECKOUT_SESSION_ID}'}</code> to your <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">success_url</code> to retrieve the completed session from your success handler.
+                </Callout>
+                <ParamTable params={[
+                  { name: 'mode', type: 'string', required: true, desc: '"payment" (one-time), "subscription" (recurring), or "setup" (save payment method only)' },
+                  { name: 'line_items', type: 'array', required: true, desc: 'Array of { price: "price_xxx", quantity: 1 }. Each price must exist in your catalog.' },
+                  { name: 'success_url', type: 'string', required: true, desc: 'URL FlapaPay redirects to after payment. Use {CHECKOUT_SESSION_ID} placeholder.' },
+                  { name: 'cancel_url', type: 'string', required: true, desc: 'URL to redirect to if the customer closes the checkout page.' },
+                  { name: 'customer_email', type: 'string', required: false, desc: 'Pre-fill the email field on the checkout page.' },
+                  { name: 'customer', type: 'string', required: false, desc: 'Existing customer ID (cus_xxx) to attach this session to.' },
+                  { name: 'currency', type: 'string', required: false, desc: 'ISO 4217 code (zmw, usd, kes, ngn, ghs). Defaults to your account currency.' },
+                  { name: 'payment_method_types', type: 'array', required: false, desc: '["card", "mobile_money", "bank_transfer"]. Default: all enabled methods.' },
+                  { name: 'transfer_data', type: 'object', required: false, desc: 'Marketplace split: { destination: "acct_xxx", amount: 9500 }.' },
+                  { name: 'application_fee_amount', type: 'integer', required: false, desc: 'Platform fee in smallest currency unit. Retained by your account.' },
+                  { name: 'allow_promotion_codes', type: 'boolean', required: false, desc: 'Show a promo code field on the checkout page.' },
+                  { name: 'metadata', type: 'object', required: false, desc: 'Up to 50 key-value pairs. Available on the resulting payment object.' },
+                  { name: 'expires_at', type: 'integer', required: false, desc: 'Unix timestamp. Session expires between 30 minutes and 24 hours from creation.' },
+                ]} />
+                <MultiLang id="create" samples={{
+                  curl: `curl -X POST http://localhost:3005/v1/checkout/sessions \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "mode": "payment",
+    "line_items": [{ "price": "price_xxx", "quantity": 1 }],
+    "customer_email": "buyer@example.com",
+    "success_url": "https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}",
+    "cancel_url": "https://yourapp.com/cancel",
+    "metadata": { "order_id": "ORD-1234" }
+  }'`,
+                  node: `import { FlapaPay } from '@flapapay/node';
+
+const flapa = new FlapaPay({ apiKey: process.env.FLAPAPAY_SECRET_KEY! });
+
+const session = await flapa.checkout.sessions.create({
+  mode: 'payment',
+  line_items: [{ price: 'price_xxx', quantity: 1 }],
+  customer_email: 'buyer@example.com',
+  success_url: 'https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}',
+  cancel_url: 'https://yourapp.com/cancel',
+  metadata: { order_id: 'ORD-1234' },
+});
+
+// Redirect your customer
+res.redirect(session.url);`,
+                  python: `import flapapay
+
+flapapay.api_key = "sk_test_flp_..."
+
+session = flapapay.checkout.sessions.create(
+    mode="payment",
+    line_items=[{"price": "price_xxx", "quantity": 1}],
+    customer_email="buyer@example.com",
+    success_url="https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url="https://yourapp.com/cancel",
+    metadata={"order_id": "ORD-1234"},
+)
+
+# Flask: return redirect(session["url"])`,
+                  php: `$flapa = new \\FlapaPay\\FlapaPay('sk_test_flp_...');
+
+$session = $flapa->checkout->sessions->create([
+  'mode' => 'payment',
+  'line_items' => [['price' => 'price_xxx', 'quantity' => 1]],
+  'customer_email' => 'buyer@example.com',
+  'success_url' => 'https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}',
+  'cancel_url' => 'https://yourapp.com/cancel',
+  'metadata' => ['order_id' => 'ORD-1234'],
+]);
+
+header('Location: ' . $session->url);`,
+                }} response={`{
+  "id": "cs_live_a1B2c3D4e5F6",
+  "object": "checkout.session",
+  "url": "https://checkout.flapapay.com/pay/cs_live_a1B2c3D4e5F6",
+  "status": "open",
+  "mode": "payment",
+  "payment_status": "unpaid",
+  "currency": "ZMW",
+  "amount_total": 100000,
+  "customer_email": "buyer@example.com",
+  "success_url": "https://yourapp.com/success?session_id={CHECKOUT_SESSION_ID}",
+  "cancel_url": "https://yourapp.com/cancel",
+  "expires_at": 1716003600,
+  "metadata": { "order_id": "ORD-1234" },
+  "created": 1716000000
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── RETRIEVE SESSION ────────────────────────── */}
+          {activeSection === 'retrieve-session' && (
+            <section>
+              <SH tag="Checkout Sessions" title="Retrieve a Session" method="GET" path="/v1/checkout/sessions/:id"
+                subtitle="Fetch a checkout session by ID. Call this from your success_url handler to confirm payment_status === 'paid' before fulfilling the order." />
+              <div className="space-y-6">
+                <Callout type="warn">
+                  <strong>Do not fulfil orders based on the redirect alone.</strong> Customers can edit the URL. Always retrieve the session server-side and check <code className="bg-amber-500/10 text-amber-300 px-1.5 py-0.5 rounded text-xs">payment_status === "paid"</code> before fulfilling.
+                </Callout>
+                <ParamTable params={[
+                  { name: 'id', type: 'string', required: true, desc: 'The checkout session ID (cs_live_... or cs_test_...)' },
+                ]} />
+                <MultiLang id="retrieve" samples={{
+                  curl: `curl http://localhost:3005/v1/checkout/sessions/cs_live_a1B2c3D4e5F6 \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`,
+                  node: `// In your Express success handler
+app.get('/success', async (req, res) => {
+  const sessionId = req.query.session_id;
+
+  const session = await flapa.checkout.sessions.retrieve(sessionId);
+
+  if (session.payment_status === 'paid') {
+    const orderId = session.metadata.order_id;
+    await fulfillOrder(orderId);  // ✅ safe to fulfil
+    res.render('success', { session });
+  } else {
+    res.redirect('/payment-failed');
+  }
+});`,
+                  python: `from flask import request, redirect
+
+@app.route('/success')
+def success():
+    session_id = request.args.get('session_id')
+    session = flapapay.checkout.sessions.retrieve(session_id)
+
+    if session['payment_status'] == 'paid':
+        fulfil_order(session['metadata']['order_id'])
+        return render_template('success.html', session=session)
+    return redirect('/payment-failed')`,
+                  php: `$session_id = $_GET['session_id'];
+$session = $flapa->checkout->sessions->retrieve($session_id);
+
+if ($session->payment_status === 'paid') {
+  fulfil_order($session->metadata->order_id);
+  // Show success page
+} else {
+  header('Location: /payment-failed');
+}`,
+                }} response={`{
+  "id": "cs_live_a1B2c3D4e5F6",
+  "status": "complete",
+  "payment_status": "paid",
+  "mode": "payment",
+  "customer": "cus_xxx",
+  "customer_email": "buyer@example.com",
+  "payment_intent": "pi_xxx",
+  "amount_total": 100000,
+  "currency": "ZMW",
+  "metadata": { "order_id": "ORD-1234" }
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── LIST SESSIONS ───────────────────────────── */}
+          {activeSection === 'list-sessions' && (
+            <section>
+              <SH tag="Checkout Sessions" title="List Sessions" method="GET" path="/v1/checkout/sessions"
+                subtitle="Returns a paginated list of checkout sessions. Useful for reconciliation and reporting dashboards." />
+              <div className="space-y-6">
+                <ParamTable params={[
+                  { name: 'limit', type: 'integer', desc: 'Number of sessions to return. 1–100, default 10.' },
+                  { name: 'starting_after', type: 'string', desc: 'Session ID cursor for forward pagination — the last ID from the previous page.' },
+                  { name: 'ending_before', type: 'string', desc: 'Session ID cursor for backward pagination.' },
+                  { name: 'status', type: 'string', desc: '"open", "complete", or "expired".' },
+                  { name: 'customer', type: 'string', desc: 'Filter sessions by customer ID.' },
+                  { name: 'created[gte]', type: 'integer', desc: 'Unix timestamp — return sessions created at or after this time.' },
+                  { name: 'created[lte]', type: 'integer', desc: 'Unix timestamp — return sessions created at or before this time.' },
+                ]} />
+                <MultiLang id="list" samples={{
+                  curl: `curl "http://localhost:3005/v1/checkout/sessions?status=complete&limit=25" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`,
+                  node: `const { data, has_more } = await flapa.checkout.sessions.list({
+  status: 'complete',
+  limit: 25,
+});
+
+// Paginate
+if (has_more) {
+  const nextPage = await flapa.checkout.sessions.list({
+    status: 'complete',
+    limit: 25,
+    starting_after: data[data.length - 1].id,
+  });
+}`,
+                  python: `result = flapapay.checkout.sessions.list(
+    status="complete",
+    limit=25,
+)
+for session in result["data"]:
+    print(session["id"], session["amount_total"])
+
+# Paginate
+if result["has_more"]:
+    next_page = flapapay.checkout.sessions.list(
+        status="complete",
+        limit=25,
+        starting_after=result["data"][-1]["id"],
+    )`,
+                  php: `$result = $flapa->checkout->sessions->list([
+  'status' => 'complete',
+  'limit' => 25,
+]);
+
+foreach ($result->data as $session) {
+  echo $session->id . ': ' . $session->amount_total . PHP_EOL;
+}`,
+                }} response={`{
+  "object": "list",
+  "data": [
+    {
+      "id": "cs_live_a1B2c3D4e5F6",
+      "status": "complete",
+      "payment_status": "paid",
+      "amount_total": 100000,
+      "currency": "ZMW",
+      "created": 1716000000
+    },
+    {
+      "id": "cs_live_g7H8i9J0k1L2",
+      "status": "complete",
+      "payment_status": "paid",
+      "amount_total": 50000,
+      "currency": "ZMW",
+      "created": 1715996400
+    }
+  ],
+  "has_more": true,
+  "url": "/v1/checkout/sessions"
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── EXPIRE SESSION ──────────────────────────── */}
+          {activeSection === 'expire-session' && (
+            <section>
+              <SH tag="Checkout Sessions" title="Expire a Session" method="POST" path="/v1/checkout/sessions/:id/expire"
+                subtitle="Manually expire an open checkout session. The customer will see an expiration message if they visit the URL after this." />
+              <div className="space-y-6">
+                <ParamTable params={[
+                  { name: 'id', type: 'string', required: true, desc: 'The session ID to expire. Must be in "open" status.' },
+                ]} />
+                <MultiLang id="expire" samples={{
+                  curl: `curl -X POST http://localhost:3005/v1/checkout/sessions/cs_live_xxx/expire \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`,
+                  node: `const session = await flapa.checkout.sessions.expire('cs_live_xxx');
+console.log(session.status); // 'expired'`,
+                  python: `session = flapapay.checkout.sessions.expire("cs_live_xxx")
+print(session["status"])  # "expired"`,
+                  php: `$session = $flapa->checkout->sessions->expire('cs_live_xxx');
+echo $session->status; // "expired"`,
+                }} response={`{
+  "id": "cs_live_xxx",
+  "status": "expired",
+  "payment_status": "unpaid",
+  "expired_at": 1716001234
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── SUBSCRIPTION MODE ───────────────────────── */}
+          {activeSection === 'subscription-mode' && (
+            <section>
+              <SH tag="Checkout Sessions" title="Subscription Mode" method="POST" path="/v1/checkout/sessions"
+                subtitle='Create a recurring subscription checkout. When the customer completes payment a Subscription and Customer are automatically created. Set mode: "subscription".' />
+              <div className="space-y-6">
+                <Callout type="info">
+                  Subscription prices must have a <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">recurring</code> interval set. Create prices first with <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">POST /v1/prices</code> and pass the price ID here.
+                </Callout>
+                <ParamTable params={[
+                  { name: 'mode', type: 'string', required: true, desc: 'Must be "subscription"' },
+                  { name: 'line_items', type: 'array', required: true, desc: 'Recurring price items: [{ price: "price_monthly_xxx", quantity: 1 }]' },
+                  { name: 'subscription_data.trial_period_days', type: 'integer', desc: 'Number of free trial days before charging. Default: 0.' },
+                  { name: 'subscription_data.metadata', type: 'object', desc: 'Key-value pairs attached to the resulting Subscription object.' },
+                ]} />
+                <MultiLang id="subscription" samples={{
+                  curl: `curl -X POST http://localhost:3005/v1/checkout/sessions \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "mode": "subscription",
+    "line_items": [{ "price": "price_monthly_zmw_xxx", "quantity": 1 }],
+    "customer_email": "subscriber@example.com",
+    "subscription_data": { "trial_period_days": 14 },
+    "success_url": "https://yourapp.com/subscribed?session_id={CHECKOUT_SESSION_ID}",
+    "cancel_url": "https://yourapp.com/pricing"
+  }'`,
+                  node: `const session = await flapa.checkout.sessions.create({
+  mode: 'subscription',
+  line_items: [{ price: 'price_monthly_zmw_xxx', quantity: 1 }],
+  customer_email: 'subscriber@example.com',
+  subscription_data: { trial_period_days: 14 },
+  success_url: 'https://yourapp.com/subscribed?session_id={CHECKOUT_SESSION_ID}',
+  cancel_url: 'https://yourapp.com/pricing',
+});
+
+res.redirect(session.url);`,
+                  python: `session = flapapay.checkout.sessions.create(
+    mode="subscription",
+    line_items=[{"price": "price_monthly_zmw_xxx", "quantity": 1}],
+    customer_email="subscriber@example.com",
+    subscription_data={"trial_period_days": 14},
+    success_url="https://yourapp.com/subscribed?session_id={CHECKOUT_SESSION_ID}",
+    cancel_url="https://yourapp.com/pricing",
+)`,
+                  php: `$session = $flapa->checkout->sessions->create([
+  'mode' => 'subscription',
+  'line_items' => [['price' => 'price_monthly_zmw_xxx', 'quantity' => 1]],
+  'customer_email' => 'subscriber@example.com',
+  'subscription_data' => ['trial_period_days' => 14],
+  'success_url' => 'https://yourapp.com/subscribed',
+  'cancel_url' => 'https://yourapp.com/pricing',
+]);`,
+                }} response={`{
+  "id": "cs_live_sub_xxx",
+  "mode": "subscription",
+  "status": "open",
+  "payment_status": "unpaid",
+  "subscription": null,
+  "customer": null,
+  "url": "https://checkout.flapapay.com/pay/cs_live_sub_xxx"
+}
+
+// After completion — retrieve the session:
+// { "subscription": "sub_xxx", "customer": "cus_xxx", "payment_status": "paid" }`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── MARKETPLACE SPLIT ───────────────────────── */}
+          {activeSection === 'marketplace-split' && (
+            <section>
+              <SH tag="Checkout Sessions" title="Marketplace / Split Payment" method="POST" path="/v1/checkout/sessions"
+                subtitle="Route funds to a connected sub-merchant and retain a platform fee. The buyer pays a single total — the split happens automatically server-side." />
+              <div className="space-y-6">
+                <Callout type="info">
+                  The sub-merchant account must be created first via <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">POST /v1/connect/accounts</code>. See the <Link to="/documentation" className="text-blue-400 underline">Connect docs</Link> for the full marketplace setup guide.
+                </Callout>
+                <ParamTable params={[
+                  { name: 'transfer_data.destination', type: 'string', required: true, desc: 'Connected account ID (acct_xxx) that receives the funds.' },
+                  { name: 'transfer_data.amount', type: 'integer', desc: 'Exact amount (minor units) to route to the seller. Defaults to total minus application_fee_amount.' },
+                  { name: 'application_fee_amount', type: 'integer', desc: 'Platform fee in smallest currency unit retained by your account.' },
+                ]} />
+                <MultiLang id="split" samples={{
+                  curl: `# Customer pays ZK 1,000. Seller gets ZK 950. Platform keeps ZK 50 (5%).
+curl -X POST http://localhost:3005/v1/checkout/sessions \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "mode": "payment",
+    "line_items": [{ "price": "price_product_xxx", "quantity": 1 }],
+    "transfer_data": { "destination": "acct_abc123" },
+    "application_fee_amount": 5000,
+    "success_url": "https://yourapp.com/order/success",
+    "cancel_url": "https://yourapp.com/cart"
+  }'`,
+                  node: `const session = await flapa.checkout.sessions.create({
+  mode: 'payment',
+  line_items: [{ price: 'price_product_xxx', quantity: 1 }],
+  transfer_data: { destination: 'acct_abc123' },
+  application_fee_amount: 5000,   // ZK 50 — your platform fee
+  success_url: 'https://yourapp.com/order/success',
+  cancel_url: 'https://yourapp.com/cart',
+});`,
+                  python: `session = flapapay.checkout.sessions.create(
+    mode="payment",
+    line_items=[{"price": "price_product_xxx", "quantity": 1}],
+    transfer_data={"destination": "acct_abc123"},
+    application_fee_amount=5000,
+    success_url="https://yourapp.com/order/success",
+    cancel_url="https://yourapp.com/cart",
+)`,
+                  php: `$session = $flapa->checkout->sessions->create([
+  'mode' => 'payment',
+  'line_items' => [['price' => 'price_product_xxx', 'quantity' => 1]],
+  'transfer_data' => ['destination' => 'acct_abc123'],
+  'application_fee_amount' => 5000,
+  'success_url' => 'https://yourapp.com/order/success',
+  'cancel_url' => 'https://yourapp.com/cart',
+]);`,
+                }} response={`{
+  "id": "cs_live_mkt_xxx",
+  "url": "https://checkout.flapapay.com/pay/cs_live_mkt_xxx",
+  "transfer_data": { "destination": "acct_abc123" },
+  "application_fee_amount": 5000,
+  "amount_total": 100000,
+  "status": "open"
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── PRODUCTS ────────────────────────────────── */}
+          {activeSection === 'products' && (
+            <section>
+              <SH tag="Billing" title="Products" method="POST" path="/v1/products"
+                subtitle="Products represent goods or services you sell. Create a product first, then create Prices on top of it. Use the price ID in checkout line_items." />
+              <div className="space-y-6">
+                <ParamTable params={[
+                  { name: 'name', type: 'string', required: true, desc: 'Display name shown on invoices, receipts, and the checkout page.' },
+                  { name: 'description', type: 'string', desc: 'Optional description shown to customers during checkout.' },
+                  { name: 'images', type: 'array', desc: 'Array of image URLs (up to 8). First image shown on checkout.' },
+                  { name: 'active', type: 'boolean', desc: 'Whether the product can be purchased. Default true.' },
+                  { name: 'metadata', type: 'object', desc: 'Up to 50 key-value pairs for your own lookups.' },
+                ]} />
+                <MultiLang id="products" samples={{
+                  curl: `curl -X POST http://localhost:3005/v1/products \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Pro Plan",
+    "description": "Everything in Starter plus advanced analytics",
+    "metadata": { "tier": "pro" }
+  }'`,
+                  node: `const product = await flapa.products.create({
+  name: 'Pro Plan',
+  description: 'Everything in Starter plus advanced analytics',
+  metadata: { tier: 'pro' },
+});
+
+console.log('Product ID:', product.id);
+// Next: create a price for this product`,
+                  python: `product = flapapay.products.create(
+    "Pro Plan",
+    description="Everything in Starter plus advanced analytics",
+    metadata={"tier": "pro"},
+)
+print("Product ID:", product["id"])`,
+                  php: `$product = $flapa->products->create([
+  'name' => 'Pro Plan',
+  'description' => 'Everything in Starter plus advanced analytics',
+  'metadata' => ['tier' => 'pro'],
+]);`,
+                }} response={`{
+  "id": "prod_xxx",
+  "object": "product",
+  "name": "Pro Plan",
+  "description": "Everything in Starter plus advanced analytics",
+  "active": true,
+  "images": [],
+  "metadata": { "tier": "pro" },
+  "created": 1716000000
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── PRICES ──────────────────────────────────── */}
+          {activeSection === 'prices' && (
+            <section>
+              <SH tag="Billing" title="Prices" method="POST" path="/v1/prices"
+                subtitle="Prices define how much and how often a product costs. A product can have multiple prices (monthly/yearly). Use the price ID in checkout line_items." />
+              <div className="space-y-6">
+                <ParamTable params={[
+                  { name: 'product', type: 'string', required: true, desc: 'Product ID this price belongs to (prod_xxx).' },
+                  { name: 'unit_amount', type: 'integer', required: true, desc: 'Price in smallest currency unit. 10000 = ZK 100.00.' },
+                  { name: 'currency', type: 'string', required: true, desc: 'ISO 4217 code — e.g., "zmw", "usd".' },
+                  { name: 'recurring', type: 'object', desc: '{ interval: "month"|"week"|"year"|"day", interval_count: 1 }. Omit for one-time prices.' },
+                  { name: 'nickname', type: 'string', desc: 'Internal label (e.g., "Monthly ZMW" or "Annual Discount").' },
+                  { name: 'metadata', type: 'object', desc: 'Key-value pairs.' },
+                ]} />
+                <MultiLang id="prices" samples={{
+                  curl: `# Monthly recurring at ZK 100/month
+curl -X POST http://localhost:3005/v1/prices \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "product": "prod_xxx",
+    "unit_amount": 10000,
+    "currency": "zmw",
+    "recurring": { "interval": "month", "interval_count": 1 },
+    "nickname": "Monthly ZMW"
+  }'`,
+                  node: `// Monthly recurring price at ZK 100/month
+const price = await flapa.prices.create({
+  product: 'prod_xxx',
+  unit_amount: 10000,   // ZK 100.00
+  currency: 'zmw',
+  recurring: { interval: 'month', interval_count: 1 },
+  nickname: 'Monthly ZMW',
+});
+
+// Use price.id in checkout:
+// line_items: [{ price: price.id, quantity: 1 }]
+
+// One-time price (no recurring):
+const onetimePrice = await flapa.prices.create({
+  product: 'prod_xxx',
+  unit_amount: 50000,   // ZK 500.00
+  currency: 'zmw',
+});`,
+                  python: `# Monthly recurring at ZK 100/month
+price = flapapay.prices.create(
+    product="prod_xxx",
+    unit_amount=10000,
+    currency="zmw",
+    recurring={"interval": "month", "interval_count": 1},
+    nickname="Monthly ZMW",
+)
+print("Price ID:", price["id"])`,
+                  php: `$price = $flapa->prices->create([
+  'product' => 'prod_xxx',
+  'unit_amount' => 10000,
+  'currency' => 'zmw',
+  'recurring' => ['interval' => 'month', 'interval_count' => 1],
+  'nickname' => 'Monthly ZMW',
+]);`,
+                }} response={`{
+  "id": "price_monthly_zmw_xxx",
+  "object": "price",
+  "product": "prod_xxx",
+  "unit_amount": 10000,
+  "currency": "zmw",
+  "recurring": { "interval": "month", "interval_count": 1 },
+  "nickname": "Monthly ZMW",
+  "active": true,
+  "created": 1716000000
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── WEBHOOK CONFIRMATION ────────────────────── */}
+          {activeSection === 'webhook-confirm' && (
+            <section>
+              <SH tag="Guide" title="Webhook Confirmation" subtitle="Use webhooks as the authoritative payment confirmation — never rely solely on the redirect URL." />
+              <div className="space-y-6">
+                <Callout type="warn">
+                  <strong>Always verify the signature.</strong> The <code className="bg-amber-500/10 text-amber-300 px-1.5 py-0.5 rounded text-xs">flapapay-signature</code> header prevents replay attacks. Never skip this step in production.
+                </Callout>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  {[
+                    { event: 'checkout.session.completed', desc: 'Payment confirmed — fulfil the order.' },
+                    { event: 'checkout.session.expired', desc: 'Session expired without payment.' },
+                    { event: 'invoice.payment_succeeded', desc: 'Subscription payment collected.' },
+                    { event: 'invoice.payment_failed', desc: 'Subscription payment failed — notify customer.' },
+                    { event: 'payment_intent.succeeded', desc: 'Underlying payment intent confirmed.' },
+                    { event: 'payment_intent.payment_failed', desc: 'Payment attempt failed.' },
+                  ].map((e, i) => (
+                    <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-gray-950 border border-gray-800">
+                      <code className="text-xs text-orange-400 font-mono">{e.event}</code>
+                      <span className="text-xs text-gray-500">— {e.desc}</span>
+                    </div>
+                  ))}
+                </div>
+                <MultiLang id="webhook" samples={{
+                  curl: `# Test your webhook with the FlapaPay CLI
+flapapay listen --forward-to localhost:3000/webhook
+
+# Or send a test event from Dashboard → Webhooks → Test Event`,
+                  node: `import express from 'express';
+import { WebhookVerifier } from '@flapapay/node';
+
+const app = express();
+
+// ⚠️  Must use raw body — don't parse JSON first
+app.use('/webhook', express.raw({ type: 'application/json' }));
+
+app.post('/webhook', (req, res) => {
+  const sig = req.headers['flapapay-signature'] as string;
+
+  let event;
+  try {
+    event = WebhookVerifier.constructEvent(
+      req.body,                                   // Buffer — raw body
+      sig,
+      process.env.FLAPAPAY_WEBHOOK_SECRET!,
     );
+  } catch (err) {
+    return res.status(400).send('Signature verification failed');
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+
+    if (session.payment_status === 'paid') {
+      const orderId = session.metadata.order_id;
+      await fulfillOrder(orderId);  // ✅ safe to fulfil
+    }
+  }
+
+  if (event.type === 'invoice.payment_succeeded') {
+    const invoice = event.data.object;
+    await activateSubscription(invoice.subscription);
+  }
+
+  res.json({ received: true });
+});`,
+                  python: `from flask import Flask, request, jsonify, abort
+import flapapay, os, json
+
+app = Flask(__name__)
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    payload = request.get_data()          # raw bytes
+    sig = request.headers.get('flapapay-signature', '')
+
+    try:
+        from flapapay import WebhookVerifier
+        event = WebhookVerifier.construct_event(
+            payload,
+            sig,
+            os.environ['FLAPAPAY_WEBHOOK_SECRET'],
+        )
+    except Exception as e:
+        abort(400, str(e))
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        if session['payment_status'] == 'paid':
+            fulfil_order(session['metadata']['order_id'])
+
+    return jsonify(received=True)`,
+                  php: `<?php
+$payload = file_get_contents('php://input');
+$sig = $_SERVER['HTTP_FLAPAPAY_SIGNATURE'] ?? '';
+$secret = $_ENV['FLAPAPAY_WEBHOOK_SECRET'];
+
+try {
+    $event = \\FlapaPay\\Webhook::constructEvent($payload, $sig, $secret);
+} catch (\\Exception $e) {
+    http_response_code(400);
+    exit("Signature verification failed: " . $e->getMessage());
+}
+
+if ($event->type === 'checkout.session.completed') {
+    $session = $event->data->object;
+    if ($session->payment_status === 'paid') {
+        fulfil_order($session->metadata->order_id);
+    }
+}
+
+http_response_code(200);
+echo json_encode(['received' => true]);`,
+                }} response={`{
+  "id": "evt_xxx",
+  "object": "event",
+  "type": "checkout.session.completed",
+  "created": 1716000000,
+  "livemode": false,
+  "data": {
+    "object": {
+      "id": "cs_live_a1B2c3D4e5F6",
+      "payment_status": "paid",
+      "amount_total": 100000,
+      "currency": "ZMW",
+      "customer_email": "buyer@example.com",
+      "metadata": { "order_id": "ORD-1234" }
+    }
+  }
+}`} />
+              </div>
+            </section>
+          )}
+
+          {/* ── ERRORS ──────────────────────────────────── */}
+          {activeSection === 'errors' && (
+            <section>
+              <SH tag="Guide" title="Error Codes" subtitle="FlapaPay uses standard HTTP status codes. All errors return a JSON body with an error field." />
+              <div className="space-y-6">
+                <CodeBlock lang="json" code={`{
+  "error": "No valid price found for ID: price_xxx",
+  "code": "resource_not_found",
+  "status": 404
+}`} />
+                <div className="rounded-2xl border border-gray-800 overflow-hidden">
+                  {[
+                    { code: '200', label: 'OK', color: 'text-emerald-400', desc: 'Request succeeded.' },
+                    { code: '400', label: 'Bad Request', color: 'text-amber-400', desc: 'Invalid parameters. Check the error.message for details.' },
+                    { code: '401', label: 'Unauthorized', color: 'text-red-400', desc: 'Missing or invalid API key. Ensure Authorization: Bearer sk_... is set.' },
+                    { code: '402', label: 'Payment Required', color: 'text-amber-400', desc: 'Valid params but the request failed (e.g. card declined).' },
+                    { code: '404', label: 'Not Found', color: 'text-amber-400', desc: 'Resource does not exist. Check the ID.' },
+                    { code: '409', label: 'Conflict', color: 'text-amber-400', desc: 'Duplicate request — the resource already exists.' },
+                    { code: '429', label: 'Too Many Requests', color: 'text-amber-400', desc: 'Rate limit exceeded. Back off and retry with exponential delay.' },
+                    { code: '500', label: 'Server Error', color: 'text-red-400', desc: 'Something went wrong on FlapaPay\'s end. Retry after a short delay.' },
+                  ].map((e, i) => (
+                    <div key={e.code} className={`flex items-start gap-6 px-6 py-4 ${i % 2 === 0 ? 'bg-black/30' : ''} border-b border-gray-800/50 last:border-0`}>
+                      <div className="shrink-0 w-20">
+                        <span className={`text-sm font-black font-mono ${e.color}`}>{e.code}</span>
+                        <p className="text-[10px] text-gray-600 font-bold">{e.label}</p>
+                      </div>
+                      <p className="text-sm text-gray-400 leading-relaxed">{e.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <Callout type="tip">
+                  The Node.js SDK automatically retries on 5xx errors with exponential backoff (up to 2 retries). To disable: <code className="text-emerald-300 bg-emerald-500/10 px-1.5 py-0.5 rounded text-xs">new FlapaPay({'{ '}apiKey, maxRetries: 0{' }'})</code>.
+                </Callout>
+              </div>
+            </section>
+          )}
+
+          {/* ── PLAYGROUND (always visible at bottom) ── */}
+          <section id="playground">
+            <div className="mb-8 pb-6 border-b border-gray-800">
+              <span className="text-[10px] font-black text-orange-400 uppercase tracking-widest mb-3 block">Interactive</span>
+              <h2 className="text-2xl font-black text-white mb-2">API Playground</h2>
+              <p className="text-gray-500 leading-relaxed">Make a live call to <code className="text-gray-300 bg-gray-800 px-2 py-0.5 rounded text-sm">POST /v1/checkout/sessions</code> against your local server. No mocking — real API, real response.</p>
+            </div>
+            <Playground />
+          </section>
+
+        </main>
+      </div>
+
+      <Footer />
+    </div>
+  );
 };

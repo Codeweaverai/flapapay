@@ -6,10 +6,13 @@ node_modules/
 # Environment variables (NEVER commit secrets)
 .env
 .env.*
+!.env.example
 apps/web/.env
 apps/web/.env.*
+!apps/web/.env.example
 apps/mobile/.env
 apps/mobile/.env.*
+!apps/mobile/.env.example
 
 # Build output
 dist/

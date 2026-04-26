@@ -40,6 +40,7 @@ import { ComplianceRequirements } from './pages/ComplianceRequirements';
 import { CompanyRegistration } from './pages/CompanyRegistration';
 import { EscrowGateway } from './pages/EscrowGateway';
 import { UnifiedGateway } from './pages/Gateway';
+import SubscriptionCheckout from './pages/SubscriptionCheckout';
 import { ConnectDashboard } from './pages/ConnectDashboard';
 import { SubMerchantOnboarding } from './pages/SubMerchantOnboarding';
 import { VirtualCards } from './pages/VirtualCards';
@@ -66,8 +67,11 @@ import { AdminCMS } from './pages/admin/AdminCMS';
 import { AdminEscrowManagement } from './pages/admin/AdminEscrowManagement';
 import { AdminNotifications } from './pages/admin/AdminNotifications';
 import { AdminEscrowDetail } from './pages/admin/AdminEscrowDetail';
+import { AdminSubMerchants } from './pages/admin/AdminSubMerchants';
+import { AdminSubMerchantReview } from './pages/admin/AdminSubMerchantReview';
 import { MerchantAuth } from './pages/auth/MerchantAuth';
 import { BulkRemittanceInfo } from './pages/BulkRemittanceInfo';
+import { AllTransactions } from './pages/AllTransactions';
 import { FXLiquidityPool } from './pages/FXLiquidityPool';
 import { FXLiquidityPoolInfo } from './pages/FXLiquidityPoolInfo';
 import { InvoicingOverview } from './pages/InvoicingOverview';
@@ -75,12 +79,41 @@ import { RequestFunds } from './pages/RequestFunds';
 import { PayRequest } from './pages/PayRequest';
 import { QrPaymentsInfo } from './pages/QrPaymentsInfo';
 import { VendorPortal } from './pages/VendorPortal';
+import { ConnectSettings } from './pages/ConnectSettings';
+import { WebhooksPage } from './pages/WebhooksPage';
+import { ConnectAnalytics } from './pages/ConnectAnalytics';
+import { ConnectKYCReview } from './pages/ConnectKYCReview';
+import { ConnectDisputesPage } from './pages/ConnectDisputesPage';
+import ConnectInvitesPage from './pages/ConnectInvitesPage';
+import ConnectLedgerPage from './pages/ConnectLedgerPage';
+import InviteRegistrationPage from './pages/InviteRegistrationPage';
+import HostedOnboardingPage from './pages/HostedOnboardingPage';
+import PayoutRequestsPage from './pages/PayoutRequestsPage';
+import SubMerchantPortal from './pages/SubMerchantPortal';
+import RiskDashboard from './pages/RiskDashboard';
+import WebhookDeliveriesPage from './pages/WebhookDeliveriesPage';
+import ConnectEarningsPage from './pages/ConnectEarningsPage';
+import ConnectNotificationsPage from './pages/ConnectNotificationsPage';
+import ConnectChargesPage from './pages/ConnectChargesPage';
+import ConnectAPIReferencePage from './pages/ConnectAPIReferencePage';
+import { ConnectComponentsShowcase } from './pages/ConnectComponentsShowcase';
 import { BulkRemittance } from './pages/BulkRemittance';
 import { EscrowDashboard } from './pages/EscrowDashboard';
 import { CreateEscrow } from './pages/CreateEscrow';
 import { EscrowDetail } from './pages/EscrowDetail';
 import { PublicEscrowView } from './pages/PublicEscrowView';
 import { EscrowMarketplaceInfo } from './pages/EscrowMarketplaceInfo';
+import SubscriptionsHub from './pages/merchant/subscriptions/SubscriptionsHub';
+import SubscriptionProducts from './pages/merchant/subscriptions/SubscriptionProducts';
+import SubscriptionCustomers from './pages/merchant/subscriptions/SubscriptionCustomers';
+import SubscriptionProductDetail from './pages/merchant/subscriptions/SubscriptionProductDetail';
+import SubscriptionDetail from './pages/merchant/subscriptions/SubscriptionDetail';
+import SubscriptionInvoiceDetail from './pages/merchant/subscriptions/InvoiceDetail';
+import CouponsPage from './pages/merchant/subscriptions/CouponsPage';
+import BillingSettingsPage from './pages/merchant/subscriptions/BillingSettingsPage';
+import SubscriptionPortal from './pages/SubscriptionPortal';
+import { ClaimFundsPage } from './pages/ClaimFundsPage';
+
 
 
 // Protected Route Wrapper
@@ -112,6 +145,7 @@ function AppRoutes() {
       <Route path="/login" element={<SignInPage initialTab="login" />} />
       <Route path="/signup" element={<SignInPage initialTab="register" />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/claim/:token" element={<ClaimFundsPage />} />
       <Route path="/products" element={<ProductsPage />} />
       <Route path="/solutions" element={<SolutionsPage />} />
       <Route path="/developers" element={<DevelopersPage />} />
@@ -163,7 +197,7 @@ function AppRoutes() {
         path="/transactions"
         element={
           <ProtectedRoute>
-            <TransactionsPage />
+            <AllTransactions />
           </ProtectedRoute>
         }
       />
@@ -308,6 +342,129 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/merchant/connect/settings"
+        element={
+          <ProtectedRoute>
+            <ConnectSettings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/webhooks"
+        element={
+          <ProtectedRoute>
+            <WebhooksPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/analytics"
+        element={
+          <ProtectedRoute>
+            <ConnectAnalytics />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/kyc"
+        element={
+          <ProtectedRoute>
+            <ConnectKYCReview />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/disputes"
+        element={
+          <ProtectedRoute>
+            <ConnectDisputesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/invites"
+        element={
+          <ProtectedRoute>
+            <ConnectInvitesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/ledger"
+        element={
+          <ProtectedRoute>
+            <ConnectLedgerPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="/connect/invite/:token" element={<InviteRegistrationPage />} />
+      <Route path="/connect/onboarding/:token" element={<HostedOnboardingPage />} />
+      <Route path="/sub-merchant" element={<SubMerchantPortal />} />
+      <Route
+        path="/merchant/connect/risk"
+        element={
+          <ProtectedRoute>
+            <RiskDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/webhook-deliveries"
+        element={
+          <ProtectedRoute>
+            <WebhookDeliveriesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/earnings"
+        element={
+          <ProtectedRoute>
+            <ConnectEarningsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/notifications"
+        element={
+          <ProtectedRoute>
+            <ConnectNotificationsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/payout-requests"
+        element={
+          <ProtectedRoute>
+            <PayoutRequestsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/charges"
+        element={
+          <ProtectedRoute>
+            <ConnectChargesPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/api-reference"
+        element={
+          <ProtectedRoute>
+            <ConnectAPIReferencePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/connect/components"
+        element={
+          <ProtectedRoute>
+            <ConnectComponentsShowcase />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/merchant/settings"
         element={
           <ProtectedRoute>
@@ -355,9 +512,77 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/merchant/subscriptions"
+        element={
+          <ProtectedRoute>
+            <SubscriptionsHub />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/products"
+        element={
+          <ProtectedRoute>
+            <SubscriptionProducts />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/customers"
+        element={
+          <ProtectedRoute>
+            <SubscriptionCustomers />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/products/:id"
+        element={
+          <ProtectedRoute>
+            <SubscriptionProductDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/:id"
+        element={
+          <ProtectedRoute>
+            <SubscriptionDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/invoices/:id"
+        element={
+          <ProtectedRoute>
+            <SubscriptionInvoiceDetail />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/coupons"
+        element={
+          <ProtectedRoute>
+            <CouponsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/merchant/subscriptions/settings"
+        element={
+          <ProtectedRoute>
+            <BillingSettingsPage />
+          </ProtectedRoute>
+        }
+      />
 
-      {/* Unified Gateway - Public Payment Route */}
+      {/* Customer Self-Service Portal (public, token-gated) */}
+      <Route path="/subscriptions/portal/:token" element={<SubscriptionPortal />} />
+
+      {/* Unified Gateways - Public Payment Routes */}
       <Route path="/checkout/:id" element={<UnifiedGateway />} />
+      <Route path="/checkout/subscription/:id" element={<SubscriptionCheckout />} />
 
       {/* Public Request Payment Route */}
       <Route path="/pay-request/:id" element={<PayRequest />} />
@@ -394,6 +619,8 @@ function AppRoutes() {
         <Route path="transactions" element={<AdminTransactions />} />
         <Route path="merchants" element={<AdminMerchants />} />
         <Route path="merchants/:id/kyc" element={<AdminMerchantReview />} />
+        <Route path="sub-merchants" element={<AdminSubMerchants />} />
+        <Route path="sub-merchants/:id" element={<AdminSubMerchantReview />} />
         <Route path="escrows" element={<AdminEscrowManagement />} />
         <Route path="escrows/:id" element={<AdminEscrowDetail />} />
         <Route path="cms" element={<AdminCMS />} />

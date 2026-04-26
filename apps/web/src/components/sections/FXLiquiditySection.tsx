@@ -33,7 +33,7 @@ export const FXLiquiditySection: React.FC = () => {
     ];
 
     return (
-        <section className="relative py-24 overflow-hidden bg-[#064e3b]">
+        <section className="relative py-24 mt-32 overflow-hidden bg-[#064e3b]">
             {/* Background Decorative Elements */}
             <div className="absolute top-0 left-0 w-full h-full">
                 <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-emerald-500/10 rounded-full blur-3xl -mr-64 -mt-64"></div>

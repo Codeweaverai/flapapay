@@ -12,12 +12,20 @@ export const Login: React.FC = () => {
     const [isLoading, setIsLoading] = React.useState(false);
     const [error, setError] = React.useState('');
     const [success, setSuccess] = React.useState('');
+    const [step, setStep] = React.useState<'password' | 'pin'>('password');
+    const [partialToken, setPartialToken] = React.useState('');
+    const [pin, setPin] = React.useState('');
 
     const onSubmit = async (data: any) => {
         setIsLoading(true);
         setError('');
         try {
             const res = await api.post('/auth/login', data);
+            if (res.data.pinRequired) {
+                setPartialToken(res.data.partialToken);
+                setStep('pin');
+                return;
+            }
             setSuccess('Welcome back! Redirecting...');
             setTimeout(() => {
                 login(res.data.token, res.data.user);
@@ -25,6 +33,24 @@ export const Login: React.FC = () => {
             }, 1000);
         } catch (err: any) {
             setError(err.response?.data?.error || 'Invalid credentials');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const onPinSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+        try {
+            const res = await api.post('/auth/verify-pin', { partialToken, pin });
+            setSuccess('Welcome back! Redirecting...');
+            setTimeout(() => {
+                login(res.data.token, res.data.user);
+                navigate('/dashboard');
+            }, 1000);
+        } catch (err: any) {
+            setError(err.response?.data?.error || 'Invalid PIN');
         } finally {
             setIsLoading(false);
         }
@@ -68,6 +94,52 @@ export const Login: React.FC = () => {
                     </div>
 
                     <div className="space-y-8">
+                        {step === 'pin' ? (
+                            <form className="space-y-6" onSubmit={onPinSubmit}>
+                                <div className="text-center">
+                                    <div className="w-14 h-14 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                        <svg className="w-7 h-7 text-orange-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-gray-500 font-bold text-sm">Enter your 4-digit security PIN</p>
+                                </div>
+                                {error && (
+                                    <div className="bg-red-50 border border-red-100 text-red-600 text-sm font-bold py-3 px-4 rounded-2xl text-center">
+                                        {error}
+                                    </div>
+                                )}
+                                {success && (
+                                    <div className="bg-green-50 border border-green-100 text-green-600 text-sm font-bold py-3 px-4 rounded-2xl text-center">
+                                        {success}
+                                    </div>
+                                )}
+                                <input
+                                    type="password"
+                                    inputMode="numeric"
+                                    maxLength={4}
+                                    value={pin}
+                                    onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
+                                    placeholder="••••"
+                                    className="w-full bg-gray-50 border-2 border-gray-50 focus:border-orange-500/20 focus:bg-white rounded-2xl px-5 py-4 text-gray-900 font-black text-center text-2xl tracking-[1rem] placeholder:text-gray-300 transition-all outline-none"
+                                />
+                                <Button
+                                    type="submit"
+                                    className="w-full py-5 bg-orange-500 text-white text-lg font-black rounded-2xl shadow-[0_20px_40px_-12px_rgba(249,115,22,0.4)] hover:shadow-[0_25px_50px_-12px_rgba(249,115,22,0.5)] transform hover:-translate-y-1 transition-all duration-300 border-none"
+                                    isLoading={isLoading}
+                                >
+                                    Verify PIN
+                                </Button>
+                                <button
+                                    type="button"
+                                    onClick={() => { setStep('password'); setError(''); setPin(''); }}
+                                    className="w-full text-center text-sm text-gray-400 font-bold hover:text-orange-500 transition-colors"
+                                >
+                                    Back to login
+                                </button>
+                            </form>
+                        ) : (
+                        <>
                         {/* Google Login Button - Repositioned to Top */}
                         <button
                             type="button"
@@ -144,6 +216,8 @@ export const Login: React.FC = () => {
                                 </p>
                             </div>
                         </form>
+                        </>
+                        )}
                     </div>
                 </div>
 

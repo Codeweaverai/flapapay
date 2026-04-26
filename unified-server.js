@@ -1,4 +1,5 @@
 require('dotenv').config();
+const _dbgLog = (...a) => { try { require('fs').appendFileSync('C:\\FlapaPay\\debug.log', new Date().toISOString() + ' ' + a.map(x => typeof x === 'object' ? JSON.stringify(x) : x).join(' ') + '\n'); } catch(e){} };
 const express = require('express');
 const React = require('react');
 const cors = require('cors');
@@ -15,6 +16,9 @@ const MastercardCardService = require('./services/MastercardCardService');
 const PawaPayService = require('./services/PawaPayService');
 const EscrowService = require('./services/EscrowService');
 const DeveloperGateway = require('./services/DeveloperGateway');
+const CybersourceService = require('./services/CybersourceService');
+const { runSchedulerTick, runRetryWorker, executePayout, emitWebhookForMerchant, retryFailedWebhooks, ensureWebhookRetryColumns } = require('./services/PayoutSchedulerService');
+const SubscriptionRenewalService = require('./services/SubscriptionRenewalService');
 const multer = require('multer');
 
 const fs = require('fs');
@@ -136,10 +140,19 @@ const { Resend } = require('resend');
 const ReactPDF = require('@react-pdf/renderer');
 const { TransferReceiptDocument } = require('./services/TransferReceiptGenerator');
 const { renderTransferEmail } = require('./emails/TransferEmail');
+const {
+    renderClaimFundsEmail,
+    renderPendingPaymentConfirmEmail,
+    renderFundsCreditedEmail,
+    renderPaymentExpiredEmail,
+} = require('./emails/ClaimFundsEmail');
 const { InvoiceDocument } = require('./services/InvoiceGenerator');
 const { renderInvoiceEmail } = require('./emails/InvoiceEmail');
 const { renderRequestMoneyEmail } = require('./emails/RequestMoneyEmail');
 const { renderForgotPasswordEmail } = require('./emails/ForgotPasswordEmail');
+
+// Central email dispatcher — use this for all new email sends
+const EmailService = require('./services/EmailService');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 if (process.env.RESEND_API_KEY) {
@@ -147,6 +160,11 @@ if (process.env.RESEND_API_KEY) {
 } else {
     console.warn('[Resend] Warning: RESEND_API_KEY is missing');
 }
+
+// Canonical sender — all emails use the verified flapabay.com domain
+const EMAIL_FROM = process.env.RESEND_FROM
+    ? `FlapaPay <${process.env.RESEND_FROM}>`
+    : 'FlapaPay <noreply@flapabay.com>';
 
 // --- Real-time Postgres Listener ---
 const listenerClient = new Client({
@@ -187,6 +205,23 @@ const FX_CACHE = new Map();
 const FX_QUOTES = new Map();
 const FX_SPREAD = 0.02; // 2% configurable spread
 
+// Fallback rates (USD base) updated periodically — used when live API is unavailable
+const FX_FALLBACK_RATES_USD = {
+    USD: 1, ZMW: 19.54, NGN: 1605.0, EUR: 0.9215, GBP: 0.7880,
+    KES: 129.50, TZS: 2640.0, UGX: 3720.0, GHS: 15.80, ZAR: 18.42,
+    RWF: 1310.0, MWK: 1730.0, BWP: 13.65, NAD: 18.42, SZL: 18.42,
+};
+
+const getFallbackRates = (baseCurrency) => {
+    const baseToUSD = FX_FALLBACK_RATES_USD[baseCurrency];
+    if (!baseToUSD) return null;
+    const rates = {};
+    for (const [cur, rate] of Object.entries(FX_FALLBACK_RATES_USD)) {
+        rates[cur] = rate / baseToUSD;
+    }
+    return rates;
+};
+
 const getExchangeRates = async (baseCurrency) => {
     const now = Date.now();
     if (FX_CACHE.has(baseCurrency)) {
@@ -198,17 +233,23 @@ const getExchangeRates = async (baseCurrency) => {
 
     try {
         const apiKey = process.env.EXCHANGE_RATE_API_KEY;
-        const response = await axios.get(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/${baseCurrency}`);
+        const response = await axios.get(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/${baseCurrency}`, { timeout: 5000 });
 
         if (response.data.result === 'success') {
             const rates = response.data.conversion_rates;
             FX_CACHE.set(baseCurrency, { rates, timestamp: now });
             return rates;
         }
-        throw new Error('Failed to fetch exchange rates');
+        throw new Error('Exchange rate API returned non-success');
     } catch (err) {
-        console.error('FX Rate Error:', err.message);
-        throw err;
+        console.warn(`[FX] Live rate fetch failed for ${baseCurrency}: ${err.message}. Using fallback rates.`);
+        // Return stale cache if available, otherwise use fallback
+        if (FX_CACHE.has(baseCurrency)) {
+            return FX_CACHE.get(baseCurrency).rates;
+        }
+        const fallback = getFallbackRates(baseCurrency);
+        if (fallback) return fallback;
+        throw new Error(`Unsupported base currency: ${baseCurrency}`);
     }
 };
 
@@ -353,11 +394,28 @@ const getOrCreateStripeCustomer = async (userId, email) => {
     }
 };
 
+// --- CyberSource: get or create TMS customer token for a FlapaPay user ---
+const getOrCreateCybersourceCustomer = async (userId, email, name = '') => {
+    try {
+        const userRes = await pool.query('SELECT cybersource_customer_id FROM users WHERE id = $1', [userId]);
+        let customerId = userRes.rows[0]?.cybersource_customer_id;
+        if (!customerId) {
+            customerId = await CybersourceService.tokens.createCustomer({ userId, email, name });
+            await pool.query('UPDATE users SET cybersource_customer_id = $1 WHERE id = $2', [customerId, userId]);
+        }
+        return customerId;
+    } catch (err) {
+        console.error('[CyberSource] getOrCreateCybersourceCustomer error:', err.message);
+        throw err;
+    }
+};
+
 // --- Schema Initialization ---
 const ensureSchema = async () => {
     try {
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS cybersource_customer_id VARCHAR(255)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS default_payment_method_id VARCHAR(255)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_hash VARCHAR(255)');
@@ -454,6 +512,23 @@ const ensureSchema = async () => {
         await pool.query('ALTER TABLE charges ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT FALSE');
         await pool.query('ALTER TABLE charges ADD COLUMN IF NOT EXISTS available_at TIMESTAMP WITH TIME ZONE');
         await pool.query('ALTER TABLE charges ADD COLUMN IF NOT EXISTS is_settled BOOLEAN DEFAULT FALSE');
+
+        // Test/Live wallet and ledger separation
+        await pool.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT TRUE');
+        await pool.query('ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT TRUE');
+        // Create test wallets for users who only have live wallets
+        await pool.query(`
+            INSERT INTO wallets (user_id, currency, balance, status, livemode)
+            SELECT DISTINCT w.user_id, w.currency, 0.00, 'ACTIVE', FALSE
+            FROM wallets w
+            WHERE w.livemode = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM wallets tw
+                WHERE tw.user_id = w.user_id
+                AND tw.currency = w.currency
+                AND tw.livemode = FALSE
+            )
+        `);
 
         // Create webhooks table
         await pool.query(`
@@ -556,7 +631,7 @@ const ensureSchema = async () => {
             CREATE TABLE IF NOT EXISTS checkout_sessions (
                 id VARCHAR(255) PRIMARY KEY,
                 merchant_id UUID REFERENCES merchants(id),
-                amount DECIMAL(15, 2) NOT NULL,
+                amount DECIMAL(15, 2),
                 currency VARCHAR(10) NOT NULL,
                 payment_method_types JSONB, -- ['card', 'mobile_money']
                 success_url TEXT,
@@ -567,12 +642,95 @@ const ensureSchema = async () => {
                 application_fee_amount DECIMAL(15, 2),
                 transfer_data JSONB, -- { destination: 'acct_...' }
                 payment_intent VARCHAR(255),
+                mode VARCHAR(50) DEFAULT 'payment',
+                subscription_data JSONB,
+                customer_id UUID,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS application_fee_amount DECIMAL(15, 2)');
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS transfer_data JSONB');
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS payment_intent VARCHAR(255)');
+        await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(50) DEFAULT \'payment\'');
+        await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS subscription_data JSONB');
+        await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS customer_id UUID');
+
+        // Create Products Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS products (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                metadata JSONB DEFAULT '{}',
+                status VARCHAR(50) DEFAULT 'active',
+                merchant_id UUID REFERENCES merchants(id),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        `);
+
+        // Create Prices Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS prices (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                product_id UUID REFERENCES products(id) ON DELETE CASCADE,
+                amount NUMERIC NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                interval VARCHAR(50) NOT NULL,
+                billing_interval VARCHAR(50) NOT NULL,
+                interval_count INTEGER DEFAULT 1,
+                trial_days INTEGER DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        `);
+
+        // Create Customers Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS customers (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email VARCHAR(255) NOT NULL,
+                name VARCHAR(255),
+                stripe_id VARCHAR(255),
+                merchant_id UUID REFERENCES merchants(id),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(email, merchant_id)
+            )
+        `);
+
+        // Create Subscriptions Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                customer_id UUID REFERENCES customers(id),
+                price_id UUID REFERENCES prices(id),
+                status VARCHAR(50) DEFAULT 'incomplete', -- active, canceled, incomplete
+                current_period_start TIMESTAMP WITH TIME ZONE,
+                current_period_end TIMESTAMP WITH TIME ZONE,
+                stripe_subscription_id VARCHAR(255),
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        `);
+
+        // Create Sub Invoice Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS sub_invoice (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subscription_id UUID REFERENCES subscriptions(id),
+                customer_id UUID REFERENCES customers(id),
+                amount NUMERIC NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                status VARCHAR(50) DEFAULT 'open', -- paid, open, void, uncollectible
+                stripe_invoice_id VARCHAR(255),
+                payment_intent_id VARCHAR(255),
+                due_date TIMESTAMP WITH TIME ZONE,
+                paid_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        `);
         // Create virtual_cards table (Mastercard)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS virtual_cards (
@@ -670,6 +828,126 @@ const ensureSchema = async () => {
             )
         `);
 
+        // Payout Schedules (Task 1.1)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS payout_schedules (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                account_id UUID NOT NULL REFERENCES connected_accounts(id) ON DELETE CASCADE,
+                schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+                min_threshold NUMERIC(12,2) NOT NULL DEFAULT 50.00,
+                currency VARCHAR(10) NOT NULL DEFAULT 'ZMW',
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                next_run_at TIMESTAMP NOT NULL DEFAULT NOW() + INTERVAL '1 day',
+                last_run_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(account_id)
+            )
+        `);
+
+        // Payout Retry Log (Task 1.2)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS payout_retry_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                transfer_id UUID NOT NULL,
+                account_id UUID NOT NULL,
+                amount NUMERIC(12,2) NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                payout_method JSONB,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                error TEXT,
+                next_retry_at TIMESTAMP,
+                resolved BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Webhook Endpoints (Task 1.4)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS webhook_endpoints (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+                url TEXT NOT NULL,
+                events TEXT[] NOT NULL DEFAULT ARRAY['*'],
+                signing_secret VARCHAR(64) NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Webhook Delivery Log (Task 1.4)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                endpoint_id UUID NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
+                event VARCHAR(100) NOT NULL,
+                payload TEXT,
+                response_status INTEGER,
+                response_body TEXT,
+                delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Add metadata column to transfers if missing
+        await pool.query('ALTER TABLE transfers ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT \'{}\'');
+
+        // Phase 2: Refunds table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS refunds (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                charge_id VARCHAR(100) NOT NULL,
+                merchant_id UUID NOT NULL REFERENCES merchants(id),
+                amount NUMERIC(15,2) NOT NULL,
+                currency VARCHAR(10) NOT NULL DEFAULT 'ZMW',
+                reason VARCHAR(200),
+                status VARCHAR(30) NOT NULL DEFAULT 'succeeded',
+                platform_fee_reversal NUMERIC(15,2) DEFAULT 0,
+                sub_merchant_reversal NUMERIC(15,2) DEFAULT 0,
+                destination_merchant_id UUID REFERENCES connected_accounts(id),
+                livemode BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Phase 2: Connected account API keys
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS connected_account_api_keys (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                account_id UUID NOT NULL REFERENCES connected_accounts(id) ON DELETE CASCADE,
+                key_type VARCHAR(10) NOT NULL DEFAULT 'test',
+                public_key VARCHAR(100) UNIQUE NOT NULL,
+                secret_key_hash VARCHAR(200) NOT NULL,
+                secret_key_preview VARCHAR(20) NOT NULL,
+                label VARCHAR(100) DEFAULT 'Default Key',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Phase 2: Account controls columns
+        await pool.query(`
+            ALTER TABLE connected_accounts
+            ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMP,
+            ADD COLUMN IF NOT EXISTS suspension_reason TEXT,
+            ADD COLUMN IF NOT EXISTS max_payout_amount NUMERIC(15,2) DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS platform_notes TEXT
+        `);
+
+        // Connect Platform Configuration
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS connect_config (
+                merchant_id UUID PRIMARY KEY REFERENCES merchants(id),
+                platform_fee_percent NUMERIC(5,2) NOT NULL DEFAULT 2.50,
+                fee_collection_method VARCHAR(30) NOT NULL DEFAULT 'per_transaction',
+                settlement_delay_days INTEGER NOT NULL DEFAULT 1,
+                min_payout_threshold NUMERIC(12,2) NOT NULL DEFAULT 50.00,
+                auto_payout_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                auto_payout_schedule VARCHAR(20) NOT NULL DEFAULT 'daily',
+                currency VARCHAR(10) NOT NULL DEFAULT 'ZMW',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
         // Support Sessions and Chat Messages
         await pool.query(`
             CREATE TABLE IF NOT EXISTS support_sessions (
@@ -714,6 +992,97 @@ const ensureSchema = async () => {
             )
         `);
 
+        // ── Hosted Onboarding Links (Stripe account_links equivalent) ────────
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS onboarding_links (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                token VARCHAR(64) UNIQUE NOT NULL,
+                platform_merchant_id UUID REFERENCES merchants(id),
+                account_id UUID REFERENCES connected_accounts(id),
+                return_url TEXT,
+                refresh_url TEXT,
+                expires_at TIMESTAMP NOT NULL,
+                used_at TIMESTAMP,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                platform_name VARCHAR(255),
+                platform_logo_url TEXT,
+                platform_color VARCHAR(20) DEFAULT '#f97316',
+                partial_data JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // ── OTP Verifications ─────────────────────────────────────────────────
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS otp_verifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                onboarding_token VARCHAR(64) NOT NULL,
+                purpose VARCHAR(50) NOT NULL,
+                recipient VARCHAR(255) NOT NULL,
+                code_hash VARCHAR(255) NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                verified_at TIMESTAMP,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_otp_token_purpose ON otp_verifications (onboarding_token, purpose)`);
+
+        // ── connect_invites (if not yet created) ─────────────────────────────
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS connect_invites (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                token VARCHAR(64) UNIQUE NOT NULL,
+                platform_merchant_id UUID REFERENCES merchants(id),
+                email VARCHAR(255),
+                business_name VARCHAR(255),
+                status VARCHAR(20) DEFAULT 'pending',
+                used_by UUID REFERENCES connected_accounts(id),
+                used_at TIMESTAMP,
+                expires_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        // ── Unclaimed Payments (Pay Anyone / PayPal-style escrow) ─────────────
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS unclaimed_payments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                sender_id UUID NOT NULL REFERENCES users(id),
+                debit_wallet_id UUID NOT NULL REFERENCES wallets(id),
+                recipient_email VARCHAR(255) NOT NULL,
+                amount DECIMAL(15,2) NOT NULL,
+                fee DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+                currency VARCHAR(10) NOT NULL,
+                description TEXT,
+                status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+                claim_token VARCHAR(64) UNIQUE NOT NULL,
+                transaction_reference VARCHAR(64),
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TIMESTAMP,
+                credited_wallet_id UUID REFERENCES wallets(id)
+            )
+        `);
+        await pool.query(`ALTER TABLE unclaimed_payments ADD COLUMN IF NOT EXISTS transaction_reference VARCHAR(64)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_unclaimed_email ON unclaimed_payments (recipient_email, status)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_unclaimed_token ON unclaimed_payments (claim_token)`);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS payment_instruments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                cybersource_customer_id VARCHAR(255) NOT NULL,
+                cybersource_instrument_id VARCHAR(255) NOT NULL UNIQUE,
+                cybersource_identifier_id VARCHAR(255),
+                last4 VARCHAR(4),
+                brand VARCHAR(20),
+                exp_month VARCHAR(2),
+                exp_year VARCHAR(4),
+                is_default BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
         console.log('Database schema ensured');
     } catch (err) {
         console.error('Schema Sync Error:', err);
@@ -988,7 +1357,6 @@ app.post('/auth/register', async (req, res) => {
     const { email, password, fullName, pin } = req.body;
 
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
-    if (!pin || pin.length !== 4) return res.status(400).json({ error: 'A 4-digit security PIN is required' });
     if (!validateEmail(email)) return res.status(400).json({ error: 'Invalid email format' });
 
     try {
@@ -996,31 +1364,114 @@ app.post('/auth/register', async (req, res) => {
         if (userCheck.rows.length > 0) return res.status(409).json({ error: 'User already exists' });
 
         const passwordHash = await bcrypt.hash(password, 12);
-        const pinHash = await bcrypt.hash(pin, 12);
+        const pinHash = (pin && pin.length === 4) ? await bcrypt.hash(pin, 12) : null;
 
         // Handle new registration fields (firstName, lastName, phone)
         const fullNameStr = fullName || (req.body.firstName && req.body.lastName ? `${req.body.firstName} ${req.body.lastName}` : '');
         const phone = req.body.phone || '';
 
-        await pool.query('BEGIN');
-        const userResult = await pool.query(
-            `INSERT INTO users (email, password_hash, pin_hash, full_name, phone, email_verified, created_at)
-             VALUES ($1, $2, $3, $4, $5, true, NOW()) RETURNING id, email`,
-            [email, passwordHash, pinHash, fullNameStr, phone]
-        );
-        const user = userResult.rows[0];
+        const regClient = await pool.connect();
+        try {
+            await regClient.query('BEGIN');
 
-        // Create default wallets
-        await pool.query(`INSERT INTO wallets (user_id, currency, balance) VALUES ($1, 'ZMW', 0.00)`, [user.id]);
-        await pool.query(`INSERT INTO wallets (user_id, currency, balance) VALUES ($1, 'USD', 0.00)`, [user.id]);
+            const userResult = await regClient.query(
+                `INSERT INTO users (email, password_hash, pin_hash, full_name, phone, email_verified, created_at)
+                 VALUES ($1, $2, $3, $4, $5, true, NOW()) RETURNING id, email, full_name`,
+                [email, passwordHash, pinHash, fullNameStr, phone]
+            );
+            const user = userResult.rows[0];
 
-        await pool.query('COMMIT');
+            // Create default live and test wallets
+            const zmwLive = (await regClient.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, true) RETURNING id`, [user.id])).rows[0];
+            const usdLive = (await regClient.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, true) RETURNING id`, [user.id])).rows[0];
+            await regClient.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, false)`, [user.id]);
+            await regClient.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, false)`, [user.id]);
 
-        const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+            const walletMap = { ZMW: zmwLive.id, USD: usdLive.id };
 
-        res.status(201).json({ message: 'User registered successfully', user, token });
+            // ── Auto-credit any unclaimed payments waiting for this email ──────
+            const pendingPayments = await regClient.query(
+                `SELECT * FROM unclaimed_payments WHERE recipient_email = $1 AND status = 'PENDING' AND expires_at > NOW()`,
+                [email.toLowerCase().trim()]
+            );
+
+            const creditedPayments = [];
+            for (const p of pendingPayments.rows) {
+                const targetWalletId = walletMap[p.currency];
+                if (!targetWalletId) continue; // currency not supported yet — skip
+
+                // Credit new user's wallet
+                await regClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [p.amount, targetWalletId]);
+
+                // Complete the ledger entry — fill in credit_wallet_id and mark COMPLETED
+                if (p.transaction_reference) {
+                    await regClient.query(
+                        `UPDATE ledger_entries
+                         SET credit_wallet_id = $1, status = 'COMPLETED'
+                         WHERE transaction_reference = $2 AND transaction_type = 'UNCLAIMED_TRANSFER'`,
+                        [targetWalletId, p.transaction_reference]
+                    );
+                }
+
+                // Mark unclaimed payment as claimed
+                await regClient.query(
+                    `UPDATE unclaimed_payments SET status = 'CLAIMED', claimed_at = NOW(), credited_wallet_id = $1 WHERE id = $2`,
+                    [targetWalletId, p.id]
+                );
+                creditedPayments.push(p);
+            }
+
+            await regClient.query('COMMIT');
+
+            // Send credited emails (non-blocking, after commit)
+            for (const p of creditedPayments) {
+                const senderRes = await pool.query('SELECT email, full_name FROM users WHERE id = $1', [p.sender_id]);
+                const senderInfo = senderRes.rows[0];
+
+                // Email new user: "your funds are here"
+                renderFundsCreditedEmail({
+                    recipientName: user.full_name || email,
+                    senderName: senderInfo?.full_name || senderInfo?.email || 'Someone',
+                    amount: parseFloat(p.amount).toFixed(2),
+                    currency: p.currency,
+                }).then(html => {
+                    resend.emails.send({
+                        from: EMAIL_FROM,
+                        to: [email],
+                        subject: `Your funds are here — ${p.currency} ${parseFloat(p.amount).toFixed(2)} credited to your wallet`,
+                        html,
+                    }).catch(e => console.error('Failed to send credited email:', e));
+                });
+
+                // Notify sender that payment was claimed
+                if (senderInfo) {
+                    resend.emails.send({
+                        from: EMAIL_FROM,
+                        to: [senderInfo.email],
+                        subject: `Your payment of ${p.currency} ${parseFloat(p.amount).toFixed(2)} was claimed by ${email}`,
+                        html: `<p>Hello ${senderInfo.full_name || 'there'},</p>
+                               <p>Your pending payment of <strong>${p.currency} ${parseFloat(p.amount).toFixed(2)}</strong> to <strong>${email}</strong> has been claimed. The funds have been credited to their new FlapaPay wallet.</p>
+                               <p>— The FlapaPay Team</p>`,
+                    }).catch(e => console.error('Failed to send sender claim notification:', e));
+                }
+            }
+
+            const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+
+            res.status(201).json({
+                message: 'User registered successfully',
+                user,
+                token,
+                creditedPayments: creditedPayments.length,
+            });
+
+        } catch (regErr) {
+            await regClient.query('ROLLBACK');
+            throw regErr;
+        } finally {
+            regClient.release();
+        }
     } catch (err) {
-        await pool.query('ROLLBACK');
         console.error('Registration error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
@@ -1048,17 +1499,9 @@ app.post('/auth/login', async (req, res) => {
             });
         }
 
-        // LEGACY USER: If no PIN is set, require PIN setup
-        const setupToken = jwt.sign({ userId: user.id, email: user.email, partial: true, setup: true }, JWT_SECRET, { expiresIn: '5m' });
-        return res.json({
-            message: 'Password verified. PIN setup required.',
-            setupPinRequired: true,
-            partialToken: setupToken
-        });
-
+        // No PIN set — issue a full token directly
         const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
-
-        res.json({
+        return res.json({
             message: 'Login successful',
             user: {
                 id: user.id,
@@ -1067,9 +1510,9 @@ app.post('/auth/login', async (req, res) => {
                 role: user.role,
                 defaultPaymentMethodId: user.default_payment_method_id,
                 avatarUrl: user.avatar_url,
-                hasPin: !!user.pin_hash
+                hasPin: false
             },
-            token: token
+            token
         });
     } catch (err) {
         console.error('Login error:', err);
@@ -1156,7 +1599,7 @@ app.post('/auth/setup-pin', async (req, res) => {
 
 app.get('/auth/me', authenticateToken, async (req, res) => {
     try {
-        const walletsResult = await pool.query('SELECT id, currency, balance FROM wallets WHERE user_id = $1', [req.user.id]);
+        const walletsResult = await pool.query('SELECT id, currency, balance FROM wallets WHERE user_id = $1 AND livemode = TRUE', [req.user.id]);
         const userRes = await pool.query('SELECT id, email, full_name, role, default_payment_method_id, avatar_url, pin_hash FROM users WHERE id = $1', [req.user.id]);
         const updatedUser = userRes.rows[0];
 
@@ -1226,10 +1669,10 @@ app.post('/auth/forgot-password', async (req, res) => {
         const resetLink = `http://localhost:5173/reset-password?token=${resetToken}`;
 
         await resend.emails.send({
-            from: 'FlapaPay <noreply@skillpulse.cloud>',
+            from: EMAIL_FROM,
             to: [user.email],
             subject: 'Reset your FlapaPay password',
-            html: renderForgotPasswordEmail({
+            html: await renderForgotPasswordEmail({
                 userEmail: user.email,
                 resetLink: resetLink
             })
@@ -1372,7 +1815,11 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
 
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM wallets WHERE user_id = $1', [req.user.id]);
+        const isTestMode = req.query.mode === 'test';
+        const result = await pool.query(
+            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 ORDER BY currency',
+            [req.user.id, !isTestMode]
+        );
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch wallets' });
@@ -1465,10 +1912,10 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
 
                 // Sender Email
                 resend.emails.send({
-                    from: 'FlapaPay <noreply@skillpulse.cloud>',
+                    from: EMAIL_FROM,
                     to: [sender.email],
                     subject: `Transfer Successful: ${currency} ${amount} sent to ${receiver.full_name}`,
-                    html: renderTransferEmail({
+                    html: await renderTransferEmail({
                         type: 'SENDER',
                         senderName: sender.full_name,
                         receiverName: receiver.full_name,
@@ -1483,10 +1930,10 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
 
                 // Receiver Email
                 resend.emails.send({
-                    from: 'FlapaPay <noreply@skillpulse.cloud>',
+                    from: EMAIL_FROM,
                     to: [receiver.email],
                     subject: `You received ${currency} ${amount} from ${sender.full_name}`,
-                    html: renderTransferEmail({
+                    html: await renderTransferEmail({
                         type: 'RECEIVER',
                         senderName: sender.full_name,
                         receiverName: receiver.full_name,
@@ -1598,10 +2045,10 @@ app.post('/payments/send-from-card', authenticateToken, async (req, res) => {
 
                 // Sender Email
                 resend.emails.send({
-                    from: 'FlapaPay <noreply@skillpulse.cloud>',
+                    from: EMAIL_FROM,
                     to: [sender.email],
                     subject: `Card Transfer Successful: ${currency} ${amount} sent to ${receiver.full_name}`,
-                    html: renderTransferEmail({
+                    html: await renderTransferEmail({
                         type: 'SENDER',
                         senderName: sender.full_name,
                         receiverName: receiver.full_name,
@@ -1616,10 +2063,10 @@ app.post('/payments/send-from-card', authenticateToken, async (req, res) => {
 
                 // Receiver Email
                 resend.emails.send({
-                    from: 'FlapaPay <noreply@skillpulse.cloud>',
+                    from: EMAIL_FROM,
                     to: [receiver.email],
                     subject: `You received ${currency} ${amount} from ${sender.full_name}`,
-                    html: renderTransferEmail({
+                    html: await renderTransferEmail({
                         type: 'RECEIVER',
                         senderName: sender.full_name,
                         receiverName: receiver.full_name,
@@ -1644,6 +2091,246 @@ app.post('/payments/send-from-card', authenticateToken, async (req, res) => {
         res.status(400).json({ error: err.message });
     } finally {
         if (client) client.release();
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAY ANYONE — Unclaimed / Escrow Payments
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /payments/transfer-to-unregistered
+// Deducts funds from sender, creates unclaimed_payment record, sends claim email
+app.post('/payments/transfer-to-unregistered', authenticateToken, async (req, res) => {
+    const { debitWalletId, recipientEmail, amount, currency, description, pin } = req.body;
+
+    if (!debitWalletId || !recipientEmail || !amount || !currency) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (!recipientEmail.includes('@')) {
+        return res.status(400).json({ error: 'Invalid recipient email' });
+    }
+    if (parseFloat(amount) <= 0) {
+        return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    // Verify PIN
+    const isPinValid = await verifyUserPin(req.user.id, pin);
+    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+
+    // Double-check recipient is actually not registered
+    const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [recipientEmail.toLowerCase().trim()]);
+    if (existingUser.rows.length > 0) {
+        return res.status(400).json({ error: 'Recipient already has a FlapaPay account. Use the standard transfer.' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const walletRes = await client.query(
+            'SELECT balance, currency FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [debitWalletId, req.user.id]
+        );
+        if (walletRes.rows.length === 0) throw new Error('Source wallet not found or access denied');
+
+        const sourceWallet = walletRes.rows[0];
+        if (sourceWallet.currency !== currency) throw new Error('Currency mismatch');
+
+        const feeRate = 0.01;
+        const fee = parseFloat((parseFloat(amount) * feeRate).toFixed(2));
+        const totalDeduction = parseFloat(amount) + fee;
+
+        if (parseFloat(sourceWallet.balance) < totalDeduction) {
+            throw new Error(`Insufficient funds. Required: ${totalDeduction.toFixed(2)} ${currency} (incl. ${fee.toFixed(2)} fee)`);
+        }
+
+        // Generate ref first — used in both ledger and unclaimed_payments
+        const ref = 'UC-' + crypto.randomBytes(8).toString('hex').toUpperCase();
+
+        // 1. Ledger entry — PENDING, debit side only (credit_wallet_id filled on claim)
+        await client.query(
+            `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+             VALUES ($1, $2, $3, $4, $5, 'UNCLAIMED_TRANSFER', 'PENDING')`,
+            [ref, debitWalletId, parseFloat(amount), currency, description || `Unclaimed transfer to ${recipientEmail.toLowerCase().trim()}`]
+        );
+
+        // 2. Deduct from sender wallet (amount + fee)
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalDeduction, debitWalletId]);
+
+        // 3. Record fee
+        await recordFee(client, ref + '-FEE', fee, currency, 'Unclaimed Transfer Fee');
+
+        // 4. Create unclaimed payment record — stores the ledger ref for later claim update
+        const claimToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+        await client.query(
+            `INSERT INTO unclaimed_payments (id, sender_id, debit_wallet_id, recipient_email, amount, fee, currency, description, status, claim_token, transaction_reference, expires_at)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, 'PENDING', $8, $9, $10)`,
+            [req.user.id, debitWalletId, recipientEmail.toLowerCase().trim(), parseFloat(amount), fee, currency, description || null, claimToken, ref, expiresAt]
+        );
+
+        await client.query('COMMIT');
+
+        // Send emails (non-blocking)
+        const sender = req.user;
+        const expiresAtStr = expiresAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        const claimUrl = `${process.env.APP_URL || 'http://localhost:5173'}/claim/${claimToken}`;
+
+        // Email to recipient
+        renderClaimFundsEmail({
+            senderName: sender.full_name || sender.email,
+            amount: parseFloat(amount).toFixed(2),
+            currency,
+            description: description || null,
+            claimUrl,
+            expiresAt: expiresAtStr,
+        }).then(html => {
+            resend.emails.send({
+                from: EMAIL_FROM,
+                to: [recipientEmail.toLowerCase().trim()],
+                subject: `You've received ${currency} ${parseFloat(amount).toFixed(2)} from ${sender.full_name || sender.email} — Claim on FlapaPay`,
+                html,
+            }).catch(e => console.error('Failed to send claim email:', e));
+        });
+
+        // Confirmation email to sender
+        renderPendingPaymentConfirmEmail({
+            senderName: sender.full_name || sender.email,
+            recipientEmail: recipientEmail.toLowerCase().trim(),
+            amount: parseFloat(amount).toFixed(2),
+            currency,
+            description: description || null,
+            reference: ref,
+            expiresAt: expiresAtStr,
+        }).then(html => {
+            resend.emails.send({
+                from: EMAIL_FROM,
+                to: [sender.email],
+                subject: `Payment pending: ${currency} ${parseFloat(amount).toFixed(2)} to ${recipientEmail} — waiting to be claimed`,
+                html,
+            }).catch(e => console.error('Failed to send sender pending email:', e));
+        });
+
+        res.json({
+            message: 'Payment sent. Recipient will be emailed to claim it.',
+            reference: ref,
+            status: 'PENDING',
+            recipientEmail: recipientEmail.toLowerCase().trim(),
+            expiresAt: expiresAt.toISOString(),
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Transfer to unregistered error:', err);
+        res.status(400).json({ error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// GET /payments/claim/:token  — public, no auth
+// Returns payment details for the claim landing page
+app.get('/payments/claim/:token', async (req, res) => {
+    const { token } = req.params;
+    try {
+        const result = await pool.query(
+            `SELECT up.id, up.amount, up.fee, up.currency, up.description, up.status,
+                    up.expires_at, up.created_at, up.recipient_email,
+                    u.full_name AS sender_name
+             FROM unclaimed_payments up
+             JOIN users u ON up.sender_id = u.id
+             WHERE up.claim_token = $1`,
+            [token]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Payment not found' });
+
+        const p = result.rows[0];
+
+        if (p.status === 'CLAIMED') {
+            return res.json({ status: 'CLAIMED', message: 'These funds have already been collected.' });
+        }
+        if (p.status === 'EXPIRED' || p.status === 'CANCELLED') {
+            return res.json({ status: p.status, message: 'This payment link has expired. The sender has been refunded.' });
+        }
+        if (new Date(p.expires_at) < new Date()) {
+            return res.json({ status: 'EXPIRED', message: 'This payment link has expired. The sender has been refunded.' });
+        }
+
+        res.json({
+            status: 'PENDING',
+            amount: p.amount,
+            fee: p.fee,
+            currency: p.currency,
+            description: p.description,
+            senderName: p.sender_name,
+            recipientEmail: p.recipient_email,
+            expiresAt: p.expires_at,
+            createdAt: p.created_at,
+        });
+    } catch (err) {
+        console.error('Claim lookup error:', err);
+        res.status(500).json({ error: 'Failed to retrieve payment' });
+    }
+});
+
+// POST /payments/expire-unclaimed  — internal scheduler endpoint
+// Expires payments past their expiry date and refunds senders
+app.post('/payments/expire-unclaimed', async (req, res) => {
+    // Only allow internal calls (localhost or admin secret)
+    const adminSecret = req.headers['x-admin-secret'];
+    if (adminSecret !== process.env.ADMIN_SECRET && req.hostname !== 'localhost') {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const client = await pool.connect();
+    try {
+        const expired = await client.query(
+            `SELECT up.*, u.email AS sender_email, u.full_name AS sender_name
+             FROM unclaimed_payments up
+             JOIN users u ON up.sender_id = u.id
+             WHERE up.status = 'PENDING' AND up.expires_at < NOW()`
+        );
+
+        let refunded = 0;
+        for (const p of expired.rows) {
+            try {
+                await client.query('BEGIN');
+                // Refund: return amount + fee to sender wallet
+                const refundAmount = parseFloat(p.amount) + parseFloat(p.fee);
+                await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [refundAmount, p.debit_wallet_id]);
+                await client.query(`UPDATE unclaimed_payments SET status = 'EXPIRED' WHERE id = $1`, [p.id]);
+                await client.query('COMMIT');
+
+                // Send expiry email to sender (non-blocking)
+                renderPaymentExpiredEmail({
+                    senderName: p.sender_name || p.sender_email,
+                    recipientEmail: p.recipient_email,
+                    amount: parseFloat(p.amount).toFixed(2),
+                    currency: p.currency,
+                    reference: p.id,
+                }).then(html => {
+                    resend.emails.send({
+                        from: EMAIL_FROM,
+                        to: [p.sender_email],
+                        subject: `Payment expired — ${p.currency} ${parseFloat(p.amount).toFixed(2)} refunded to your wallet`,
+                        html,
+                    }).catch(e => console.error('Failed to send expiry email:', e));
+                });
+
+                refunded++;
+            } catch (innerErr) {
+                await client.query('ROLLBACK');
+                console.error(`Failed to expire payment ${p.id}:`, innerErr);
+            }
+        }
+
+        res.json({ message: `Expired and refunded ${refunded} payment(s).`, count: refunded });
+    } catch (err) {
+        console.error('Expire unclaimed error:', err);
+        res.status(500).json({ error: 'Failed to run expiry job' });
+    } finally {
+        client.release();
     }
 });
 
@@ -1722,7 +2409,7 @@ app.get('/transactions', authenticateToken, async (req, res) => {
                 (SELECT amount FROM ledger_entries fee WHERE fee.transaction_reference = le.transaction_reference AND fee.transaction_type = 'FEE' LIMIT 1) as fee_amount
             FROM ledger_entries le
             JOIN wallets w ON le.credit_wallet_id = w.id OR le.debit_wallet_id = w.id
-            WHERE w.user_id = $1 AND le.transaction_type != 'FEE'
+            WHERE w.user_id = $1 AND le.transaction_type != 'FEE' AND w.livemode = TRUE AND le.livemode = TRUE
             ORDER BY le.created_at DESC
             LIMIT 20
         `;
@@ -1999,14 +2686,13 @@ app.post('/payments/create-payment-intent', authenticateToken, async (req, res) 
 
 app.post('/payments/create-setup-intent', authenticateToken, async (req, res) => {
     try {
-        const customerId = await getOrCreateStripeCustomer(req.user.id, req.user.email);
-        const setupIntent = await stripe.setupIntents.create({
-            customer: customerId,
-            payment_method_types: ['card'],
-        });
-        res.json({ clientSecret: setupIntent.client_secret, customerId: customerId });
+        // CyberSource Flex Microform replaces Stripe Setup Intent for card linking
+        const targetOrigin = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
+        const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
+        const csCustomerId   = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
+        res.json({ captureContext, customerId: csCustomerId });
     } catch (err) {
-        console.error('Setup Intent Error:', err);
+        console.error('[CyberSource] Setup context error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -2031,10 +2717,48 @@ app.get('/users/search', authenticateToken, async (req, res) => {
             'SELECT id, email, full_name, avatar_url FROM users WHERE email ILIKE $1 OR full_name ILIKE $1 LIMIT 5',
             [searchQuery]
         );
-        res.json(result.rows);
+        if (result.rows.length === 0 && query.includes('@')) {
+            // Email-like query with no match — return a placeholder so the UI can offer "Pay Anyway"
+            return res.json([{ id: null, email: query.toLowerCase().trim(), full_name: query.toLowerCase().trim(), avatar_url: null, registered: false }]);
+        }
+        res.json(result.rows.map(r => ({ ...r, registered: true })));
     } catch (err) {
         console.error('Search error:', err);
         res.status(500).json({ error: 'Search failed' });
+    }
+});
+
+// GET /users/recent-recipients — people the current user has sent money to, most recent first
+app.get('/users/recent-recipients', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT DISTINCT ON (u.id)
+                u.id,
+                u.email,
+                u.full_name,
+                u.avatar_url,
+                le.created_at AS last_sent_at
+             FROM ledger_entries le
+             JOIN wallets debit_w  ON le.debit_wallet_id  = debit_w.id
+             JOIN wallets credit_w ON le.credit_wallet_id = credit_w.id
+             JOIN users u          ON credit_w.user_id    = u.id
+             WHERE debit_w.user_id       = $1
+               AND le.transaction_type   = 'TRANSFER'
+               AND le.status             = 'COMPLETED'
+               AND u.id                 != $1
+             ORDER BY u.id, le.created_at DESC`,
+            [req.user.id]
+        );
+
+        // Sort by most recently sent-to and cap at 10
+        const sorted = result.rows
+            .sort((a, b) => new Date(b.last_sent_at) - new Date(a.last_sent_at))
+            .slice(0, 10);
+
+        res.json(sorted);
+    } catch (err) {
+        console.error('Recent recipients error:', err);
+        res.status(500).json({ error: 'Failed to fetch recent recipients' });
     }
 });
 
@@ -2220,10 +2944,10 @@ app.post('/v1/payment-requests', authenticateToken, async (req, res) => {
         // 4. Send Email Notification
         const paymentLink = `http://localhost:5173/pay-request/${paymentReq.id}`;
         resend.emails.send({
-            from: 'FlapaPay <noreply@skillpulse.cloud>',
+            from: EMAIL_FROM,
             to: [recipientEmail],
             subject: `${req.user.full_name} requested ${currency} ${amount} via FlapaPay`,
-            html: renderRequestMoneyEmail({
+            html: await renderRequestMoneyEmail({
                 requesterName: req.user.full_name,
                 requesterEmail: req.user.email,
                 amount,
@@ -2381,7 +3105,7 @@ app.post('/v1/public/payment-requests/:id/confirm', async (req, res) => {
                 ]);
 
                 resend.emails.send({
-                    from: 'FlapaPay <noreply@skillpulse.cloud>',
+                    from: EMAIL_FROM,
                     to: [requester.email],
                     subject: `Request Paid: ${currency} ${amount} received!`,
                     html: `<p>Hello ${requester.full_name}, your payment request for <strong>${currency} ${amount}</strong> has been successfully paid via card.</p>`
@@ -2914,10 +3638,10 @@ app.post('/v1/invoices/:id/send', authenticateToken, async (req, res) => {
 
         // Send Email
         const emailOptions = {
-            from: 'FlapaPay <noreply@skillpulse.cloud>', // Verified domain required
+            from: EMAIL_FROM, // Verified domain required
             to: [invoice.client_email],
             subject: subject || `Invoice Notification: #${invoice.invoice_number} from ${merchant.business_name}`,
-            html: renderInvoiceEmail({
+            html: await renderInvoiceEmail({
                 merchantName: merchant.business_name,
                 merchantLogo: invoice.logo_url,
                 clientName: invoice.client_name,
@@ -2980,10 +3704,10 @@ app.post('/v1/invoices/:id/remind', authenticateToken, async (req, res) => {
 
         // Send Reminder Email
         const data = await resend.emails.send({
-            from: 'FlapaPay <noreply@skillpulse.cloud>',
+            from: EMAIL_FROM,
             to: [invoice.client_email],
             subject: `Friendly Payment Reminder: Invoice #${invoice.invoice_number}`,
-            html: renderInvoiceEmail({
+            html: await renderInvoiceEmail({
                 merchantName: merchant.business_name,
                 merchantLogo: invoice.logo_url,
                 clientName: invoice.client_name,
@@ -3790,6 +4514,21 @@ app.get('/payment-links', authenticateToken, async (req, res) => {
     }
 });
 
+// Deactivate / Delete a Payment Link
+app.delete('/payment-links/:id', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `UPDATE payment_links SET active = false WHERE id = $1 AND user_id = $2 RETURNING id`,
+            [req.params.id, req.user.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Deactivate Link Error:', err);
+        res.status(500).json({ error: 'Failed to deactivate link' });
+    }
+});
+
 // Get Public Payment Link Details (No Auth)
 app.get('/public/payment-links/:id', async (req, res) => {
     const { id } = req.params;
@@ -4180,6 +4919,7 @@ app.get('/merchants/status', authenticateToken, async (req, res) => {
             isLiveEnabled: m.is_live_enabled,
             merchant: {
                 account_id: m.account_id,
+                business_name: m.business_name,
                 admin_kyc_notes: m.admin_kyc_notes,
                 kyc_submitted_at: m.kyc_submitted_at
             }
@@ -4212,8 +4952,12 @@ app.post('/merchants/onboarding/draft', authenticateToken, async (req, res) => {
                 'INSERT INTO merchants (id, user_id, business_name, compliance_status) VALUES ($1, $2, $3, $4)',
                 [merchantId, req.user.id, 'Draft', 'SANDBOX_ONLY']
             );
+            // Provision API keys for the new merchant
+            if (typeof provisionApiKeys === 'function') {
+                try { await provisionApiKeys(pool, merchantId); } catch (_) {}
+            }
         }
-        await pool.query('UPDATE merchants SET kyc_draft = $1 WHERE user_id = $2', [JSON.stringify(req.body.payload), req.user.id]);
+        await pool.query('UPDATE merchants SET kyc_draft = $1 WHERE user_id = $2', [JSON.stringify(req.body.payload || {}), req.user.id]);
         res.json({ success: true });
     } catch (err) {
         console.error('Draft save error:', err);
@@ -4409,22 +5153,29 @@ const authenticateMerchant = async (req, res, next) => {
         return res.status(401).json({ error: 'Authentication required (API Key or Token)' });
     }
 
-    // 1. Try API Key
-    if (tokenOrKey.startsWith('pk_') || tokenOrKey.startsWith('sk_')) {
+    // 1. Try API Key — detect by prefix OR by non-JWT structure (no dots = not a JWT)
+    const looksLikeApiKey = tokenOrKey.startsWith('pk_') || tokenOrKey.startsWith('sk_') ||
+        tokenOrKey.startsWith('flp_') || !tokenOrKey.includes('.');
+    if (looksLikeApiKey) {
         try {
             const result = await pool.query(`
-                SELECT k.*, m.user_id as merchant_user_id 
-                FROM api_keys k 
-                JOIN merchants m ON k.merchant_id = m.id 
+                SELECT k.*, m.user_id as merchant_user_id, m.id as merchant_id
+                FROM api_keys k
+                JOIN merchants m ON k.merchant_id = m.id
                 WHERE k.key_value = $1 AND k.is_active = TRUE
             `, [tokenOrKey]);
 
             if (result.rows.length > 0) {
                 req.merchant = result.rows[0];
-                req.isTestMode = req.merchant.key_type.startsWith('test_');
+                req.isTestMode = req.merchant.key_type.startsWith('test_') || req.merchant.key_type === 'test';
                 return next();
             }
-            return res.status(401).json({ error: 'Invalid API Key' });
+            // Not found as an API key — fall through to JWT attempt if it could be a JWT
+            if (tokenOrKey.includes('.')) {
+                // Could be a JWT — let the JWT block handle it
+            } else {
+                return res.status(401).json({ error: 'Invalid API Key' });
+            }
         } catch (err) {
             console.error('API Key Auth Error:', err);
             return res.status(500).json({ error: 'Internal Server Error' });
@@ -4442,7 +5193,33 @@ const authenticateMerchant = async (req, res, next) => {
         `, [decoded.userId]);
 
         if (result.rows.length === 0) {
-            return res.status(401).json({ error: 'Merchant account not found for this user' });
+            // Auto-provision a sandbox merchant record + API keys on first Connect access
+            let newMerchantId = null;
+            try {
+                newMerchantId = crypto.randomUUID();
+                // Get user info for a better default name
+                const userRow = await pool.query('SELECT email, full_name FROM users WHERE id = $1', [decoded.userId]);
+                const defaultName = userRow.rows[0]?.full_name || userRow.rows[0]?.email?.split('@')[0] || 'My Business';
+                await pool.query(
+                    `INSERT INTO merchants (id, user_id, business_name, compliance_status, is_live_enabled)
+                     VALUES ($1, $2, $3, 'SANDBOX_ONLY', false)`,
+                    [newMerchantId, decoded.userId, defaultName]
+                );
+            } catch (_insertErr) {
+                newMerchantId = null; // Merchant may have been created by a concurrent request
+            }
+            const reQuery = await pool.query(
+                `SELECT m.*, m.id as merchant_id FROM merchants m WHERE m.user_id = $1`,
+                [decoded.userId]
+            );
+            if (reQuery.rows.length === 0) {
+                return res.status(401).json({ error: 'Merchant account not found. Please register at /merchant/dashboard first.' });
+            }
+            result.rows[0] = reQuery.rows[0];
+            // Provision API keys if this is a new merchant (and provisionApiKeys is available)
+            if (newMerchantId && typeof provisionApiKeys === 'function') {
+                try { await provisionApiKeys(pool, result.rows[0].id || newMerchantId); } catch (_) {}
+            }
         }
 
         req.merchant = result.rows[0];
@@ -4474,6 +5251,27 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
     }
 
     try {
+        // ─── Risk Evaluation ──────────────────────────────────────────────────
+        const transfer_data_prelim = req.body.transfer_data;
+        const subMerchantIdPrelim = transfer_data_prelim?.destination || null;
+        const tempChargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
+        const riskResult = await evaluateRisk({
+            merchantId: req.merchant?.merchant_id || req.apiKey?.merchant_id,
+            accountId: subMerchantIdPrelim,
+            amount,
+            currency,
+            country: req.body.billing_country || null,
+            chargeId: tempChargeId,
+        });
+        if (riskResult.blocked) {
+            return res.status(402).json({
+                error: 'Transaction blocked by risk rules',
+                risk_events: riskResult.events,
+                code: 'risk_blocked',
+            });
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         // --- SANDBOX SIMULATION MODE ---
         // If simulated success card/number is used
         if (req.isTestMode) {
@@ -4484,7 +5282,7 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
             }
 
             // A. Create Charge Record
-            const chargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
+            const chargeId = tempChargeId;
 
             // B. Simulate Latency
             await new Promise(resolve => setTimeout(resolve, 800));
@@ -4509,82 +5307,129 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
             };
 
             // D. Split Payment Orchestration (Marketplace)
-            const transfer_data = req.body.transfer_data; // { destination: 'acc_...', amount: 1000 }
-            const application_fee_amount = req.body.application_fee_amount; // e.g. 50 (5%)
+            const transfer_data = req.body.transfer_data;
+            const application_fee_amount = req.body.application_fee_amount;
 
             let platformFee = 0;
             let merchantAmount = amount;
             let subMerchantId = null;
 
-            // Start Ledger Transaction
-            await pool.query('BEGIN');
+            // Fetch settlement delay from platform config (default T+1)
+            const cfgRes = await pool.query(
+                `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
+                [req.merchant.merchant_id]
+            );
+            const settlementDays = cfgRes.rows[0]?.settlement_delay_days ?? 1;
+            const availableAt = new Date();
+            availableAt.setDate(availableAt.getDate() + settlementDays);
 
-            if (transfer_data && transfer_data.destination) {
-                subMerchantId = transfer_data.destination;
+            // Start atomic transaction — charge + balances + ledger all commit together
+            const txClient = await pool.connect();
+            try {
+                await txClient.query('BEGIN');
 
-                // Calculate Fee
-                if (application_fee_amount) {
-                    platformFee = application_fee_amount;
-                } else {
-                    // Default platform fee if not specified (e.g., 5%)
-                    platformFee = Math.round(amount * 0.05);
+                if (transfer_data && transfer_data.destination) {
+                    subMerchantId = transfer_data.destination;
+
+                    if (application_fee_amount != null) {
+                        platformFee = application_fee_amount;
+                    } else {
+                        platformFee = Math.round(amount * 0.05);
+                    }
+                    merchantAmount = amount - platformFee;
+
+                    console.log(`[Connect] Split: ${merchantAmount} to ${subMerchantId}, ${platformFee} to Platform (T+${settlementDays})`);
+
+                    // 1. Credit Sub-merchant (Pending — held until available_at)
+                    await txClient.query(
+                        `INSERT INTO balances (merchant_id, pending_amount, currency)
+                         VALUES ($1, $2, $3)
+                         ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
+                        [subMerchantId, merchantAmount, currency.toUpperCase()]
+                    );
+
+                    // 2. Credit Platform Commission (Pending)
+                    await txClient.query(
+                        `INSERT INTO balances (merchant_id, pending_amount, currency)
+                         VALUES ($1, $2, $3)
+                         ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
+                        [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
+                    );
+
+                    // 3. Record Internal Transfer
+                    await txClient.query(
+                        `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
+                         VALUES ($1, $2, $3, $4, 'SPLIT_PAYMENT', 'COMPLETED')`,
+                        [req.merchant.merchant_id, subMerchantId, merchantAmount, currency.toUpperCase()]
+                    );
+
+                    responseData.application_fee = platformFee;
+                    responseData.transfer_data = { destination: subMerchantId, amount: merchantAmount };
+
+                    // 4. Ledger entry — INSIDE transaction (atomic)
+                    if (platformFee > 0) {
+                        await txClient.query(
+                            `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                             VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
+                            [req.merchant.merchant_id, chargeId, subMerchantId,
+                             platformFee, currency.toUpperCase(),
+                             `Platform fee on ${currency.toUpperCase()} ${amount} charge`, false]
+                        );
+                    }
+                    // 5. Ledger entry for sub-merchant earnings
+                    await txClient.query(
+                        `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                         VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
+                        [req.merchant.merchant_id, chargeId, subMerchantId,
+                         merchantAmount, currency.toUpperCase(),
+                         `Net earnings on ${currency.toUpperCase()} ${amount} charge (T+${settlementDays})`, false]
+                    );
                 }
-                merchantAmount = amount - platformFee;
 
-                console.log(`[Connect] Split: ${merchantAmount} to ${subMerchantId}, ${platformFee} to Platform`);
-
-                // 1. Credit Sub-merchant (Pending)
-                await pool.query(
-                    `INSERT INTO balances (merchant_id, pending_amount, currency) 
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (merchant_id) 
-                     DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                    [subMerchantId, merchantAmount, currency.toUpperCase()]
+                // 6. Record Charge with available_at populated
+                await txClient.query(
+                    `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
+                                         description, metadata, livemode, destination_merchant_id, application_fee_amount,
+                                         available_at, is_settled)
+                     VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)`,
+                    [
+                        chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
+                        source.startsWith('tok_') ? 'card' : 'mobile_money',
+                        JSON.stringify(responseData.source.details),
+                        description, JSON.stringify(req.body.metadata || {}), false,
+                        subMerchantId || null, platformFee || null, availableAt
+                    ]
                 );
 
-                // 2. Credit Platform (Pending)
-                await pool.query(
-                    `INSERT INTO balances (merchant_id, pending_amount, currency) 
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (merchant_id) 
-                     DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                    [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
-                );
-
-                // 3. Record Internal Transfer
-                await pool.query(
-                    `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
-                     VALUES ($1, $2, $3, $4, 'SPLIT_PAYMENT', 'COMPLETED')`,
-                    [req.merchant.merchant_id, subMerchantId, merchantAmount, currency.toUpperCase()]
-                );
-
-                responseData.application_fee = platformFee;
-                responseData.transfer_data = { destination: subMerchantId, amount: merchantAmount };
+                await txClient.query('COMMIT');
+            } catch (txErr) {
+                await txClient.query('ROLLBACK');
+                throw txErr;
+            } finally {
+                txClient.release();
             }
 
-            // Record Charge in DB (livemode = true only for live API keys)
-            await pool.query(
-                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-                [
-                    chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(), 'succeeded',
-                    source.startsWith('tok_') ? 'card' : 'mobile_money',
-                    JSON.stringify(responseData.source.details),
-                    description, JSON.stringify(req.body.metadata || {}), !req.isTestMode
-                ]
-            );
-
-            await pool.query('COMMIT');
-
-            // E. Dispatch Webhook (Background)
+            // E. Dispatch Webhooks (Background — after commit)
             dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
+            if (subMerchantId) {
+                dispatchWebhook(req.merchant.merchant_id, 'transaction.split.created', {
+                    charge_id: chargeId,
+                    total_amount: amount,
+                    currency: currency.toUpperCase(),
+                    platform_fee: platformFee,
+                    sub_merchant_amount: merchantAmount,
+                    sub_merchant_id: subMerchantId,
+                    available_at: availableAt.toISOString(),
+                    settlement_days: settlementDays
+                });
+            }
 
             return res.json(responseData);
         }
 
         // --- PRODUCTION LOGIC (Simulation Mode) ---
         // For physical sandbox testing, we reuse the simulation logic but with livemode = true
-        const chargeId = 'ch_live_' + crypto.randomBytes(12).toString('hex');
+        const chargeId = 'ch_live_' + tempChargeId.slice(3); // reuse entropy from risk eval
         const responseData = {
             id: chargeId,
             object: 'charge',
@@ -4603,7 +5448,6 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
             livemode: true
         };
 
-        const targetColumn = 'available_amount'; // Immediate for Live Simulation
         const transfer_data = req.body.transfer_data;
         const application_fee_amount = req.body.application_fee_amount;
 
@@ -4611,52 +5455,152 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
         let merchantAmount = amount;
         let subMerchantId = null;
 
-        await pool.query('BEGIN');
+        // Fetch settlement delay from platform config (default T+1)
+        const cfgResLive = await pool.query(
+            `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
+            [req.merchant.merchant_id]
+        );
+        const settlementDaysLive = cfgResLive.rows[0]?.settlement_delay_days ?? 1;
+        const availableAtLive = new Date();
+        availableAtLive.setDate(availableAtLive.getDate() + settlementDaysLive);
 
-        if (transfer_data && transfer_data.destination) {
-            subMerchantId = transfer_data.destination;
-            platformFee = application_fee_amount || Math.round(amount * 0.05);
-            merchantAmount = amount - platformFee;
+        // Start atomic transaction — charge + balances + ledger all commit together
+        const txClientLive = await pool.connect();
+        try {
+            await txClientLive.query('BEGIN');
 
-            // Credit Sub-merchant (Available for Simulation)
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [subMerchantId, merchantAmount, currency.toUpperCase()]
+            if (transfer_data && transfer_data.destination) {
+                subMerchantId = transfer_data.destination;
+                // Phase 3/4: per-account override → tiered schedule → platform config → 5% default
+                if (application_fee_amount != null) {
+                    platformFee = application_fee_amount;
+                } else {
+                    const overrideRes = await pool.query(
+                        `SELECT fee_percent FROM connected_account_fee_overrides WHERE account_id = $1`,
+                        [subMerchantId]
+                    );
+                    if (overrideRes.rows.length > 0) {
+                        platformFee = Math.round(amount * (parseFloat(overrideRes.rows[0].fee_percent) / 100) * 100) / 100;
+                    } else {
+                        // Phase 4: tiered fee — get sub-merchant's cumulative volume
+                        const tiersRes = await pool.query(
+                            `SELECT * FROM connect_fee_tiers WHERE platform_merchant_id = $1 ORDER BY min_volume ASC`,
+                            [req.merchant?.merchant_id || null]
+                        );
+                        if (tiersRes.rows.length > 0) {
+                            const volRes = await pool.query(
+                                `SELECT COALESCE(SUM(amount),0) as vol FROM charges WHERE destination_merchant_id = $1 AND status='succeeded'`,
+                                [subMerchantId]
+                            );
+                            const cumVol = parseFloat(volRes.rows[0].vol);
+                            const tier = tiersRes.rows.slice().reverse().find(t => cumVol >= parseFloat(t.min_volume));
+                            const feeRate = tier ? parseFloat(tier.fee_percent) / 100 : 0.05;
+                            platformFee = Math.round(amount * feeRate * 100) / 100;
+                        } else {
+                            const configRes = await pool.query(
+                                `SELECT platform_fee_percent FROM connect_config WHERE merchant_id = $1`,
+                                [req.merchant?.merchant_id || null]
+                            );
+                            const feeRate = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].platform_fee_percent) / 100 : 0.05;
+                            platformFee = Math.round(amount * feeRate * 100) / 100;
+                        }
+                    }
+                }
+                merchantAmount = amount - platformFee;
+
+                console.log(`[Connect Live] Split: ${merchantAmount} to ${subMerchantId}, ${platformFee} to Platform (T+${settlementDaysLive})`);
+
+                // 1. Credit Sub-merchant (Pending — held until available_at)
+                await txClientLive.query(
+                    `INSERT INTO balances (merchant_id, pending_amount, currency)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
+                    [subMerchantId, merchantAmount, currency.toUpperCase()]
+                );
+
+                // 2. Credit Platform Commission (Pending)
+                await txClientLive.query(
+                    `INSERT INTO balances (merchant_id, pending_amount, currency)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
+                    [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
+                );
+
+                // 3. Record Internal Transfer
+                await txClientLive.query(
+                    `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
+                     VALUES ($1, $2, $3, $4, 'SPLIT_PAYMENT', 'COMPLETED')`,
+                    [req.merchant.merchant_id, subMerchantId, merchantAmount, currency.toUpperCase()]
+                );
+
+                responseData.application_fee = platformFee;
+                responseData.transfer_data = { destination: subMerchantId, amount: merchantAmount };
+
+                // 4. Ledger entry for platform fee — INSIDE transaction (atomic)
+                if (platformFee > 0) {
+                    await txClientLive.query(
+                        `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                         VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
+                        [req.merchant.merchant_id, chargeId, subMerchantId,
+                         platformFee, currency.toUpperCase(),
+                         `Platform fee on ${currency.toUpperCase()} ${amount} charge`, true]
+                    );
+                }
+                // 5. Ledger entry for sub-merchant earnings
+                await txClientLive.query(
+                    `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                     VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
+                    [req.merchant.merchant_id, chargeId, subMerchantId,
+                     merchantAmount, currency.toUpperCase(),
+                     `Net earnings on ${currency.toUpperCase()} ${amount} charge (T+${settlementDaysLive})`, true]
+                );
+            } else {
+                // Direct Credit (no split) — credit available immediately
+                await txClientLive.query(
+                    `INSERT INTO balances (merchant_id, available_amount, currency)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (merchant_id) DO UPDATE SET available_amount = balances.available_amount + $2`,
+                    [req.merchant.merchant_id, amount, currency.toUpperCase()]
+                );
+            }
+
+            // 6. Record Charge with available_at populated
+            await txClientLive.query(
+                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
+                                     description, metadata, livemode, destination_merchant_id, application_fee_amount,
+                                     available_at, is_settled)
+                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)`,
+                [
+                    chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
+                    source.startsWith('tok_') ? 'card' : 'mobile_money',
+                    JSON.stringify(responseData.source.details),
+                    description, JSON.stringify(req.body.metadata || {}), true,
+                    subMerchantId || null, platformFee || null, availableAtLive
+                ]
             );
 
-            // Credit Platform (Available for Simulation)
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
-            );
-        } else {
-            // Direct Credit
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [req.merchant.merchant_id, amount, currency.toUpperCase()]
-            );
+            await txClientLive.query('COMMIT');
+        } catch (txErr) {
+            await txClientLive.query('ROLLBACK');
+            throw txErr;
+        } finally {
+            txClientLive.release();
         }
 
-        // Record Charge as settled immediately if simulation
-        await pool.query(
-            `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode, is_settled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-            [
-                chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(), 'succeeded',
-                source.startsWith('tok_') ? 'card' : 'mobile_money',
-                JSON.stringify(responseData.source.details),
-                description, JSON.stringify(req.body.metadata || {}), true, true
-            ]
-        );
-
-        await pool.query('COMMIT');
+        // Dispatch Webhooks (Background — after commit)
         dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
+        if (subMerchantId) {
+            dispatchWebhook(req.merchant.merchant_id, 'transaction.split.created', {
+                charge_id: chargeId,
+                total_amount: amount,
+                currency: currency.toUpperCase(),
+                platform_fee: platformFee,
+                sub_merchant_amount: merchantAmount,
+                sub_merchant_id: subMerchantId,
+                available_at: availableAtLive.toISOString(),
+                settlement_days: settlementDaysLive
+            });
+        }
         return res.json(responseData);
 
     } catch (err) {
@@ -4762,47 +5706,63 @@ app.post('/merchants/settle', authenticateToken, async (req, res) => {
     }
 });
 
-// Transfer to Personal Wallet (FX Support)
+// Transfer to Personal Wallet (no fee, test/live wallet separation)
 app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) => {
-    const { amount, walletId, applyFX, fxRate } = req.body;
+    const { amount, walletId, applyFX, fxRate, isTestMode } = req.body;
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        const merchantRes = await client.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
+        const merchantRes = await client.query(
+            'SELECT id, compliance_status FROM merchants WHERE user_id = $1',
+            [req.user.id]
+        );
         if (merchantRes.rows.length === 0) throw new Error('Merchant not found');
-        const merchantId = merchantRes.rows[0].id;
+        const merchant = merchantRes.rows[0];
+        const isLive = merchant.compliance_status === 'ACTIVE' && !isTestMode;
 
-        const balanceRes = await client.query('SELECT * FROM balances WHERE merchant_id = $1 FOR UPDATE', [merchantId]);
-        if (balanceRes.rows.length === 0) throw new Error('Merchant balance not found');
-        const balance = balanceRes.rows[0];
-
-        if (Number(balance.available_amount) < Number(amount)) throw new Error('Insufficient available balance');
-
-        // Resolve Target Wallet and Currency
-        const walletQuery = await client.query('SELECT id, currency FROM wallets WHERE id = $1 AND user_id = $2', [walletId, req.user.id]);
-        if (walletQuery.rows.length === 0) throw new Error('Target wallet not found');
+        // Resolve target wallet — must match livemode
+        const walletQuery = await client.query(
+            'SELECT id, currency, livemode FROM wallets WHERE id = $1 AND user_id = $2 AND livemode = $3',
+            [walletId, req.user.id, isLive]
+        );
+        if (walletQuery.rows.length === 0) throw new Error('Target wallet not found or mode mismatch');
         const targetWallet = walletQuery.rows[0];
 
-        // Calculate FX if requested
-        const targetAmount = applyFX ? (amount / fxRate) : amount;
+        // amount sent from frontend is in ZMW; balances table stores ngwe (× 100)
+        const amountZMW = parseFloat(amount);
+        const amountNgwe = Math.round(amountZMW * 100);
+        const targetAmount = applyFX ? amountZMW / fxRate : amountZMW;
 
-        // 1. Deduct from Merchant Available Balance
-        await client.query('UPDATE balances SET available_amount = available_amount - $1, updated_at = NOW() WHERE merchant_id = $2', [amount, merchantId]);
+        if (isLive) {
+            // Deduct ngwe from platform balance
+            const balanceRes = await client.query(
+                'SELECT available_amount FROM balances WHERE merchant_id = $1 FOR UPDATE',
+                [merchant.id]
+            );
+            const available = parseFloat(balanceRes.rows[0]?.available_amount || 0);
+            if (available < amountNgwe) throw new Error(`Insufficient balance. Available: ZMW ${(available / 100).toFixed(2)}`);
 
-        // 2. Credit Target User Wallet
+            await client.query(
+                'UPDATE balances SET available_amount = available_amount - $1, updated_at = NOW() WHERE merchant_id = $2',
+                [amountNgwe, merchant.id]
+            );
+        }
+        // Test mode: no real balance deduction (simulated earnings only)
+
+        // Credit the ZMW amount to the target wallet
         await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [targetAmount, walletId]);
 
-        // 3. Record Ledger
-        const ref = 'SETTLE-' + crypto.randomBytes(6).toString('hex').toUpperCase();
-        await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, 'TRANSFER', 'COMPLETED')`,
-            [ref, walletId, targetAmount, targetWallet.currency, `Settlement from merchant balance`]
+        // Record ledger entry — livemode flag keeps test entries out of live ledger
+        const ref = (isLive ? 'SETTLE-' : 'TEST-SETTLE-') + crypto.randomBytes(6).toString('hex').toUpperCase();
+        await client.query(
+            `INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode)
+             VALUES ($1, $2, $3, $4, $5, 'SETTLEMENT', 'COMPLETED', $6)`,
+            [ref, walletId, targetAmount, targetWallet.currency, isLive ? 'Settlement from Platform Balance' : 'Test Settlement (Simulated)', isLive]
         );
 
         await client.query('COMMIT');
-        res.json({ success: true, transferred: targetAmount, currency: targetWallet.currency });
+        res.json({ success: true, transferred: targetAmount, currency: targetWallet.currency, ref });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(400).json({ error: err.message });
@@ -4811,7 +5771,66 @@ app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) =>
     }
 });
 
+// ---- GET /merchants/test-ledger ----
+// Returns test wallet ledger entries (livemode=false) for the merchant user — never mingles with live funds
+app.get('/merchants/test-ledger', authenticateToken, async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 20;
+        const offset = parseInt(req.query.offset) || 0;
+
+        const result = await pool.query(
+            `SELECT le.id, le.transaction_reference, le.amount, le.currency,
+                    le.description, le.transaction_type, le.status, le.created_at,
+                    le.credit_wallet_id, le.debit_wallet_id,
+                    cw.currency AS credit_currency, dw.currency AS debit_currency
+             FROM ledger_entries le
+             LEFT JOIN wallets cw ON le.credit_wallet_id = cw.id
+             LEFT JOIN wallets dw ON le.debit_wallet_id = dw.id
+             WHERE le.livemode = FALSE
+               AND le.transaction_type != 'FEE'
+               AND (
+                   (cw.user_id = $1 AND cw.livemode = FALSE) OR
+                   (dw.user_id = $1 AND dw.livemode = FALSE)
+               )
+             ORDER BY le.created_at DESC
+             LIMIT $2 OFFSET $3`,
+            [req.user.id, limit, offset]
+        );
+
+        const summaryRes = await pool.query(
+            `SELECT COALESCE(SUM(le.amount), 0) AS total_credited
+             FROM ledger_entries le
+             JOIN wallets cw ON le.credit_wallet_id = cw.id
+             WHERE le.livemode = FALSE AND cw.user_id = $1 AND cw.livemode = FALSE`,
+            [req.user.id]
+        );
+
+        res.json({
+            entries: result.rows,
+            total_credited: parseFloat(summaryRes.rows[0]?.total_credited || 0),
+            count: result.rowCount
+        });
+    } catch (err) {
+        console.error('[Test Ledger] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch test ledger' });
+    }
+});
+
 // --- Lenco Integration (Bank Accounts) ---
+
+// Public alias — used by the hosted onboarding page (no auth required)
+app.get('/v1/connect/banks', async (req, res) => {
+    const { country = 'zm' } = req.query;
+    try {
+        const response = await axios.get(`${LENCO_BASE_URL}/banks`, {
+            params: { country },
+            headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json({ error: 'Failed to fetch banks' });
+    }
+});
 
 app.get('/merchants/lenco/banks', authenticateToken, async (req, res) => {
     const { country = 'zm' } = req.query;
@@ -4894,7 +5913,11 @@ app.delete('/merchants/lenco/accounts/:id', authenticateToken, async (req, res) 
 
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM wallets WHERE user_id = $1', [req.user.id]);
+        const isTestMode = req.query.mode === 'test';
+        const result = await pool.query(
+            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 ORDER BY currency',
+            [req.user.id, !isTestMode]
+        );
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch wallets' });
@@ -4917,13 +5940,10 @@ app.post('/wallets/withdraw', authenticateToken, async (req, res) => {
         if (walletRes.rows.length === 0) throw new Error('Wallet not found');
         const wallet = walletRes.rows[0];
 
-        const fee = Number(amount) * 0.035;
-        const totalToDeduct = Number(amount) + fee;
+        if (Number(wallet.balance) < Number(amount)) throw new Error('Insufficient wallet balance');
 
-        if (Number(wallet.balance) < totalToDeduct) throw new Error('Insufficient wallet balance');
-
-        // 2. Deduct Balance (Amount + Fee)
-        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalToDeduct, walletId]);
+        // 2. Deduct Balance (no fee — withdrawals are free)
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [amount, walletId]);
 
         // 3. Record Payout
         const payoutRef = 'WTH-' + crypto.randomBytes(6).toString('hex').toUpperCase();
@@ -4932,9 +5952,6 @@ app.post('/wallets/withdraw', authenticateToken, async (req, res) => {
             VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'COMPLETED')`,
             [payoutRef, walletId, amount, wallet.currency, `Withdrawal to ${destinationType} (${JSON.stringify(destinationDetails)})`]
         );
-
-        // Record Fee
-        await recordFee(client, payoutRef, fee, wallet.currency, `Withdrawal Processing Fee (3.5%)`);
 
         // Real External Transfer Logic
         if (destinationType === 'bank_account') {
@@ -4994,17 +6011,14 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
         // 1. Deduct from wallet first (atomically)
         const payoutRef = 'WTH-MM-' + crypto.randomBytes(4).toString('hex').toUpperCase();
 
-        const fee = Number(amount) * 0.035;
-        const totalToDeduct = Number(amount) + fee;
-
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
             const walletRes = await client.query('SELECT balance FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE', [walletId, req.user.id]);
             if (walletRes.rows.length === 0) throw new Error('Wallet not found');
-            if (Number(walletRes.rows[0].balance) < totalToDeduct) throw new Error('Insufficient balance');
+            if (Number(walletRes.rows[0].balance) < Number(amount)) throw new Error('Insufficient balance');
 
-            await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalToDeduct, walletId]);
+            await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [amount, walletId]);
 
             // Insert ledger with PENDING status - include payoutId in description for easy lookup
             await client.query(`
@@ -5012,9 +6026,6 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
                 VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING', $6)`,
                 [payoutRef, walletId, amount, currency, `PawaPay Payout to ${phoneNumber} (ID: ${payoutId})`, { payoutId, phoneNumber, provider }]
             );
-
-            // Record Fee
-            await recordFee(client, payoutRef, fee, currency, `Mobile Money Withdrawal Fee (3.5%)`);
 
             await client.query('COMMIT');
         } catch (err) {
@@ -5084,8 +6095,8 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
                 );
                 if (ledgerRes.rows.length > 0) {
                     const { debit_wallet_id, amount: origAmount } = ledgerRes.rows[0];
-                    const feeToRefund = Number(origAmount) * 0.035;
-                    const totalRefund = Number(origAmount) + feeToRefund;
+                    // No fee — refund the exact amount deducted
+                    const totalRefund = Number(origAmount);
 
                     await refundClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [totalRefund, debit_wallet_id]);
                     await refundClient.query(
@@ -5147,8 +6158,8 @@ app.get('/pawapay/payout/:id', authenticateToken, async (req, res) => {
                 );
                 if (ledgerRes.rows.length > 0) {
                     const { debit_wallet_id, amount: origAmount } = ledgerRes.rows[0];
-                    const feeToRefund = Number(origAmount) * 0.035;
-                    const totalRefund = Number(origAmount) + feeToRefund;
+                    // No fee — refund the exact amount deducted
+                    const totalRefund = Number(origAmount);
 
                     await refundClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [totalRefund, debit_wallet_id]);
                     await refundClient.query(
@@ -5229,12 +6240,22 @@ app.post('/v1/connect/accounts', authenticateMerchant, async (req, res) => {
             [result.rows[0].id, 'ZMW']
         );
 
+        const account = result.rows[0];
+
+        // Emit webhook event to platform
+        setImmediate(() => emitWebhookForMerchant(req.merchant.merchant_id, 'account.created', {
+            account_id: account.id,
+            email: account.email,
+            business_name: account.business_name,
+            status: 'PENDING'
+        }));
+
         res.json({
-            id: result.rows[0].id,
+            id: account.id,
             object: 'account',
             type: 'custom',
-            capabilities: result.rows[0].capabilities,
-            requirements: result.rows[0].requirements
+            capabilities: account.capabilities,
+            requirements: account.requirements
         });
     } catch (err) {
         console.error(err);
@@ -5281,6 +6302,35 @@ app.get('/v1/connect/account_sessions/:secret', authenticateMerchant, async (req
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Exchange client_secret for a scoped portal token (used by embedded components — no merchant auth needed)
+app.post('/v1/connect/account_sessions/:secret/exchange', async (req, res) => {
+    try {
+        const { secret } = req.params;
+        const sessionRes = await pool.query(
+            `SELECT * FROM account_sessions WHERE client_secret = $1 AND expires_at > NOW()`,
+            [secret]
+        );
+        if (sessionRes.rows.length === 0) {
+            return res.status(401).json({ error: 'Invalid or expired session' });
+        }
+        const session = sessionRes.rows[0];
+        const portalToken = crypto.randomBytes(48).toString('hex');
+        await pool.query(
+            `INSERT INTO submerchant_sessions (account_id, token, expires_at) VALUES ($1, $2, $3)`,
+            [session.account_id, portalToken, session.expires_at]
+        );
+        res.json({
+            portal_token: portalToken,
+            account_id: session.account_id,
+            components: session.components,
+            expires_at: Math.floor(new Date(session.expires_at).getTime() / 1000)
+        });
+    } catch (err) {
+        console.error('[SessionExchange] Error:', err.message);
+        res.status(500).json({ error: 'Token exchange failed' });
     }
 });
 
@@ -5344,7 +6394,8 @@ app.get('/v1/connect/accounts', authenticateMerchant, async (req, res) => {
         const isLive = !req.isTestMode;
 
         const result = await pool.query(
-            `SELECT ca.id, ca.business_name, ca.email, ca.status, ca.created_at,
+            `SELECT ca.id, ca.business_name, ca.email, ca.status, ca.kyc_status,
+                    ca.metadata, ca.created_at, ca.kyc_submitted_at,
                     COALESCE(SUM(c.amount), 0) as total_volume,
                     COALESCE(SUM(c.application_fee_amount), 0) as total_fees
              FROM connected_accounts ca
@@ -5355,15 +6406,24 @@ app.get('/v1/connect/accounts', authenticateMerchant, async (req, res) => {
             [platformMerchantId, isLive]
         );
 
-        res.json(result.rows.map(row => ({
-            id: row.id,
-            businessName: row.business_name || 'Unnamed Business',
-            email: row.email,
-            status: row.status,
-            volume: parseFloat(row.total_volume).toFixed(2),
-            fees: parseFloat(row.total_fees).toFixed(2),
-            createdAt: row.created_at
-        })));
+        res.json(result.rows.map(row => {
+            // Resolve display name: prefer business_name, fall back to full_name in KYC payload
+            const kycIdentity = row.metadata?.kyc_payload?.identity || {};
+            const displayName = row.business_name
+                || kycIdentity.business_name
+                || kycIdentity.full_name
+                || null;
+            return {
+                id: row.id,
+                businessName: displayName,
+                email: row.email,
+                status: row.status,
+                kyc_status: row.kyc_status,
+                volume: parseFloat(row.total_volume).toFixed(2),
+                fees: parseFloat(row.total_fees).toFixed(2),
+                createdAt: row.created_at
+            };
+        }));
     } catch (err) {
         console.error('[List Connect Accounts] Error:', err);
         res.status(500).json({ error: 'Failed to fetch sub-merchants' });
@@ -5399,6 +6459,16 @@ app.get('/v1/connect/accounts/:id/stats', authenticateMerchant, async (req, res)
         const stats = statsRes.rows[0];
         const balance = balanceRes.rows[0] || { available: 0, pending: 0 };
 
+        const account = accountRes.rows[0];
+        const kycPayload = account.metadata?.kyc_payload || {};
+        const identity   = kycPayload.identity   || {};
+        const contact    = kycPayload.contact     || {};
+        const payout     = kycPayload.payout      || {};
+        const displayName = account.business_name
+            || identity.business_name
+            || identity.full_name
+            || account.email;
+
         res.json({
             volume: parseFloat(stats.total_volume).toFixed(2),
             fees: parseFloat(stats.total_fees).toFixed(2),
@@ -5408,11 +6478,121 @@ app.get('/v1/connect/accounts/:id/stats', authenticateMerchant, async (req, res)
                 available: parseFloat(balance.available).toFixed(2),
                 pending: parseFloat(balance.pending).toFixed(2)
             },
-            currency: 'ZMW'
+            currency: 'ZMW',
+            // Identity & profile
+            display_name: displayName,
+            business_name: account.business_name,
+            email: account.email,
+            country: account.country,
+            account_type: kycPayload.business_info?.account_type || identity.account_type || null,
+            // KYC
+            kyc_status: account.kyc_status,
+            kyc_submitted_at: account.kyc_submitted_at || null,
+            kyc_rejection_reason: account.kyc_rejection_reason || null,
+            identity,
+            contact,
+            payout_info: payout,
+            // Account controls
+            status: account.status,
+            suspended_at: account.suspended_at || null,
+            suspension_reason: account.suspension_reason || null,
+            max_payout_amount: account.max_payout_amount ? parseFloat(account.max_payout_amount) : null,
+            platform_notes: account.platform_notes || ''
         });
     } catch (err) {
         console.error('[Sub-merchant Stats] Error:', err);
         res.status(500).json({ error: 'Failed to fetch sub-merchant stats' });
+    }
+});
+
+// 3d-2. Get Charges for a Connected Account (for refund UI)
+app.get('/v1/connect/accounts/:id/charges', authenticateMerchant, async (req, res) => {
+    const { id } = req.params;
+    const limit = parseInt(req.query.limit) || 20;
+    try {
+        const result = await pool.query(
+            `SELECT id, amount, currency, status, payment_method, description, livemode,
+                    application_fee_amount, created_at
+             FROM charges
+             WHERE destination_merchant_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [id, limit]
+        );
+        res.json(result.rows.map(r => ({
+            ...r,
+            amount: parseFloat(r.amount),
+            application_fee_amount: r.application_fee_amount ? parseFloat(r.application_fee_amount) : null
+        })));
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch charges' });
+    }
+});
+
+// GET /v1/connect/charges — aggregate charges across all sub-merchants for the platform
+app.get('/v1/connect/charges', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    const { status, account_id, from, to } = req.query;
+    const limit = Math.min(parseInt(req.query.limit) || 25, 100);
+    const offset = parseInt(req.query.offset) || 0;
+    const isTestMode = req.headers['x-flapapay-test-mode'] === 'true';
+
+    const conditions = ['c.merchant_id = $1', `c.livemode = ${!isTestMode}`];
+    const params = [merchantId];
+    let p = 2;
+
+    if (status) { conditions.push(`c.status = $${p++}`); params.push(status); }
+    if (account_id) { conditions.push(`c.destination_merchant_id = $${p++}`); params.push(account_id); }
+    if (from) { conditions.push(`c.created_at >= $${p++}`); params.push(from); }
+    if (to) { conditions.push(`c.created_at <= $${p++}`); params.push(to + 'T23:59:59.999Z'); }
+
+    const where = conditions.join(' AND ');
+    try {
+        const [dataRes, summaryRes, countRes] = await Promise.all([
+            pool.query(
+                `SELECT c.id, c.amount, c.currency, c.status, c.payment_method, c.description,
+                        c.application_fee_amount, c.livemode, c.created_at,
+                        c.destination_merchant_id AS account_id,
+                        ca.business_name AS account_business_name
+                 FROM charges c
+                 LEFT JOIN connected_accounts ca ON ca.id = c.destination_merchant_id
+                 WHERE ${where}
+                 ORDER BY c.created_at DESC
+                 LIMIT $${p} OFFSET $${p + 1}`,
+                [...params, limit, offset]
+            ),
+            pool.query(
+                `SELECT COALESCE(SUM(c.amount), 0) AS total_gmv,
+                        COALESCE(SUM(c.application_fee_amount), 0) AS total_fees,
+                        COUNT(*) AS total_count,
+                        COUNT(*) FILTER (WHERE c.status = 'succeeded') AS succeeded_count,
+                        COUNT(*) FILTER (WHERE c.status = 'refunded') AS refunded_count
+                 FROM charges c WHERE ${where}`,
+                params
+            ),
+            pool.query(`SELECT COUNT(*) FROM charges c WHERE ${where}`, params)
+        ]);
+
+        res.json({
+            charges: dataRes.rows.map(r => ({
+                ...r,
+                amount: parseFloat(r.amount),
+                application_fee_amount: r.application_fee_amount ? parseFloat(r.application_fee_amount) : null
+            })),
+            summary: {
+                total_gmv: parseFloat(summaryRes.rows[0].total_gmv),
+                total_fees: parseFloat(summaryRes.rows[0].total_fees),
+                total_count: parseInt(summaryRes.rows[0].total_count),
+                succeeded_count: parseInt(summaryRes.rows[0].succeeded_count),
+                refunded_count: parseInt(summaryRes.rows[0].refunded_count),
+            },
+            total: parseInt(countRes.rows[0].count),
+            limit,
+            offset
+        });
+    } catch (err) {
+        console.error('[Connect Charges] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch platform charges' });
     }
 });
 
@@ -5453,89 +6633,1845 @@ app.get('/v1/connect/accounts/:id/payout_methods', authenticateMerchant, async (
     }
 });
 
-// 4. Trigger Payout (Withdrawal to External Wallet)
+// 4. Trigger Payout (Withdrawal to External Wallet) — real PawaPay + retry
 app.post('/v1/connect/payouts', authenticateMerchant, async (req, res) => {
     const { account, amount, currency, destination } = req.body;
     // destination: { type: 'mobile_money', number: '260...', network: 'MTN' }
+    //           or: { type: 'bank', accountNumber: '...', bankCode: '...' }
 
     if (!account || !amount || !destination) {
         return res.status(400).json({ error: 'Missing required fields: account, amount, destination' });
     }
 
+    const client = await pool.connect();
     try {
-        await pool.query('BEGIN');
+        await client.query('BEGIN');
 
-        // Check Balance
-        const balanceRes = await pool.query(
-            'SELECT available_amount FROM balances WHERE merchant_id = $1 FOR UPDATE',
+        // 1. Balance check (pending + available counts as liquid for Connect)
+        const balRes = await client.query(
+            'SELECT (pending_amount + available_amount) as total FROM balances WHERE merchant_id = $1 FOR UPDATE',
             [account]
         );
 
-        if (balanceRes.rows.length === 0) {
-            await pool.query('ROLLBACK');
+        if (balRes.rows.length === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Account balance not found', code: 'balance_missing' });
         }
 
-        const currentBalance = parseFloat(balanceRes.rows[0].available_amount);
-
-        // In a real system, we'd check against available_amount. 
-        // For testing/onboarding, we might allow using pending_amount or just mock positive balance if zero.
-        // Let's enforce a check but allow "Simulated" massive balance for test accounts? 
-        // Actually, let's just check normally.
-        // NOTE: Since our split payment logic puts money in PENDING, we need a way to move it to AVAILABLE.
-        // For this demo, we'll assume PENDING is liquid enough or we auto-convert in background.
-        // Let's check PENDING + AVAILABLE for the demo ease.
-
-        const totalBalanceRes = await pool.query(
-            'SELECT (pending_amount + available_amount) as total FROM balances WHERE merchant_id = $1',
-            [account]
-        );
-        const totalLiquidity = parseFloat(totalBalanceRes.rows[0].total);
-
-        if (totalLiquidity < amount) {
-            await pool.query('ROLLBACK');
+        const totalLiquidity = parseFloat(balRes.rows[0].total);
+        if (totalLiquidity < parseFloat(amount)) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Insufficient funds', code: 'insufficient_funds', current_balance: totalLiquidity });
         }
 
-        // Deduct from Ledger
-        await pool.query(
-            `UPDATE balances 
-             SET pending_amount = pending_amount - $2 
-             WHERE merchant_id = $1`,
+        // 2. Deduct balance atomically
+        await client.query(
+            'UPDATE balances SET pending_amount = pending_amount - $2 WHERE merchant_id = $1',
             [account, amount]
         );
 
-        // Record Payout Transfer
-        const transferRes = await pool.query(
-            `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
-             VALUES ($1, NULL, $2, $3, 'PAYOUT', 'PENDING') RETURNING id`,
-            [account, amount, currency || 'ZMW']
+        // 3. Record transfer
+        const payoutId = crypto.randomUUID();
+        const transferRes = await client.query(
+            `INSERT INTO transfers (id, source_merchant_id, destination_merchant_id, amount, currency, type, status, metadata)
+             VALUES ($1, $2, NULL, $3, $4, 'PAYOUT', 'PENDING', $5) RETURNING id`,
+            [payoutId, account, amount, currency || 'ZMW', JSON.stringify({ destination })]
         );
+        await client.query('COMMIT');
 
-        await pool.query('COMMIT');
+        // 4. Attempt real PawaPay disbursement asynchronously
+        setImmediate(async () => {
+            try {
+                if (destination.type === 'mobile_money' && destination.number && destination.network) {
+                    const correspondent = PawaPayService.networkToCorrespondent(destination.network);
+                    const result = await PawaPayService.initiateConnectPayout(
+                        payoutId, amount, currency || 'ZMW', destination.number, correspondent
+                    );
 
-        // Trigger Async Payout via Mobile Money Provider (Mock)
-        // In reality, this would call PawaPay/Airtel API
-        console.log(`[Connect] Executing Payout ${transferRes.rows[0].id} of ${amount} to ${destination.network} (${destination.number})`);
-
-        setTimeout(async () => {
-            // Simulate Success callback
-            await pool.query("UPDATE transfers SET status = 'COMPLETED' WHERE id = $1", [transferRes.rows[0].id]);
-            console.log(`[Connect] Payout ${transferRes.rows[0].id} CONFIRMED`);
-        }, 2000);
+                    if (result.status === 'ACCEPTED') {
+                        await pool.query("UPDATE transfers SET status = 'PROCESSING' WHERE id = $1", [payoutId]);
+                        console.log(`[Connect] Payout ${payoutId} ACCEPTED by PawaPay`);
+                        // In production: PawaPay will POST callback to /webhooks/pawapay-payout
+                        // For sandbox: simulate success after 3s
+                        setTimeout(async () => {
+                            await pool.query("UPDATE transfers SET status = 'COMPLETED' WHERE id = $1", [payoutId]);
+                            await emitWebhookForMerchant(req.merchant.merchant_id, 'payout.completed', {
+                                payout_id: payoutId, account_id: account, amount, currency, destination
+                            });
+                        }, 3000);
+                    } else {
+                        throw new Error(`PawaPay rejected: ${result.status}`);
+                    }
+                } else {
+                    // Simulate for non-mobile-money or incomplete destination
+                    setTimeout(async () => {
+                        await pool.query("UPDATE transfers SET status = 'COMPLETED' WHERE id = $1", [payoutId]);
+                        await emitWebhookForMerchant(req.merchant.merchant_id, 'payout.completed', {
+                            payout_id: payoutId, account_id: account, amount, currency, destination
+                        });
+                    }, 2000);
+                }
+            } catch (pawaErr) {
+                console.error(`[Connect] Payout ${payoutId} failed, queuing retry:`, pawaErr.message);
+                await pool.query(
+                    `INSERT INTO payout_retry_log (id, transfer_id, account_id, amount, currency, payout_method, attempt, error, next_retry_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,1,$7,NOW() + INTERVAL '30 minutes')`,
+                    [crypto.randomUUID(), payoutId, account, amount, currency || 'ZMW', JSON.stringify(destination), pawaErr.message]
+                );
+                await pool.query("UPDATE transfers SET status = 'RETRY_QUEUED' WHERE id = $1", [payoutId]);
+                await emitWebhookForMerchant(req.merchant.merchant_id, 'payout.initiated', {
+                    payout_id: payoutId, account_id: account, amount, status: 'retry_queued'
+                });
+            }
+        });
 
         res.json({
-            id: transferRes.rows[0].id,
+            id: payoutId,
             object: 'payout',
-            amount: amount,
+            amount: parseFloat(amount),
+            currency: currency || 'ZMW',
             status: 'pending',
-            destination: destination
+            destination
         });
 
     } catch (err) {
-        await pool.query('ROLLBACK');
-        console.error('Payout Error:', err);
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Connect Payout] Error:', err);
         res.status(500).json({ error: 'Payout failed' });
+    } finally {
+        client.release();
+    }
+});
+
+// ─── PHASE 1: Payout Schedules ────────────────────────────────────────────────
+
+// GET schedule for an account
+app.get('/v1/connect/accounts/:id/schedule', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM payout_schedules WHERE account_id = $1',
+            [req.params.id]
+        );
+        res.json(result.rows[0] || null);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch schedule' });
+    }
+});
+
+// POST/PATCH — upsert schedule for an account
+app.post('/v1/connect/accounts/:id/schedule', authenticateMerchant, async (req, res) => {
+    const { schedule, min_threshold, currency, enabled } = req.body;
+    const accountId = req.params.id;
+
+    if (!['daily', 'weekly', 'monthly'].includes(schedule)) {
+        return res.status(400).json({ error: 'schedule must be daily, weekly, or monthly' });
+    }
+
+    try {
+        // Verify account belongs to this platform
+        const acctRes = await pool.query(
+            'SELECT id FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2',
+            [accountId, req.merchant.merchant_id]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        // Calculate first run time
+        const nextRun = schedule === 'daily'
+            ? new Date(Date.now() + 86400000)
+            : schedule === 'weekly'
+                ? new Date(Date.now() + 7 * 86400000)
+                : new Date(Date.now() + 30 * 86400000);
+
+        const result = await pool.query(
+            `INSERT INTO payout_schedules (account_id, schedule, min_threshold, currency, enabled, next_run_at)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (account_id) DO UPDATE SET
+               schedule = EXCLUDED.schedule,
+               min_threshold = EXCLUDED.min_threshold,
+               currency = EXCLUDED.currency,
+               enabled = EXCLUDED.enabled,
+               next_run_at = CASE WHEN payout_schedules.enabled = FALSE AND EXCLUDED.enabled = TRUE
+                                  THEN EXCLUDED.next_run_at
+                                  ELSE payout_schedules.next_run_at END
+             RETURNING *`,
+            [accountId, schedule, min_threshold || 50, currency || 'ZMW', enabled !== false, nextRun]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Schedule Upsert] Error:', err);
+        res.status(500).json({ error: 'Failed to save schedule' });
+    }
+});
+
+// DELETE schedule
+app.delete('/v1/connect/accounts/:id/schedule', authenticateMerchant, async (req, res) => {
+    try {
+        await pool.query('UPDATE payout_schedules SET enabled = FALSE WHERE account_id = $1', [req.params.id]);
+        res.json({ disabled: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to disable schedule' });
+    }
+});
+
+// ─── PHASE 1: Webhook Endpoints Management ────────────────────────────────────
+
+// List webhook endpoints
+app.get('/v1/webhooks', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT id, url, events, enabled, description, created_at FROM webhook_endpoints WHERE merchant_id = $1 ORDER BY created_at DESC',
+            [req.merchant.merchant_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch webhooks' });
+    }
+});
+
+// Register a new webhook endpoint
+app.post('/v1/webhooks', authenticateMerchant, async (req, res) => {
+    const { url, events, description } = req.body;
+    if (!url) return res.status(400).json({ error: 'url is required' });
+    if (!url.startsWith('https://') && !url.startsWith('http://localhost')) {
+        return res.status(400).json({ error: 'Webhook URL must use HTTPS (or localhost for testing)' });
+    }
+
+    const signingSecret = crypto.randomBytes(32).toString('hex');
+    try {
+        const result = await pool.query(
+            `INSERT INTO webhook_endpoints (merchant_id, url, events, signing_secret, description)
+             VALUES ($1,$2,$3,$4,$5) RETURNING id, url, events, description, created_at`,
+            [
+                req.merchant.merchant_id,
+                url,
+                events || ['*'],
+                signingSecret,
+                description || null
+            ]
+        );
+        res.json({ ...result.rows[0], signing_secret: signingSecret });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to register webhook' });
+    }
+});
+
+// Delete webhook endpoint
+app.delete('/v1/webhooks/:id', authenticateMerchant, async (req, res) => {
+    try {
+        await pool.query(
+            'DELETE FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2',
+            [req.params.id, req.merchant.merchant_id]
+        );
+        res.json({ deleted: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete webhook' });
+    }
+});
+
+// Get delivery log for a webhook endpoint
+app.get('/v1/webhooks/:id/events', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT wd.* FROM webhook_deliveries wd
+             JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+             WHERE wd.endpoint_id = $1 AND we.merchant_id = $2
+             ORDER BY wd.delivered_at DESC LIMIT 50`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch webhook events' });
+    }
+});
+
+// Test-fire a webhook with optional event_type + custom payload (sandbox simulator)
+app.post('/v1/webhooks/:id/test', authenticateMerchant, async (req, res) => {
+    const { event_type, custom_payload } = req.body;
+    try {
+        const ep = await pool.query(
+            'SELECT * FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2',
+            [req.params.id, req.merchant.merchant_id]
+        );
+        if (ep.rows.length === 0) return res.status(404).json({ error: 'Endpoint not found' });
+
+        const endpoint = ep.rows[0];
+        const eventName = event_type || 'webhook.test';
+        const timestamp = Math.floor(Date.now() / 1000);
+
+        // Build payload: use custom_payload or generate sensible default for known event types
+        let defaultData = { message: 'Test event from FlapaPay Connect', timestamp: new Date().toISOString() };
+        const EVENT_DEFAULTS = {
+            'account.created':   { id: 'ca_test_xxx', business_name: 'Test Merchant', kyc_status: 'unverified' },
+            'account.activated': { id: 'ca_test_xxx', business_name: 'Test Merchant', kyc_status: 'verified' },
+            'charge.succeeded':  { id: 'ch_test_xxx', amount: 10000, currency: 'ZMW', status: 'succeeded', application_fee_amount: 250 },
+            'charge.failed':     { id: 'ch_test_xxx', amount: 10000, currency: 'ZMW', status: 'failed', error: 'insufficient_funds' },
+            'transfer.completed':{ id: 'tr_test_xxx', amount: 9750, currency: 'ZMW', destination: 'ca_test_xxx' },
+            'payout.initiated':  { id: 'po_test_xxx', amount: 9750, currency: 'ZMW', account_id: 'ca_test_xxx', status: 'processing' },
+            'payout.completed':  { id: 'po_test_xxx', amount: 9750, currency: 'ZMW', account_id: 'ca_test_xxx', status: 'completed' },
+            'payout.failed':     { id: 'po_test_xxx', amount: 9750, currency: 'ZMW', account_id: 'ca_test_xxx', status: 'failed', error: 'bank_account_closed' },
+            'dispute.opened':    { id: 'disp_test_xxx', charge_id: 'ch_test_xxx', amount: 10000, reason: 'fraudulent', status: 'open' },
+            'dispute.closed':    { id: 'disp_test_xxx', status: 'won', resolution_notes: 'Resolved in merchant favour' },
+            'kyc.approved':      { account_id: 'ca_test_xxx', kyc_status: 'verified' },
+            'kyc.rejected':      { account_id: 'ca_test_xxx', kyc_status: 'rejected', reason: 'Document unclear' },
+        };
+        const data = custom_payload ?? (EVENT_DEFAULTS[eventName] || defaultData);
+        const payload = { id: `evt_${crypto.randomBytes(8).toString('hex')}`, type: eventName, livemode: false, created: timestamp, data: { object: data } };
+        const body = JSON.stringify(payload);
+
+        // Sign with HMAC — format: t={ts},v1={sig}
+        const signedPayload = `${timestamp}.${body}`;
+        const sig = crypto.createHmac('sha256', endpoint.signing_secret).update(signedPayload).digest('hex');
+        const sigHeader = `t=${timestamp},v1=${sig}`;
+        const deliveryId = crypto.randomUUID();
+
+        try {
+            const httpRes = await axios.post(endpoint.url, payload, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-flapapay-signature': sigHeader,
+                    'x-flapapay-event': eventName
+                },
+                timeout: 10000
+            });
+            await pool.query(
+                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+                [deliveryId, endpoint.id, eventName, body, httpRes.status, JSON.stringify(httpRes.data).slice(0, 1000)]
+            );
+            res.json({ success: true, response_status: httpRes.status, delivery_id: deliveryId, event_type: eventName, payload });
+        } catch (httpErr) {
+            await pool.query(
+                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+                [deliveryId, endpoint.id, eventName, body, httpErr.response?.status || 0, httpErr.message]
+            );
+            res.json({ success: false, error: httpErr.message, response_status: httpErr.response?.status || 0, delivery_id: deliveryId, event_type: eventName });
+        }
+    } catch (err) {
+        res.status(500).json({ error: 'Test failed' });
+    }
+});
+
+// ─── PHASE 2: REFUND ENGINE ────────────────────────────────────────────────────
+
+// POST /v1/charges/:id/refund — full or partial refund with split reversal
+app.post('/v1/charges/:id/refund', authenticateMerchant, async (req, res) => {
+    const { amount, reason } = req.body;
+    const chargeId = req.params.id;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    const client = await pool.connect();
+    try {
+        // 1. Fetch original charge
+        const chargeRes = await client.query(
+            `SELECT * FROM charges WHERE id = $1 AND merchant_id = $2`,
+            [chargeId, platformMerchantId]
+        );
+        if (chargeRes.rows.length === 0) return res.status(404).json({ error: 'Charge not found' });
+        const charge = chargeRes.rows[0];
+
+        if (charge.status !== 'succeeded') return res.status(400).json({ error: 'Only succeeded charges can be refunded' });
+
+        const originalAmount = parseFloat(charge.amount);
+        const refundAmount = amount ? parseFloat(amount) : originalAmount;
+
+        if (refundAmount > originalAmount) return res.status(400).json({ error: 'Refund amount exceeds charge amount' });
+
+        // 2. Calculate split reversal
+        const platformFee = charge.application_fee_amount ? parseFloat(charge.application_fee_amount) : 0;
+        const feeRatio = originalAmount > 0 ? (refundAmount / originalAmount) : 1;
+        const platformFeeReversal = Math.round(platformFee * feeRatio * 100) / 100;
+        const subMerchantReversal = Math.round((refundAmount - platformFeeReversal) * 100) / 100;
+
+        await client.query('BEGIN');
+
+        // 3. Reverse sub-merchant balance if applicable
+        if (charge.destination_merchant_id) {
+            await client.query(
+                `UPDATE balances SET available_amount = GREATEST(0, available_amount - $1) WHERE merchant_id = $2`,
+                [subMerchantReversal, charge.destination_merchant_id]
+            );
+        }
+
+        // 4. Reverse platform fee from platform merchant balance
+        if (platformFeeReversal > 0) {
+            await client.query(
+                `UPDATE balances SET available_amount = GREATEST(0, available_amount - $1) WHERE merchant_id = $2`,
+                [platformFeeReversal, platformMerchantId]
+            );
+        }
+
+        // 5. Mark charge as refunded
+        await client.query(
+            `UPDATE charges SET status = $1 WHERE id = $2`,
+            [refundAmount >= originalAmount ? 'refunded' : 'partially_refunded', chargeId]
+        );
+
+        // 6. Record refund
+        const refundId = require('crypto').randomUUID();
+        await client.query(
+            `INSERT INTO refunds (id, charge_id, merchant_id, amount, currency, reason, status, platform_fee_reversal, sub_merchant_reversal, destination_merchant_id, livemode)
+             VALUES ($1,$2,$3,$4,$5,$6,'succeeded',$7,$8,$9,$10)`,
+            [refundId, chargeId, platformMerchantId, refundAmount, charge.currency || 'ZMW', reason || null,
+             platformFeeReversal, subMerchantReversal, charge.destination_merchant_id || null, charge.livemode || false]
+        );
+
+        await client.query('COMMIT');
+
+        // 7. Emit webhook + ledger
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        await emitWebhookForMerchant(platformMerchantId, 'refund.created', {
+            refund_id: refundId, charge_id: chargeId, amount: refundAmount,
+            currency: charge.currency, platform_fee_reversal: platformFeeReversal,
+            sub_merchant_reversal: subMerchantReversal
+        });
+        // Phase 4: ledger entry for refund reversal
+        if (platformFeeReversal > 0) {
+            pool.query(
+                `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                 VALUES ($1,'refund_reversal',$2,$3,$4,$5,'debit',$6,$7)`,
+                [platformMerchantId, chargeId, charge.destination_merchant_id,
+                 platformFeeReversal, charge.currency || 'ZMW',
+                 `Fee reversal on refund of ${charge.currency} ${refundAmount}`, charge.livemode || false]
+            ).catch(() => {});
+        }
+
+        res.json({
+            id: refundId, object: 'refund', charge: chargeId,
+            amount: refundAmount, currency: charge.currency,
+            platform_fee_reversal: platformFeeReversal,
+            sub_merchant_reversal: subMerchantReversal,
+            status: 'succeeded', reason
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Refund] Error:', err.message);
+        res.status(500).json({ error: 'Refund failed', details: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// GET /v1/charges/:id/refunds — list refunds for a charge
+app.get('/v1/charges/:id/refunds', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM refunds WHERE charge_id = $1 AND merchant_id = $2 ORDER BY created_at DESC`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch refunds' });
+    }
+});
+
+// ─── PHASE 2: CONNECT ANALYTICS ───────────────────────────────────────────────
+
+// GET /v1/connect/analytics?period=7d|30d|90d
+app.get('/v1/connect/analytics', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    const period = req.query.period || '30d';
+    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+    const isTest = req.headers['x-flapapay-test-mode'] === 'true';
+
+    try {
+        // Daily GMV and fee revenue over period
+        const dailyRes = await pool.query(
+            `SELECT DATE(created_at) as date,
+                    COALESCE(SUM(amount), 0) as gmv,
+                    COALESCE(SUM(application_fee_amount), 0) as fees
+             FROM charges
+             WHERE merchant_id = $1 AND livemode = $2 AND status = 'succeeded'
+               AND created_at >= NOW() - ($3 || ' days')::INTERVAL
+             GROUP BY DATE(created_at)
+             ORDER BY date ASC`,
+            [merchantId, !isTest, days]
+        );
+
+        // Daily payout volume
+        const payoutRes = await pool.query(
+            `SELECT DATE(created_at) as date, COALESCE(SUM(amount), 0) as volume
+             FROM transfers
+             WHERE source_merchant_id IN (
+                 SELECT id FROM connected_accounts WHERE platform_merchant_id = $1
+             ) AND type = 'PAYOUT' AND status IN ('PROCESSING','COMPLETED')
+               AND created_at >= NOW() - ($2 || ' days')::INTERVAL
+             GROUP BY DATE(created_at)
+             ORDER BY date ASC`,
+            [merchantId, days]
+        );
+
+        // Top sub-merchants by volume
+        const topRes = await pool.query(
+            `SELECT ca.id, ca.business_name,
+                    COALESCE(SUM(c.amount), 0) as volume,
+                    COALESCE(SUM(c.application_fee_amount), 0) as fees,
+                    COUNT(c.id) as count
+             FROM connected_accounts ca
+             LEFT JOIN charges c ON ca.id = c.destination_merchant_id AND c.status = 'succeeded' AND c.livemode = $2
+             WHERE ca.platform_merchant_id = $1
+             GROUP BY ca.id, ca.business_name
+             ORDER BY volume DESC
+             LIMIT 10`,
+            [merchantId, !isTest]
+        );
+
+        // Summary totals
+        const totalRes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) as total_gmv,
+                    COALESCE(SUM(application_fee_amount), 0) as total_fees,
+                    COUNT(*) as total_charges
+             FROM charges
+             WHERE merchant_id = $1 AND livemode = $2 AND status = 'succeeded'
+               AND created_at >= NOW() - ($3 || ' days')::INTERVAL`,
+            [merchantId, !isTest, days]
+        );
+
+        // Refunds in period
+        const refundRes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) as total_refunded, COUNT(*) as refund_count
+             FROM refunds WHERE merchant_id = $1 AND created_at >= NOW() - ($2 || ' days')::INTERVAL`,
+            [merchantId, days]
+        );
+
+        res.json({
+            period,
+            summary: {
+                total_gmv: parseFloat(totalRes.rows[0].total_gmv),
+                total_fees: parseFloat(totalRes.rows[0].total_fees),
+                total_charges: parseInt(totalRes.rows[0].total_charges),
+                total_refunded: parseFloat(refundRes.rows[0].total_refunded),
+                refund_count: parseInt(refundRes.rows[0].refund_count)
+            },
+            daily_gmv: dailyRes.rows.map(r => ({
+                date: r.date, gmv: parseFloat(r.gmv), fees: parseFloat(r.fees)
+            })),
+            daily_payouts: payoutRes.rows.map(r => ({
+                date: r.date, volume: parseFloat(r.volume)
+            })),
+            top_accounts: topRes.rows.map(r => ({
+                id: r.id, business_name: r.business_name,
+                volume: parseFloat(r.volume), fees: parseFloat(r.fees), count: parseInt(r.count)
+            }))
+        });
+    } catch (err) {
+        console.error('[Analytics] Error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+});
+
+// ─── PHASE 2: SUB-MERCHANT API KEYS ──────────────────────────────────────────
+
+// GET /v1/connect/accounts/:id/keys
+app.get('/v1/connect/accounts/:id/keys', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, account_id, key_type, public_key, secret_key_preview, label, is_active, created_at
+             FROM connected_account_api_keys
+             WHERE account_id = $1 AND is_active = TRUE
+             ORDER BY created_at DESC`,
+            [req.params.id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch API keys' });
+    }
+});
+
+// POST /v1/connect/accounts/:id/keys — create new key pair
+app.post('/v1/connect/accounts/:id/keys', authenticateMerchant, async (req, res) => {
+    const { label, key_type } = req.body;
+    const accountId = req.params.id;
+
+    try {
+        // Verify account belongs to platform
+        const acctRes = await pool.query(
+            `SELECT id FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, req.merchant.merchant_id]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const crypto = require('crypto');
+        const type = key_type === 'live' ? 'live' : 'test';
+        const prefix = type === 'live' ? 'pk_live_ca_' : 'pk_test_ca_';
+        const secretPrefix = type === 'live' ? 'sk_live_ca_' : 'sk_test_ca_';
+
+        const publicKey = prefix + crypto.randomBytes(16).toString('hex');
+        const secretKeyRaw = secretPrefix + crypto.randomBytes(24).toString('hex');
+        const secretKeyHash = crypto.createHash('sha256').update(secretKeyRaw).digest('hex');
+        const secretKeyPreview = secretKeyRaw.slice(0, 16) + '...' + secretKeyRaw.slice(-4);
+
+        const result = await pool.query(
+            `INSERT INTO connected_account_api_keys (account_id, key_type, public_key, secret_key_hash, secret_key_preview, label)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, public_key, secret_key_preview, label, key_type, created_at`,
+            [accountId, type, publicKey, secretKeyHash, secretKeyPreview, label || 'Default Key']
+        );
+
+        // Return the raw secret once (never stored in plain text)
+        res.json({
+            ...result.rows[0],
+            secret_key: secretKeyRaw,
+            warning: 'Save the secret_key — it cannot be retrieved again.'
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create API key' });
+    }
+});
+
+// DELETE /v1/connect/accounts/:id/keys/:keyId — revoke key
+app.delete('/v1/connect/accounts/:id/keys/:keyId', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `UPDATE connected_account_api_keys SET is_active = FALSE
+             WHERE id = $1 AND account_id = $2
+             RETURNING id`,
+            [req.params.keyId, req.params.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Key not found' });
+        res.json({ deleted: true, id: req.params.keyId });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to revoke key' });
+    }
+});
+
+// ─── PHASE 2: ACCOUNT CONTROLS ────────────────────────────────────────────────
+
+// PATCH /v1/connect/accounts/:id — update status, payout cap, notes
+app.patch('/v1/connect/accounts/:id', authenticateMerchant, async (req, res) => {
+    const { status, max_payout_amount, platform_notes } = req.body;
+    const accountId = req.params.id;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    try {
+        const acctRes = await pool.query(
+            `SELECT * FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, platformMerchantId]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const updates = [];
+        const values = [];
+        let idx = 1;
+
+        if (status !== undefined) {
+            updates.push(`status = $${idx++}`);
+            values.push(status);
+            if (status === 'SUSPENDED') {
+                updates.push(`suspended_at = $${idx++}`);
+                values.push(new Date());
+            } else if (status === 'ACTIVE') {
+                updates.push(`suspended_at = NULL`);
+            }
+        }
+        if (max_payout_amount !== undefined) {
+            updates.push(`max_payout_amount = $${idx++}`);
+            values.push(max_payout_amount === null ? null : parseFloat(max_payout_amount));
+        }
+        if (platform_notes !== undefined) {
+            updates.push(`platform_notes = $${idx++}`);
+            values.push(platform_notes);
+        }
+
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(accountId);
+        const result = await pool.query(
+            `UPDATE connected_accounts SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+            values
+        );
+
+        // Emit account.updated webhook
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        await emitWebhookForMerchant(platformMerchantId, 'account.updated', {
+            account_id: accountId, status: result.rows[0].status,
+            suspended: result.rows[0].status === 'SUSPENDED'
+        });
+
+        // Email on suspension/re-activation
+        if (status === 'SUSPENDED' || status === 'ACTIVE') {
+            const updAcct = result.rows[0];
+            if (updAcct.email) {
+                resend.emails.send({
+                    from: 'FlapaPay <noreply@flapapay.com>',
+                    to: [updAcct.email],
+                    subject: status === 'SUSPENDED' ? 'Your FlapaPay sub-merchant account has been suspended' : 'Your FlapaPay account has been reactivated',
+                    html: status === 'SUSPENDED'
+                        ? `<p>Hi ${updAcct.business_name || 'there'},</p><p>Your sub-merchant account has been <strong>suspended</strong> by the platform. Payouts and new charges are paused. Please contact support for more information.</p><p>— The FlapaPay Team</p>`
+                        : `<p>Hi ${updAcct.business_name || 'there'},</p><p>Good news — your sub-merchant account has been <strong>reactivated</strong>. You can resume accepting payments and receiving payouts.</p><p>— The FlapaPay Team</p>`,
+                }).catch(e => console.error('[Email] Account status notification failed:', e.message));
+            }
+        }
+
+        res.json({ id: accountId, status: result.rows[0].status,
+            max_payout_amount: result.rows[0].max_payout_amount,
+            platform_notes: result.rows[0].platform_notes,
+            suspended_at: result.rows[0].suspended_at });
+    } catch (err) {
+        console.error('[AccountControls] Error:', err.message);
+        res.status(500).json({ error: 'Failed to update account' });
+    }
+});
+
+// ─── PHASE 3: KYC WORKFLOW ────────────────────────────────────────────────────
+
+// GET /v1/connect/accounts/:id/kyc — list KYC documents
+app.get('/v1/connect/accounts/:id/kyc', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT k.*, ca.kyc_status, ca.kyc_submitted_at, ca.kyc_reviewed_at, ca.kyc_rejection_reason
+             FROM connected_account_kyc k
+             RIGHT JOIN connected_accounts ca ON ca.id = $1
+             WHERE (k.account_id = $1 OR k.account_id IS NULL)
+             ORDER BY k.uploaded_at DESC`,
+            [req.params.id]
+        );
+        // Always return account-level KYC status even if no docs yet
+        const accountRes = await pool.query(
+            `SELECT kyc_status, kyc_submitted_at, kyc_reviewed_at, kyc_rejection_reason FROM connected_accounts WHERE id = $1`,
+            [req.params.id]
+        );
+        res.json({
+            account: accountRes.rows[0] || {},
+            documents: result.rows.filter(r => r.id)
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch KYC data' });
+    }
+});
+
+// POST /v1/connect/accounts/:id/kyc — upload KYC document (base64 for now; multer path can be added)
+app.post('/v1/connect/accounts/:id/kyc', authenticateMerchant, async (req, res) => {
+    const { document_type, file_url, file_name } = req.body;
+    const accountId = req.params.id;
+
+    if (!document_type || !file_url) return res.status(400).json({ error: 'document_type and file_url required' });
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO connected_account_kyc (account_id, document_type, file_url, file_name)
+             VALUES ($1,$2,$3,$4) RETURNING *`,
+            [accountId, document_type, file_url, file_name || null]
+        );
+        // Advance KYC status to pending_review if unverified
+        await pool.query(
+            `UPDATE connected_accounts SET kyc_status = 'pending_review', kyc_submitted_at = NOW()
+             WHERE id = $1 AND kyc_status = 'unverified'`,
+            [accountId]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to upload KYC document' });
+    }
+});
+
+// PATCH /v1/connect/accounts/:id/kyc/:docId — review a KYC document (approve/reject)
+app.patch('/v1/connect/accounts/:id/kyc/:docId', authenticateMerchant, async (req, res) => {
+    const { status, rejection_reason } = req.body; // status: 'approved' | 'rejected'
+    const accountId = req.params.id;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'status must be approved or rejected' });
+
+    try {
+        await pool.query(
+            `UPDATE connected_account_kyc SET status=$1, rejection_reason=$2, reviewed_by=$3, reviewed_at=NOW() WHERE id=$4 AND account_id=$5`,
+            [status, rejection_reason || null, platformMerchantId, req.params.docId, accountId]
+        );
+
+        // Check if all docs for account are approved — auto-verify account
+        const docsRes = await pool.query(
+            `SELECT status FROM connected_account_kyc WHERE account_id = $1`,
+            [accountId]
+        );
+        const allApproved = docsRes.rows.length > 0 && docsRes.rows.every(d => d.status === 'approved');
+        const anyRejected = docsRes.rows.some(d => d.status === 'rejected');
+
+        let newKycStatus = 'pending_review';
+        if (allApproved) newKycStatus = 'verified';
+        else if (anyRejected && status === 'rejected') newKycStatus = 'rejected';
+
+        await pool.query(
+            `UPDATE connected_accounts SET kyc_status=$1, kyc_reviewed_at=NOW(), kyc_rejection_reason=$2 WHERE id=$3`,
+            [newKycStatus, rejection_reason || null, accountId]
+        );
+
+        // Emit webhook
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        if (newKycStatus === 'verified') {
+            await emitWebhookForMerchant(platformMerchantId, 'account.verified', { account_id: accountId });
+        } else if (newKycStatus === 'rejected') {
+            await emitWebhookForMerchant(platformMerchantId, 'account.rejected', { account_id: accountId, reason: rejection_reason });
+        }
+
+        // Email notification to sub-merchant (via EmailService — noreply@flapabay.com)
+        const acctEmailRes = await pool.query(`SELECT email, business_name FROM connected_accounts WHERE id = $1`, [accountId]);
+        if (acctEmailRes.rows.length > 0 && acctEmailRes.rows[0].email && (newKycStatus === 'verified' || newKycStatus === 'rejected')) {
+            const { email: toEmail, business_name } = acctEmailRes.rows[0];
+            EmailService.sendKycUpdate(toEmail, {
+                accountName: business_name || 'there',
+                status: newKycStatus === 'verified' ? 'approved' : 'rejected',
+                reason: rejection_reason || '',
+                dashboardUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/sub-merchant`,
+            }).catch(e => console.error('[Email] KYC notification failed:', e.message));
+        }
+
+        // Socket.io real-time push to platform merchant dashboard
+        if (newKycStatus === 'verified' || newKycStatus === 'rejected') {
+            const muRes = await pool.query(`SELECT user_id FROM merchants WHERE id = $1`, [platformMerchantId]);
+            if (muRes.rows.length > 0) {
+                io.to(`user:${muRes.rows[0].user_id}`).emit('connect_event', {
+                    type: newKycStatus === 'verified' ? 'kyc.approved' : 'kyc.rejected',
+                    account_id: accountId,
+                    doc_id: req.params.docId,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+
+        res.json({ doc_id: req.params.docId, status, account_kyc_status: newKycStatus });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to review KYC document' });
+    }
+});
+
+// POST /v1/connect/accounts/:id/kyc/approve-all — bulk approve all pending docs for an account
+app.post('/v1/connect/accounts/:id/kyc/approve-all', authenticateMerchant, async (req, res) => {
+    const accountId = req.params.id;
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const verifyRes = await pool.query(
+            `SELECT id FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, platformMerchantId]
+        );
+        if (verifyRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const updateRes = await pool.query(
+            `UPDATE connected_account_kyc SET status = 'approved', reviewed_by = $1, reviewed_at = NOW()
+             WHERE account_id = $2 AND status = 'pending_review'
+             RETURNING id`,
+            [platformMerchantId, accountId]
+        );
+        const approvedCount = updateRes.rows.length;
+
+        if (approvedCount > 0) {
+            await pool.query(
+                `UPDATE connected_accounts SET kyc_status = 'verified', kyc_reviewed_at = NOW(), status = 'ACTIVE'
+                 WHERE id = $1`,
+                [accountId]
+            );
+            // Socket.io emit to platform merchant
+            const muRes = await pool.query(`SELECT user_id FROM merchants WHERE id = $1`, [platformMerchantId]);
+            if (muRes.rows.length > 0) {
+                io.to(`user:${muRes.rows[0].user_id}`).emit('connect_event', {
+                    type: 'kyc.approved', account_id: accountId, timestamp: new Date().toISOString()
+                });
+            }
+            // Webhook
+            const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+            await emitWebhookForMerchant(platformMerchantId, 'account.activated', { account_id: accountId });
+        }
+
+        res.json({ approved_count: approvedCount, kyc_status: approvedCount > 0 ? 'verified' : 'no_changes' });
+    } catch (err) {
+        console.error('[KYC Bulk Approve]', err);
+        res.status(500).json({ error: 'Failed to approve documents' });
+    }
+});
+
+// ─── PHASE 3: PER-ACCOUNT FEE OVERRIDES ───────────────────────────────────────
+
+// GET /v1/connect/accounts/:id/fee-override
+app.get('/v1/connect/accounts/:id/fee-override', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM connected_account_fee_overrides WHERE account_id = $1`,
+            [req.params.id]
+        );
+        res.json(result.rows[0] || null);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch fee override' });
+    }
+});
+
+// PUT /v1/connect/accounts/:id/fee-override — upsert fee override
+app.put('/v1/connect/accounts/:id/fee-override', authenticateMerchant, async (req, res) => {
+    const { fee_percent, reason } = req.body;
+    const accountId = req.params.id;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    if (fee_percent == null || isNaN(parseFloat(fee_percent))) return res.status(400).json({ error: 'fee_percent required' });
+
+    try {
+        // Verify account belongs to platform
+        const acctRes = await pool.query(
+            `SELECT id FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, platformMerchantId]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const result = await pool.query(
+            `INSERT INTO connected_account_fee_overrides (account_id, platform_merchant_id, fee_percent, reason, created_by)
+             VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT (account_id) DO UPDATE SET fee_percent=$3, reason=$4, created_at=NOW()
+             RETURNING *`,
+            [accountId, platformMerchantId, parseFloat(fee_percent), reason || null, platformMerchantId]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to set fee override' });
+    }
+});
+
+// DELETE /v1/connect/accounts/:id/fee-override — remove override (revert to platform default)
+app.delete('/v1/connect/accounts/:id/fee-override', authenticateMerchant, async (req, res) => {
+    try {
+        await pool.query(`DELETE FROM connected_account_fee_overrides WHERE account_id = $1`, [req.params.id]);
+        res.json({ deleted: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to remove fee override' });
+    }
+});
+
+// ─── PHASE 3: DISPUTE MANAGEMENT ──────────────────────────────────────────────
+
+// GET /v1/connect/disputes — list all disputes for platform
+app.get('/v1/connect/disputes', authenticateMerchant, async (req, res) => {
+    const { status, limit = 50 } = req.query;
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const params = [platformMerchantId, parseInt(limit)];
+        let where = `WHERE d.merchant_id = $1`;
+        if (status) { where += ` AND d.status = $3`; params.push(status); }
+        const result = await pool.query(
+            `SELECT d.*, ca.business_name as sub_merchant_name
+             FROM disputes d
+             LEFT JOIN connected_accounts ca ON ca.id = d.destination_merchant_id
+             ${where} ORDER BY d.created_at DESC LIMIT $2`,
+            params
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch disputes' });
+    }
+});
+
+// POST /v1/connect/disputes — open a dispute (platform or customer-facing)
+app.post('/v1/connect/disputes', authenticateMerchant, async (req, res) => {
+    const { charge_id, reason, customer_email, customer_statement, amount, currency } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    if (!charge_id || !reason) return res.status(400).json({ error: 'charge_id and reason required' });
+
+    try {
+        // Fetch charge to link sub-merchant
+        const chargeRes = await pool.query(
+            `SELECT amount, currency, destination_merchant_id, livemode FROM charges WHERE id = $1 AND merchant_id = $2`,
+            [charge_id, platformMerchantId]
+        );
+        if (chargeRes.rows.length === 0) return res.status(404).json({ error: 'Charge not found' });
+        const charge = chargeRes.rows[0];
+
+        const result = await pool.query(
+            `INSERT INTO disputes (charge_id, merchant_id, destination_merchant_id, amount, currency, reason, customer_email, customer_statement, livemode)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+            [charge_id, platformMerchantId, charge.destination_merchant_id,
+             amount || charge.amount, currency || charge.currency,
+             reason, customer_email || null, customer_statement || null, charge.livemode]
+        );
+
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        await emitWebhookForMerchant(platformMerchantId, 'dispute.created', {
+            dispute_id: result.rows[0].id, charge_id, reason, amount: result.rows[0].amount
+        });
+
+        // Email sub-merchant about the dispute
+        if (charge.destination_merchant_id) {
+            const disputeAcct = await pool.query(`SELECT email, business_name FROM connected_accounts WHERE id = $1`, [charge.destination_merchant_id]);
+            if (disputeAcct.rows.length > 0 && disputeAcct.rows[0].email) {
+                resend.emails.send({
+                    from: 'FlapaPay <noreply@flapapay.com>',
+                    to: [disputeAcct.rows[0].email],
+                    subject: `New dispute opened on charge ${charge_id}`,
+                    html: `<p>Hi ${disputeAcct.rows[0].business_name || 'there'},</p><p>A dispute has been opened on charge <strong>${charge_id}</strong> for <strong>${result.rows[0].currency} ${result.rows[0].amount}</strong>.</p><p><strong>Reason:</strong> ${reason}</p>${customer_statement ? `<p><strong>Customer statement:</strong> ${customer_statement}</p>` : ''}<p>Please log in to your dashboard to review and respond.</p><p>— The FlapaPay Team</p>`,
+                }).catch(e => console.error('[Email] Dispute notification failed:', e.message));
+            }
+        }
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create dispute' });
+    }
+});
+
+// PATCH /v1/connect/disputes/:id — add evidence or resolve
+app.patch('/v1/connect/disputes/:id', authenticateMerchant, async (req, res) => {
+    const { status, evidence, resolution_notes } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    try {
+        const disputeRes = await pool.query(`SELECT * FROM disputes WHERE id = $1 AND merchant_id = $2`, [req.params.id, platformMerchantId]);
+        if (disputeRes.rows.length === 0) return res.status(404).json({ error: 'Dispute not found' });
+
+        const updates = [];
+        const values = [];
+        let idx = 1;
+
+        if (status && ['open','under_review','won','lost','closed'].includes(status)) {
+            updates.push(`status = $${idx++}`); values.push(status);
+            if (['won','lost','closed'].includes(status)) {
+                updates.push(`resolved_at = $${idx++}`); values.push(new Date());
+            }
+        }
+        if (evidence) { updates.push(`evidence = $${idx++}`); values.push(JSON.stringify(evidence)); }
+        if (resolution_notes) { updates.push(`resolution_notes = $${idx++}`); values.push(resolution_notes); }
+        if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+        values.push(req.params.id);
+        const result = await pool.query(
+            `UPDATE disputes SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`, values
+        );
+
+        // Webhook on resolution
+        if (['won','lost','closed'].includes(status)) {
+            const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+            await emitWebhookForMerchant(platformMerchantId, 'dispute.resolved', {
+                dispute_id: req.params.id, status, resolution_notes
+            });
+        }
+
+        // Socket.io real-time push to platform merchant
+        const muDisputeRes = await pool.query(`SELECT user_id FROM merchants WHERE id = $1`, [platformMerchantId]).catch(() => ({ rows: [] }));
+        if (muDisputeRes.rows.length > 0) {
+            io.to(`user:${muDisputeRes.rows[0].user_id}`).emit('connect_event', {
+                type: 'dispute.updated',
+                dispute_id: req.params.id,
+                status: status || disputeRes.rows[0].status,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update dispute' });
+    }
+});
+
+// GET /v1/connect/disputes/:id/evidence — list evidence files for a dispute
+app.get('/v1/connect/disputes/:id/evidence', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const result = await pool.query(
+            `SELECT evidence FROM disputes WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, platformMerchantId]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Dispute not found' });
+        const evidence = result.rows[0].evidence;
+        const files = Array.isArray(evidence) ? evidence : (evidence ? [evidence] : []);
+        res.json({ evidence: files });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch evidence' });
+    }
+});
+
+// POST /v1/connect/disputes/:id/evidence — upload an evidence file
+app.post('/v1/connect/disputes/:id/evidence', authenticateMerchant, uploadKyc.single('file'), async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const disputeRes = await pool.query(
+            `SELECT id, evidence FROM disputes WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, platformMerchantId]
+        );
+        if (disputeRes.rows.length === 0) return res.status(404).json({ error: 'Dispute not found' });
+
+        if (!req.file && !req.body.file_url) return res.status(400).json({ error: 'file or file_url required' });
+
+        const file_url = req.file ? `/assets/images/kyc/${req.file.filename}` : req.body.file_url;
+        const file_name = req.file ? req.file.originalname : (req.body.file_name || 'evidence');
+        const label = req.body.label || null;
+
+        const existing = Array.isArray(disputeRes.rows[0].evidence) ? disputeRes.rows[0].evidence : [];
+        const newEntry = {
+            id: `ev_${crypto.randomBytes(8).toString('hex')}`,
+            file_url,
+            file_name,
+            label,
+            uploaded_at: new Date().toISOString()
+        };
+        const updated = [...existing, newEntry];
+
+        await pool.query(
+            `UPDATE disputes SET evidence = $1 WHERE id = $2`,
+            [JSON.stringify(updated), req.params.id]
+        );
+        res.json(newEntry);
+    } catch (err) {
+        console.error('[Dispute Evidence Upload]', err);
+        res.status(500).json({ error: 'Failed to upload evidence' });
+    }
+});
+
+// ─── PHASE 3: BULK OPERATIONS + CSV EXPORT ────────────────────────────────────
+
+// POST /v1/connect/bulk/payout — trigger payouts for all eligible accounts
+app.post('/v1/connect/bulk/payout', authenticateMerchant, async (req, res) => {
+    const { min_balance = 0, currency = 'ZMW' } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    try {
+        const { executePayout } = require('./services/PayoutSchedulerService');
+
+        const accountsRes = await pool.query(
+            `SELECT ca.id, ca.status, ca.kyc_status,
+                    COALESCE(b.available_amount, 0) as available
+             FROM connected_accounts ca
+             LEFT JOIN balances b ON b.merchant_id = ca.id
+             WHERE ca.platform_merchant_id = $1
+               AND ca.status = 'ACTIVE'
+               AND COALESCE(b.available_amount, 0) >= $2`,
+            [platformMerchantId, parseFloat(min_balance)]
+        );
+
+        const results = [];
+        for (const account of accountsRes.rows) {
+            const result = await executePayout(
+                account.id, parseFloat(account.available), currency, platformMerchantId, null
+            );
+            results.push({ account_id: account.id, amount: account.available, result });
+        }
+
+        res.json({ triggered: results.length, results });
+    } catch (err) {
+        res.status(500).json({ error: 'Bulk payout failed', details: err.message });
+    }
+});
+
+// GET /v1/connect/export/:type — CSV export (accounts | charges | payouts)
+app.get('/v1/connect/export/:type', authenticateMerchant, async (req, res) => {
+    const { type } = req.params;
+    const platformMerchantId = req.merchant.merchant_id;
+    const isTest = req.headers['x-flapapay-test-mode'] === 'true';
+
+    try {
+        let rows = [];
+        let headers = [];
+
+        if (type === 'accounts') {
+            const result = await pool.query(
+                `SELECT ca.id, ca.business_name, ca.email, ca.status, ca.kyc_status,
+                        COALESCE(b.available_amount,0) as available_balance,
+                        COALESCE(b.pending_amount,0) as pending_balance,
+                        ca.created_at
+                 FROM connected_accounts ca
+                 LEFT JOIN balances b ON b.merchant_id = ca.id
+                 WHERE ca.platform_merchant_id = $1 ORDER BY ca.created_at DESC`,
+                [platformMerchantId]
+            );
+            headers = ['id','business_name','email','status','kyc_status','available_balance','pending_balance','created_at'];
+            rows = result.rows;
+        } else if (type === 'charges') {
+            const result = await pool.query(
+                `SELECT c.id, c.amount, c.currency, c.status, c.payment_method,
+                        c.application_fee_amount, ca.business_name as sub_merchant,
+                        c.created_at
+                 FROM charges c
+                 LEFT JOIN connected_accounts ca ON ca.id = c.destination_merchant_id
+                 WHERE c.merchant_id = $1 AND c.livemode = $2
+                 ORDER BY c.created_at DESC LIMIT 5000`,
+                [platformMerchantId, !isTest]
+            );
+            headers = ['id','amount','currency','status','payment_method','application_fee_amount','sub_merchant','created_at'];
+            rows = result.rows;
+        } else if (type === 'payouts') {
+            const result = await pool.query(
+                `SELECT t.id, t.amount, t.currency, t.status, t.type,
+                        ca.business_name as sub_merchant, t.created_at
+                 FROM transfers t
+                 LEFT JOIN connected_accounts ca ON ca.id = t.source_merchant_id
+                 WHERE ca.platform_merchant_id = $1 AND t.type = 'PAYOUT'
+                 ORDER BY t.created_at DESC LIMIT 5000`,
+                [platformMerchantId]
+            );
+            headers = ['id','amount','currency','status','type','sub_merchant','created_at'];
+            rows = result.rows;
+        } else {
+            return res.status(400).json({ error: 'type must be accounts, charges, or payouts' });
+        }
+
+        // Build CSV
+        const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const csv = [
+            headers.join(','),
+            ...rows.map(r => headers.map(h => escape(r[h])).join(','))
+        ].join('\n');
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="flapapay_connect_${type}_${Date.now()}.csv"`);
+        res.send(csv);
+    } catch (err) {
+        res.status(500).json({ error: 'Export failed', details: err.message });
+    }
+});
+
+// ─── PHASE 4: INVITE LINKS ────────────────────────────────────────────────────
+
+// POST /v1/connect/invites — generate invite link
+app.post('/v1/connect/invites', authenticateMerchant, async (req, res) => {
+    const { email, business_name, expires_in_days = 7 } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const token = require('crypto').randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + parseInt(expires_in_days) * 86400000);
+        const result = await pool.query(
+            `INSERT INTO connect_invites (token, platform_merchant_id, email, business_name, expires_at)
+             VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+            [token, platformMerchantId, email || null, business_name || null, expiresAt]
+        );
+        const invite = result.rows[0];
+
+        // Send invite email if email provided (via EmailService — noreply@flapabay.com)
+        if (email) {
+            const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/connect/invite/${token}`;
+            try {
+                const platformRes = await pool.query(
+                    'SELECT business_name FROM merchants WHERE id = $1',
+                    [platformMerchantId]
+                );
+                const platformName = platformRes.rows[0]?.business_name || 'Our Platform';
+                await EmailService.sendConnectInvite(email, {
+                    platformName,
+                    inviteUrl,
+                    businessName: business_name || '',
+                    expiresAt: `${expires_in_days} day${parseInt(expires_in_days) !== 1 ? 's' : ''}`,
+                });
+            } catch (emailErr) {
+                console.warn('[Invite Email] Failed to send:', emailErr.message);
+            }
+        }
+
+        res.json({
+            ...invite,
+            invite_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/connect/invite/${token}`
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create invite' });
+    }
+});
+
+// GET /v1/connect/invites — list invites
+app.get('/v1/connect/invites', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT i.*, ca.business_name as used_by_name
+             FROM connect_invites i
+             LEFT JOIN connected_accounts ca ON ca.id = i.used_by
+             WHERE i.platform_merchant_id = $1
+             ORDER BY i.created_at DESC`,
+            [req.merchant.merchant_id]
+        );
+        // Auto-expire
+        const now = new Date();
+        const rows = result.rows.map(r => ({
+            ...r,
+            status: r.status === 'pending' && new Date(r.expires_at) < now ? 'expired' : r.status,
+            invite_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/connect/invite/${r.token}`
+        }));
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch invites' });
+    }
+});
+
+// DELETE /v1/connect/invites/:id — revoke invite
+app.delete('/v1/connect/invites/:id', authenticateMerchant, async (req, res) => {
+    try {
+        await pool.query(
+            `UPDATE connect_invites SET status = 'revoked' WHERE id = $1 AND platform_merchant_id = $2`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+        res.json({ revoked: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to revoke invite' });
+    }
+});
+
+// GET /v1/connect/invite/:token — public: validate invite token
+app.get('/v1/connect/invite/:token', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT i.*, m.business_name as platform_name
+             FROM connect_invites i
+             JOIN merchants m ON m.id = i.platform_merchant_id
+             WHERE i.token = $1`,
+            [req.params.token]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Invalid invite link' });
+        const invite = result.rows[0];
+        if (invite.status !== 'pending') return res.status(400).json({ error: `Invite is ${invite.status}` });
+        if (new Date(invite.expires_at) < new Date()) return res.status(400).json({ error: 'Invite link has expired' });
+        res.json({
+            valid: true,
+            platform_name: invite.platform_name,
+            email: invite.email,
+            business_name: invite.business_name,
+            expires_at: invite.expires_at
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to validate invite' });
+    }
+});
+
+// POST /v1/connect/invite/:token/register — public: complete sub-merchant self-registration
+app.post('/v1/connect/invite/:token/register', async (req, res) => {
+    const { business_name, email, country = 'ZM', password, phone } = req.body;
+    if (!business_name || !email) return res.status(400).json({ error: 'business_name and email required' });
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Validate token
+        const inviteRes = await client.query(
+            `SELECT * FROM connect_invites WHERE token = $1 AND status = 'pending' AND expires_at > NOW() FOR UPDATE`,
+            [req.params.token]
+        );
+        if (inviteRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Invalid or expired invite link' });
+        }
+        const invite = inviteRes.rows[0];
+
+        // Create connected account
+        const accountId = require('crypto').randomUUID();
+        const isLive = false; // New accounts start in test mode
+        let passwordHash = null;
+        if (password) {
+            const bcrypt = require('bcrypt');
+            passwordHash = await bcrypt.hash(password, 10);
+        }
+        await client.query(
+            `INSERT INTO connected_accounts (id, platform_merchant_id, business_name, email, country, status, type, livemode, kyc_status, capabilities, requirements, password_hash)
+             VALUES ($1,$2,$3,$4,$5,'PENDING','custom',$6,'unverified','{}','{"currently_due":["kyc_documents"]}',$7)`,
+            [accountId, invite.platform_merchant_id, business_name, email, country, isLive, passwordHash]
+        );
+
+        // Mark invite used
+        await client.query(
+            `UPDATE connect_invites SET status='used', used_by=$1, used_at=NOW() WHERE id=$2`,
+            [accountId, invite.id]
+        );
+
+        await client.query('COMMIT');
+
+        // Emit webhook
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        await emitWebhookForMerchant(invite.platform_merchant_id, 'account.created', {
+            account_id: accountId, business_name, email, source: 'invite'
+        });
+
+        // Welcome email to sub-merchant (via EmailService — noreply@flapabay.com)
+        try {
+            const platformRes = await pool.query(
+                'SELECT business_name FROM merchants WHERE id = $1',
+                [invite.platform_merchant_id]
+            );
+            const platformName = platformRes.rows[0]?.business_name || 'Our Platform';
+            await EmailService.sendOnboardingComplete(email, {
+                accountName: business_name,
+                platformName,
+                dashboardUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/sub-merchant`,
+            });
+        } catch (emailErr) {
+            console.warn('[Welcome Email] Failed:', emailErr.message);
+        }
+
+        res.json({ account_id: accountId, business_name, email, status: 'PENDING', message: 'Account created successfully. Complete KYC to activate.' });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Invite Register]', err.message);
+        res.status(500).json({ error: 'Registration failed' });
+    } finally {
+        client.release();
+    }
+});
+
+// ─── HOSTED ONBOARDING (Stripe account_links equivalent) ─────────────────────
+
+// POST /v1/connect/onboarding_links — platform creates a hosted link for a sub-merchant
+// If account_id is omitted a new connected account is auto-created (new seller flow)
+app.post('/v1/connect/onboarding_links', authenticateMerchant, async (req, res) => {
+    const { account_id, return_url, refresh_url, platform_branding = {} } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+
+    try {
+        let resolvedAccountId = account_id;
+
+        if (!resolvedAccountId) {
+            // Auto-create a placeholder connected account for the new seller
+            const newAcct = await pool.query(
+                `INSERT INTO connected_accounts
+                    (platform_merchant_id, status, kyc_status, type, country, livemode,
+                     capabilities, requirements)
+                 VALUES ($1, 'PENDING', 'not_started', 'custom', 'ZM', FALSE,
+                         '{}', '{"currently_due": ["business_name","email","kyc_documents"]}')
+                 RETURNING id`,
+                [platformMerchantId]
+            );
+            resolvedAccountId = newAcct.rows[0].id;
+        } else {
+            // Verify the account belongs to this platform
+            const accountRes = await pool.query(
+                `SELECT id FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+                [resolvedAccountId, platformMerchantId]
+            );
+            if (accountRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+        }
+
+        // Get platform name for branding defaults
+        const platformRes = await pool.query(
+            `SELECT business_name FROM merchants WHERE id = $1`,
+            [platformMerchantId]
+        );
+        const defaultPlatformName = platformRes.rows[0]?.business_name || 'Our Platform';
+
+        const token = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+        const result = await pool.query(
+            `INSERT INTO onboarding_links
+                (token, platform_merchant_id, account_id, return_url, refresh_url, expires_at,
+                 platform_name, platform_logo_url, platform_color)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+            [
+                token, platformMerchantId, resolvedAccountId,
+                return_url || null, refresh_url || null, expiresAt,
+                platform_branding.name || defaultPlatformName,
+                platform_branding.logo_url || null,
+                platform_branding.color || '#f97316'
+            ]
+        );
+
+        const link = result.rows[0];
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        res.status(201).json({
+            id: link.id,
+            token: link.token,
+            url: `${frontendUrl}/connect/onboarding/${token}`,
+            account_id: resolvedAccountId,
+            expires_at: link.expires_at,
+            created: true
+        });
+    } catch (err) {
+        console.error('[OnboardingLinks POST]', err.message);
+        res.status(500).json({ error: 'Failed to create onboarding link' });
+    }
+});
+
+// GET /v1/connect/onboarding/:token — public: get session state + requirements
+app.get('/v1/connect/onboarding/:token', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT ol.*, ca.kyc_status, ca.requirements, ca.business_name as account_business_name,
+                    ca.email as account_email, ca.country as account_country
+             FROM onboarding_links ol
+             LEFT JOIN connected_accounts ca ON ca.id = ol.account_id
+             WHERE ol.token = $1`,
+            [req.params.token]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Invalid onboarding link' });
+        const link = result.rows[0];
+
+        if (link.status === 'completed') {
+            return res.json({
+                status: 'completed',
+                return_url: link.return_url,
+                message: 'Onboarding already completed'
+            });
+        }
+        if (new Date(link.expires_at) < new Date()) {
+            return res.status(400).json({
+                status: 'expired',
+                refresh_url: link.refresh_url,
+                error: 'This onboarding link has expired'
+            });
+        }
+
+        // Build requirements list
+        const requirements = link.requirements || { currently_due: ['kyc_documents'] };
+
+        res.json({
+            status: link.status,
+            platform_name: link.platform_name,
+            platform_color: link.platform_color,
+            platform_logo_url: link.platform_logo_url,
+            account_id: link.account_id,
+            account: {
+                business_name: link.account_business_name,
+                email: link.account_email,
+                country: link.account_country,
+                kyc_status: link.kyc_status
+            },
+            requirements,
+            partial_data: link.partial_data || {},
+            expires_at: link.expires_at
+        });
+    } catch (err) {
+        console.error('[OnboardingGet]', err.message);
+        res.status(500).json({ error: 'Failed to load onboarding session' });
+    }
+});
+
+// POST /v1/connect/onboarding/:token/save — public: save step progress
+app.post('/v1/connect/onboarding/:token/save', async (req, res) => {
+    const { step, data } = req.body;
+    if (!step || !data) return res.status(400).json({ error: 'step and data required' });
+
+    try {
+        const linkRes = await pool.query(
+            `SELECT * FROM onboarding_links WHERE token = $1 AND status = 'pending' AND expires_at > NOW()`,
+            [req.params.token]
+        );
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Invalid or expired token' });
+        const link = linkRes.rows[0];
+
+        // Merge step data into partial_data
+        const current = link.partial_data || {};
+        const updated = { ...current, [step]: { ...((current[step]) || {}), ...data, saved_at: new Date().toISOString() } };
+
+        await pool.query(
+            `UPDATE onboarding_links SET partial_data = $1 WHERE token = $2`,
+            [JSON.stringify(updated), req.params.token]
+        );
+
+        res.json({ saved: true, step, data: updated[step] });
+    } catch (err) {
+        console.error('[OnboardingSave]', err.message);
+        res.status(500).json({ error: 'Failed to save progress' });
+    }
+});
+
+// POST /v1/connect/onboarding/:token/submit — public: final KYC submission
+app.post('/v1/connect/onboarding/:token/submit', async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const linkRes = await client.query(
+            `SELECT * FROM onboarding_links WHERE token = $1 AND status = 'pending' AND expires_at > NOW() FOR UPDATE`,
+            [req.params.token]
+        );
+        if (linkRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Invalid or expired token' });
+        }
+        const link = linkRes.rows[0];
+        const pd = link.partial_data || {};
+
+        // Build KYC payload from saved step data
+        const kycPayload = {
+            business_info: pd.business || {},
+            identity: pd.identity || {},
+            payout: pd.payout || {},
+            submitted_via: 'hosted_onboarding',
+            submitted_at: new Date().toISOString()
+        };
+
+        // Update connected account with collected KYC data
+        const { business_info, identity, payout } = kycPayload;
+        await client.query(
+            `UPDATE connected_accounts SET
+                business_name = COALESCE($1, business_name),
+                kyc_status = 'pending_review',
+                requirements = '{"currently_due":[],"pending_verification":["kyc_documents"]}',
+                metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                kyc_submitted_at = NOW()
+             WHERE id = $3`,
+            [business_info.business_name || null, JSON.stringify({ kyc_payload: kycPayload }), link.account_id]
+        );
+
+        // Save payout method if provided
+        if (payout.type) {
+            const pmData = payout.type === 'mobile_money'
+                ? { type: 'mobile_money', mobile_network: payout.mobile_network, mobile_number: payout.mobile_number, verified: payout.mobile_verified || false }
+                : { type: 'bank_account', bank_id: payout.bank_id, bank_name: payout.bank_name, account_number: payout.bank_account_number, account_holder_name: payout.bank_resolved_name, verified: payout.bank_verified || false };
+
+            await client.query(
+                `INSERT INTO connected_account_payout_methods
+                    (connected_account_id, type, details, is_default)
+                 VALUES ($1,$2,$3,TRUE)
+                 ON CONFLICT DO NOTHING`,
+                [link.account_id, payout.type, JSON.stringify(pmData)]
+            );
+        }
+
+        // Mark link as completed
+        await client.query(
+            `UPDATE onboarding_links SET status='completed', used_at=NOW() WHERE token=$1`,
+            [req.params.token]
+        );
+
+        await client.query('COMMIT');
+
+        // Emit webhook to platform
+        await emitWebhookForMerchant(link.platform_merchant_id, 'connect.onboarding.completed', {
+            account_id: link.account_id,
+            platform_merchant_id: link.platform_merchant_id
+        });
+
+        // Notify platform about new KYC submission
+        io.to(`merchant:${link.platform_merchant_id}`).emit('kyc.submitted', {
+            account_id: link.account_id,
+            message: 'A sub-merchant has completed onboarding and submitted KYC for review'
+        });
+
+        res.json({
+            status: 'completed',
+            account_id: link.account_id,
+            return_url: link.return_url,
+            message: 'Onboarding submitted successfully. Your account is under review.'
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[OnboardingSubmit]', err.message);
+        res.status(500).json({ error: 'Failed to submit onboarding' });
+    } finally {
+        client.release();
+    }
+});
+
+// POST /v1/connect/onboarding/:token/verify-otp — send or confirm email OTP
+app.post('/v1/connect/onboarding/:token/verify-otp', async (req, res) => {
+    const { action, email, purpose = 'mobile_money_verification', code } = req.body;
+    // action: 'send' | 'confirm'
+
+    try {
+        const linkRes = await pool.query(
+            `SELECT * FROM onboarding_links WHERE token = $1 AND expires_at > NOW()`,
+            [req.params.token]
+        );
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Invalid or expired token' });
+
+        if (action === 'send') {
+            if (!email) return res.status(400).json({ error: 'email required' });
+
+            // Rate-limit: max 3 sends per token+purpose in 10 minutes
+            const recentRes = await pool.query(
+                `SELECT COUNT(*) FROM otp_verifications
+                 WHERE onboarding_token=$1 AND purpose=$2 AND created_at > NOW() - INTERVAL '10 minutes'`,
+                [req.params.token, purpose]
+            );
+            if (parseInt(recentRes.rows[0].count) >= 3) {
+                return res.status(429).json({ error: 'Too many OTP requests. Please wait 10 minutes.' });
+            }
+
+            const otpCode = EmailService.generateOtpCode().toString();
+            const codeHash = crypto.createHash('sha256').update(otpCode).digest('hex');
+            const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+
+            await pool.query(
+                `INSERT INTO otp_verifications (onboarding_token, purpose, recipient, code_hash, expires_at)
+                 VALUES ($1,$2,$3,$4,$5)`,
+                [req.params.token, purpose, email, codeHash, expiresAt]
+            );
+
+            await EmailService.sendOtp(email, {
+                code: otpCode,
+                context: purpose === 'mobile_money_verification'
+                    ? 'Mobile Money number verification'
+                    : 'Account verification',
+                expiresIn: 10
+            });
+
+            res.json({ sent: true, message: 'OTP sent to ' + email.replace(/(.{2}).*(@.*)/, '$1***$2') });
+
+        } else if (action === 'confirm') {
+            if (!code) return res.status(400).json({ error: 'code required' });
+
+            const codeHash = crypto.createHash('sha256').update(String(code)).digest('hex');
+
+            // Find valid OTP
+            const otpRes = await pool.query(
+                `SELECT * FROM otp_verifications
+                 WHERE onboarding_token=$1 AND purpose=$2 AND verified_at IS NULL
+                   AND expires_at > NOW() AND attempts < 5
+                 ORDER BY created_at DESC LIMIT 1`,
+                [req.params.token, purpose]
+            );
+
+            if (otpRes.rows.length === 0) {
+                return res.status(400).json({ error: 'No active OTP found or OTP has expired' });
+            }
+            const otp = otpRes.rows[0];
+
+            // Increment attempts
+            await pool.query(
+                `UPDATE otp_verifications SET attempts = attempts + 1 WHERE id = $1`,
+                [otp.id]
+            );
+
+            if (otp.code_hash !== codeHash) {
+                const remaining = 4 - otp.attempts;
+                return res.status(400).json({ error: `Incorrect code. ${remaining} attempt(s) remaining.` });
+            }
+
+            // Mark verified
+            await pool.query(
+                `UPDATE otp_verifications SET verified_at = NOW() WHERE id = $1`,
+                [otp.id]
+            );
+
+            res.json({ verified: true, purpose });
+
+        } else {
+            res.status(400).json({ error: 'action must be "send" or "confirm"' });
+        }
+    } catch (err) {
+        console.error('[OnboardingOTP]', err.message);
+        res.status(500).json({ error: 'OTP operation failed' });
+    }
+});
+
+// POST /v1/connect/onboarding/:token/verify-bank — real-time LENCO bank resolve
+app.post('/v1/connect/onboarding/:token/verify-bank', async (req, res) => {
+    const { bank_id, account_number, country = 'zm' } = req.body;
+    if (!bank_id || !account_number) return res.status(400).json({ error: 'bank_id and account_number required' });
+
+    try {
+        const linkRes = await pool.query(
+            `SELECT id FROM onboarding_links WHERE token = $1 AND expires_at > NOW()`,
+            [req.params.token]
+        );
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Invalid or expired token' });
+
+        const response = await axios.post(
+            `${LENCO_BASE_URL}/resolve/bank-account`,
+            { bankId: bank_id, accountNumber: account_number, country: country.toUpperCase() },
+            { headers: { Authorization: `Bearer ${LENCO_SECRET_KEY}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+        );
+
+        const data = response.data?.data || response.data;
+        if (!data?.accountName) {
+            return res.status(422).json({ error: 'Could not resolve account. Please check the details.' });
+        }
+
+        res.json({
+            resolved: true,
+            account_name: data.accountName,
+            account_number: data.accountNumber || account_number,
+            bank_id
+        });
+    } catch (err) {
+        const msg = err.response?.data?.message || err.message;
+        console.error('[OnboardingBankVerify]', msg);
+        if (err.response?.status === 404 || err.response?.status === 422) {
+            return res.status(422).json({ error: 'Account not found. Please check the account number.' });
+        }
+        res.status(500).json({ error: 'Bank verification failed. Please try again.' });
+    }
+});
+
+// ─── PHASE 4: TIERED FEE SCHEDULES ───────────────────────────────────────────
+
+// GET /v1/connect/fee-tiers
+app.get('/v1/connect/fee-tiers', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM connect_fee_tiers WHERE platform_merchant_id = $1 ORDER BY min_volume ASC`,
+            [req.merchant.merchant_id]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch fee tiers' });
+    }
+});
+
+// PUT /v1/connect/fee-tiers — replace all tiers atomically
+app.put('/v1/connect/fee-tiers', authenticateMerchant, async (req, res) => {
+    const { tiers } = req.body; // [{ min_volume, max_volume, fee_percent }]
+    if (!Array.isArray(tiers) || tiers.length === 0) return res.status(400).json({ error: 'tiers array required' });
+    const platformMerchantId = req.merchant.merchant_id;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query(`DELETE FROM connect_fee_tiers WHERE platform_merchant_id = $1`, [platformMerchantId]);
+        for (const tier of tiers) {
+            await client.query(
+                `INSERT INTO connect_fee_tiers (platform_merchant_id, min_volume, max_volume, fee_percent)
+                 VALUES ($1,$2,$3,$4)`,
+                [platformMerchantId, parseFloat(tier.min_volume) || 0,
+                 tier.max_volume != null ? parseFloat(tier.max_volume) : null,
+                 parseFloat(tier.fee_percent)]
+            );
+        }
+        await client.query('COMMIT');
+        const result = await pool.query(
+            `SELECT * FROM connect_fee_tiers WHERE platform_merchant_id = $1 ORDER BY min_volume ASC`,
+            [platformMerchantId]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: 'Failed to save fee tiers' });
+    } finally {
+        client.release();
+    }
+});
+
+// ─── PHASE 4: CONNECT LEDGER ──────────────────────────────────────────────────
+
+// GET /v1/connect/ledger?from=&to=&type=&limit=
+app.get('/v1/connect/ledger', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    const { from, to, entry_type, limit = 100, offset = 0 } = req.query;
+    try {
+        const conditions = [`l.platform_merchant_id = $1`];
+        const params = [platformMerchantId];
+        let idx = 2;
+
+        // Use date + time bounds so end-of-day entries are included
+        if (from) { conditions.push(`l.created_at >= $${idx++}`); params.push(from + 'T00:00:00'); }
+        if (to)   { conditions.push(`l.created_at <= $${idx++}`); params.push(to   + 'T23:59:59'); }
+        if (entry_type) { conditions.push(`l.entry_type = $${idx++}`); params.push(entry_type); }
+
+        const where = 'WHERE ' + conditions.join(' AND ');
+
+        const rows = await pool.query(
+            `SELECT l.*,
+                COALESCE(
+                    ca.business_name,
+                    ca.metadata->'kyc_payload'->'identity'->>'business_name',
+                    ca.metadata->'kyc_payload'->'identity'->>'full_name',
+                    ca.email
+                ) AS account_name
+             FROM connect_ledger l
+             LEFT JOIN connected_accounts ca ON ca.id = l.account_id
+             ${where} ORDER BY l.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`,
+            [...params, parseInt(limit), parseInt(offset)]
+        );
+
+        // Summary uses same filters (no pagination)
+        const summaryRes = await pool.query(
+            `SELECT
+                COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE 0 END), 0) AS total_credits,
+                COALESCE(SUM(CASE WHEN direction='debit'  THEN amount ELSE 0 END), 0) AS total_debits,
+                COUNT(*) AS total_entries
+             FROM connect_ledger l ${where}`,
+            params
+        );
+
+        const totalCredits = parseFloat(summaryRes.rows[0].total_credits);
+        const totalDebits  = parseFloat(summaryRes.rows[0].total_debits);
+        res.json({
+            entries: rows.rows,
+            summary: {
+                total_credits: totalCredits,
+                total_debits:  totalDebits,
+                net_balance:   totalCredits - totalDebits,
+                currency:      'ZMW',
+                total_entries: parseInt(summaryRes.rows[0].total_entries)
+            }
+        });
+    } catch (err) {
+        console.error('[Ledger]', err.message);
+        res.status(500).json({ error: 'Failed to fetch ledger' });
     }
 });
 
@@ -5586,7 +8522,1808 @@ app.post('/v1/transfers', authenticateApiKey, async (req, res) => {
     }
 });
 
+// --- Connect Platform Configuration ---
+
+// GET /v1/connect/config — Fetch platform's fee & payout config
+app.get('/v1/connect/config', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM connect_config WHERE merchant_id = $1',
+            [req.merchant.merchant_id]
+        );
+        if (result.rows.length === 0) {
+            // Return defaults if never configured
+            return res.json({
+                platform_fee_percent: 2.50,
+                fee_collection_method: 'per_transaction',
+                settlement_delay_days: 1,
+                min_payout_threshold: 50.00,
+                auto_payout_enabled: false,
+                auto_payout_schedule: 'daily',
+                currency: 'ZMW'
+            });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Connect Config GET] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch connect configuration' });
+    }
+});
+
+// PATCH /v1/connect/config — Save or update platform fee & payout config
+app.patch('/v1/connect/config', authenticateMerchant, async (req, res) => {
+    const {
+        platform_fee_percent,
+        fee_collection_method,
+        settlement_delay_days,
+        min_payout_threshold,
+        auto_payout_enabled,
+        auto_payout_schedule,
+        currency
+    } = req.body;
+
+    // Basic validation
+    if (platform_fee_percent !== undefined && (platform_fee_percent < 0 || platform_fee_percent > 20)) {
+        return res.status(400).json({ error: 'platform_fee_percent must be between 0 and 20' });
+    }
+    if (fee_collection_method && !['per_transaction', 'monthly'].includes(fee_collection_method)) {
+        return res.status(400).json({ error: 'Invalid fee_collection_method' });
+    }
+    if (settlement_delay_days !== undefined && ![0, 1, 2].includes(settlement_delay_days)) {
+        return res.status(400).json({ error: 'settlement_delay_days must be 0, 1, or 2' });
+    }
+    if (auto_payout_schedule && !['daily', 'weekly', 'monthly'].includes(auto_payout_schedule)) {
+        return res.status(400).json({ error: 'Invalid auto_payout_schedule' });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO connect_config (
+                merchant_id, platform_fee_percent, fee_collection_method,
+                settlement_delay_days, min_payout_threshold,
+                auto_payout_enabled, auto_payout_schedule, currency, updated_at
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+             ON CONFLICT (merchant_id) DO UPDATE SET
+                platform_fee_percent = EXCLUDED.platform_fee_percent,
+                fee_collection_method = EXCLUDED.fee_collection_method,
+                settlement_delay_days = EXCLUDED.settlement_delay_days,
+                min_payout_threshold = EXCLUDED.min_payout_threshold,
+                auto_payout_enabled = EXCLUDED.auto_payout_enabled,
+                auto_payout_schedule = EXCLUDED.auto_payout_schedule,
+                currency = EXCLUDED.currency,
+                updated_at = NOW()
+             RETURNING *`,
+            [
+                req.merchant.merchant_id,
+                platform_fee_percent ?? 2.50,
+                fee_collection_method ?? 'per_transaction',
+                settlement_delay_days ?? 1,
+                min_payout_threshold ?? 50.00,
+                auto_payout_enabled ?? false,
+                auto_payout_schedule ?? 'daily',
+                currency ?? 'ZMW'
+            ]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Connect Config PATCH] Error:', err);
+        res.status(500).json({ error: 'Failed to save connect configuration' });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 5: ON-DEMAND PAYOUT REQUESTS + STATEMENTS + SUB-MERCHANT PORTAL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Payout Requests ─────────────────────────────────────────────────────────
+
+// POST /v1/connect/accounts/:id/payout-request — sub-merchant requests instant payout
+app.post('/v1/connect/accounts/:id/payout-request', authenticateMerchant, async (req, res) => {
+    const { amount, currency = 'ZMW', note } = req.body;
+    const platformMerchantId = req.merchant.merchant_id;
+    const accountId = req.params.id;
+
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)
+        return res.status(400).json({ error: 'Valid amount required' });
+
+    try {
+        // Verify account belongs to platform
+        const acctRes = await pool.query(
+            `SELECT id, status, email, business_name FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, platformMerchantId]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+        if (acctRes.rows[0].status === 'SUSPENDED') return res.status(403).json({ error: 'Account is suspended' });
+
+        // Check available balance
+        const balRes = await pool.query(
+            `SELECT (pending_amount + available_amount) as total FROM balances WHERE merchant_id = $1`,
+            [accountId]
+        );
+        const available = parseFloat(balRes.rows[0]?.total || 0);
+        const requested = parseFloat(amount);
+        if (requested > available)
+            return res.status(400).json({ error: 'Requested amount exceeds available balance', available });
+
+        const result = await pool.query(
+            `INSERT INTO payout_requests (account_id, platform_merchant_id, amount, currency, note, livemode)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+            [accountId, platformMerchantId, requested, currency, note || null, false]
+        );
+
+        // Notify platform via webhook
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        emitWebhookForMerchant(platformMerchantId, 'payout_request.created', {
+            request_id: result.rows[0].id, account_id: accountId, amount: requested, currency
+        }).catch(() => {});
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[PayoutRequest] Create error:', err.message);
+        res.status(500).json({ error: 'Failed to create payout request' });
+    }
+});
+
+// GET /v1/connect/payout-requests — list all pending requests for platform
+app.get('/v1/connect/payout-requests', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    const { status = 'pending', limit = 50, offset = 0 } = req.query;
+
+    try {
+        const result = await pool.query(
+            `SELECT pr.*, ca.business_name, ca.email as account_email
+             FROM payout_requests pr
+             JOIN connected_accounts ca ON ca.id = pr.account_id
+             WHERE pr.platform_merchant_id = $1
+               AND ($2 = 'all' OR pr.status = $2)
+             ORDER BY pr.created_at DESC
+             LIMIT $3 OFFSET $4`,
+            [platformMerchantId, status, parseInt(limit), parseInt(offset)]
+        );
+        const countRes = await pool.query(
+            `SELECT COUNT(*) FROM payout_requests WHERE platform_merchant_id = $1 AND ($2 = 'all' OR status = $2)`,
+            [platformMerchantId, status]
+        );
+        res.json({ requests: result.rows, total: parseInt(countRes.rows[0].count) });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch payout requests' });
+    }
+});
+
+// GET /v1/connect/accounts/:id/payout-requests — list requests for a specific account
+app.get('/v1/connect/accounts/:id/payout-requests', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const result = await pool.query(
+            `SELECT * FROM payout_requests
+             WHERE account_id = $1 AND platform_merchant_id = $2
+             ORDER BY created_at DESC LIMIT 20`,
+            [req.params.id, platformMerchantId]
+        );
+        res.json({ requests: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch payout requests' });
+    }
+});
+
+// PATCH /v1/connect/payout-requests/:id — approve or deny a payout request
+app.patch('/v1/connect/payout-requests/:id', authenticateMerchant, async (req, res) => {
+    const { action, platform_note } = req.body;  // action: 'approve' | 'deny'
+    const platformMerchantId = req.merchant.merchant_id;
+
+    if (!['approve', 'deny'].includes(action))
+        return res.status(400).json({ error: 'action must be approve or deny' });
+
+    try {
+        const reqRes = await pool.query(
+            `SELECT pr.*, ca.email, ca.business_name FROM payout_requests pr
+             JOIN connected_accounts ca ON ca.id = pr.account_id
+             WHERE pr.id = $1 AND pr.platform_merchant_id = $2`,
+            [req.params.id, platformMerchantId]
+        );
+        if (reqRes.rows.length === 0) return res.status(404).json({ error: 'Request not found' });
+        const request = reqRes.rows[0];
+        if (request.status !== 'pending') return res.status(409).json({ error: `Request is already ${request.status}` });
+
+        const newStatus = action === 'approve' ? 'approved' : 'denied';
+        const result = await pool.query(
+            `UPDATE payout_requests
+             SET status = $1, platform_note = $2, reviewed_at = NOW()
+             WHERE id = $3 RETURNING *`,
+            [newStatus, platform_note || null, req.params.id]
+        );
+
+        // If approved → trigger immediate payout
+        if (action === 'approve') {
+            const { executePayout } = require('./services/PayoutSchedulerService');
+            executePayout(request.account_id, parseFloat(request.amount), request.currency, platformMerchantId, null)
+                .then(async (r) => {
+                    if (r.status === 'completed') {
+                        await pool.query(
+                            `UPDATE payout_requests SET status='completed', payout_id=$1 WHERE id=$2`,
+                            [r.payoutId, req.params.id]
+                        );
+                    } else {
+                        await pool.query(
+                            `UPDATE payout_requests SET status='failed' WHERE id=$2`,
+                            [req.params.id]
+                        );
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Email sub-merchant about decision
+        if (request.email) {
+            resend.emails.send({
+                from: 'FlapaPay <noreply@flapapay.com>',
+                to: [request.email],
+                subject: action === 'approve'
+                    ? `Your payout request of ${request.currency} ${parseFloat(request.amount).toLocaleString()} has been approved`
+                    : `Payout request update`,
+                html: action === 'approve'
+                    ? `<p>Hi ${request.business_name || 'there'},</p><p>Your payout request of <strong>${request.currency} ${parseFloat(request.amount).toLocaleString()}</strong> has been <strong>approved</strong> and is being processed. You should receive the funds shortly.</p><p>— The FlapaPay Team</p>`
+                    : `<p>Hi ${request.business_name || 'there'},</p><p>Your payout request of <strong>${request.currency} ${parseFloat(request.amount).toLocaleString()}</strong> has been <strong>declined</strong>.</p>${platform_note ? `<p>Reason: ${platform_note}</p>` : ''}<p>Please contact your platform for more information.</p><p>— The FlapaPay Team</p>`,
+            }).catch(() => {});
+        }
+
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        emitWebhookForMerchant(platformMerchantId, `payout_request.${newStatus}`, {
+            request_id: req.params.id, account_id: request.account_id,
+            amount: request.amount, currency: request.currency
+        }).catch(() => {});
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[PayoutRequest] Approve/Deny error:', err.message);
+        res.status(500).json({ error: 'Failed to process payout request' });
+    }
+});
+
+// ─── Monthly Statements ───────────────────────────────────────────────────────
+
+// POST /v1/connect/accounts/:id/statements/generate — generate statement for a period
+app.post('/v1/connect/accounts/:id/statements/generate', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    const accountId = req.params.id;
+    const { year, month } = req.body;  // e.g. year: 2025, month: 6
+
+    if (!year || !month) return res.status(400).json({ error: 'year and month required' });
+
+    const periodStart = new Date(year, month - 1, 1);
+    const periodEnd = new Date(year, month, 0);  // last day of month
+
+    try {
+        // Verify account
+        const acctRes = await pool.query(
+            `SELECT * FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            [accountId, platformMerchantId]
+        );
+        if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        // Aggregate charges
+        const chargesRes = await pool.query(
+            `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+             FROM charges
+             WHERE destination_merchant_id = $1
+               AND status = 'succeeded'
+               AND created_at >= $2 AND created_at < $3`,
+            [accountId, periodStart, new Date(year, month, 1)]
+        );
+        // Aggregate refunds
+        const refundsRes = await pool.query(
+            `SELECT COUNT(*) as count, COALESCE(SUM(r.amount), 0) as total
+             FROM refunds r
+             JOIN charges c ON c.id = r.charge_id
+             WHERE c.destination_merchant_id = $1
+               AND r.status = 'succeeded'
+               AND r.created_at >= $2 AND r.created_at < $3`,
+            [accountId, periodStart, new Date(year, month, 1)]
+        );
+        // Aggregate payouts disbursed
+        const payoutsRes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) as total
+             FROM connect_ledger
+             WHERE account_id = $1
+               AND entry_type = 'payout_disbursed'
+               AND created_at >= $2 AND created_at < $3`,
+            [accountId, periodStart, new Date(year, month, 1)]
+        );
+        // Aggregate platform fees collected
+        const feesRes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) as total
+             FROM connect_ledger
+             WHERE account_id = $1
+               AND entry_type = 'fee_collected'
+               AND created_at >= $2 AND created_at < $3`,
+            [accountId, periodStart, new Date(year, month, 1)]
+        );
+
+        const chargesCount = parseInt(chargesRes.rows[0].count);
+        const chargesAmount = parseFloat(chargesRes.rows[0].total);
+        const refundsCount = parseInt(refundsRes.rows[0].count);
+        const refundsAmount = parseFloat(refundsRes.rows[0].total);
+        const payoutsAmount = parseFloat(payoutsRes.rows[0].total);
+        const feesAmount = parseFloat(feesRes.rows[0].total);
+        const netEarnings = chargesAmount - refundsAmount - feesAmount;
+
+        // Upsert statement
+        const stmt = await pool.query(
+            `INSERT INTO connect_statements
+                (account_id, platform_merchant_id, period_start, period_end,
+                 total_charges_count, total_charges_amount, total_refunds_count, total_refunds_amount,
+                 total_payouts_amount, platform_fees_amount, net_earnings, currency)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ZMW')
+             ON CONFLICT (account_id, period_start, livemode) DO UPDATE SET
+                total_charges_count = EXCLUDED.total_charges_count,
+                total_charges_amount = EXCLUDED.total_charges_amount,
+                total_refunds_count = EXCLUDED.total_refunds_count,
+                total_refunds_amount = EXCLUDED.total_refunds_amount,
+                total_payouts_amount = EXCLUDED.total_payouts_amount,
+                platform_fees_amount = EXCLUDED.platform_fees_amount,
+                net_earnings = EXCLUDED.net_earnings
+             RETURNING *`,
+            [
+                accountId, platformMerchantId, periodStart, periodEnd,
+                chargesCount, chargesAmount, refundsCount, refundsAmount,
+                payoutsAmount, feesAmount, netEarnings
+            ]
+        );
+
+        res.json(stmt.rows[0]);
+    } catch (err) {
+        console.error('[Statement] Generate error:', err.message);
+        res.status(500).json({ error: 'Failed to generate statement' });
+    }
+});
+
+// GET /v1/connect/accounts/:id/statements — list statements for account
+app.get('/v1/connect/accounts/:id/statements', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const result = await pool.query(
+            `SELECT s.*, ca.business_name, ca.email
+             FROM connect_statements s
+             JOIN connected_accounts ca ON ca.id = s.account_id
+             WHERE s.account_id = $1 AND s.platform_merchant_id = $2
+             ORDER BY s.period_start DESC LIMIT 24`,
+            [req.params.id, platformMerchantId]
+        );
+        res.json({ statements: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch statements' });
+    }
+});
+
+// POST /v1/connect/accounts/:id/statements/:stmtId/email — email statement to sub-merchant
+app.post('/v1/connect/accounts/:id/statements/:stmtId/email', authenticateMerchant, async (req, res) => {
+    const platformMerchantId = req.merchant.merchant_id;
+    try {
+        const stmtRes = await pool.query(
+            `SELECT s.*, ca.email, ca.business_name
+             FROM connect_statements s
+             JOIN connected_accounts ca ON ca.id = s.account_id
+             WHERE s.id = $1 AND s.platform_merchant_id = $2`,
+            [req.params.stmtId, platformMerchantId]
+        );
+        if (stmtRes.rows.length === 0) return res.status(404).json({ error: 'Statement not found' });
+        const stmt = stmtRes.rows[0];
+
+        if (!stmt.email) return res.status(400).json({ error: 'Account has no email address' });
+
+        const periodLabel = new Date(stmt.period_start).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+        await resend.emails.send({
+            from: 'FlapaPay <noreply@flapapay.com>',
+            to: [stmt.email],
+            subject: `Your FlapaPay Statement — ${periodLabel}`,
+            html: `
+<p>Hi ${stmt.business_name || 'there'},</p>
+<p>Your statement for <strong>${periodLabel}</strong> is ready.</p>
+<table style="border-collapse:collapse;width:100%;max-width:500px;font-family:sans-serif;font-size:14px;">
+  <tr style="background:#f5f5f5;"><td style="padding:8px 12px;font-weight:bold;">Metric</td><td style="padding:8px 12px;font-weight:bold;text-align:right;">Amount</td></tr>
+  <tr><td style="padding:8px 12px;border-top:1px solid #eee;">Total Charges (${stmt.total_charges_count})</td><td style="padding:8px 12px;text-align:right;border-top:1px solid #eee;">${stmt.currency} ${parseFloat(stmt.total_charges_amount).toLocaleString()}</td></tr>
+  <tr><td style="padding:8px 12px;border-top:1px solid #eee;">Total Refunds (${stmt.total_refunds_count})</td><td style="padding:8px 12px;text-align:right;border-top:1px solid #eee;">- ${stmt.currency} ${parseFloat(stmt.total_refunds_amount).toLocaleString()}</td></tr>
+  <tr><td style="padding:8px 12px;border-top:1px solid #eee;">Platform Fees</td><td style="padding:8px 12px;text-align:right;border-top:1px solid #eee;">- ${stmt.currency} ${parseFloat(stmt.platform_fees_amount).toLocaleString()}</td></tr>
+  <tr><td style="padding:8px 12px;border-top:1px solid #eee;">Payouts Received</td><td style="padding:8px 12px;text-align:right;border-top:1px solid #eee;">${stmt.currency} ${parseFloat(stmt.total_payouts_amount).toLocaleString()}</td></tr>
+  <tr style="background:#fffbf0;font-weight:bold;"><td style="padding:10px 12px;border-top:2px solid #f97316;">Net Earnings</td><td style="padding:10px 12px;text-align:right;border-top:2px solid #f97316;color:#f97316;">${stmt.currency} ${parseFloat(stmt.net_earnings).toLocaleString()}</td></tr>
+</table>
+<p>Log in to your dashboard to view full transaction details.</p>
+<p>— The FlapaPay Team</p>`,
+        });
+
+        await pool.query(`UPDATE connect_statements SET emailed_at = NOW() WHERE id = $1`, [req.params.stmtId]);
+        res.json({ sent: true, to: stmt.email });
+    } catch (err) {
+        console.error('[Statement] Email error:', err.message);
+        res.status(500).json({ error: 'Failed to send statement email' });
+    }
+});
+
+// ─── Sub-merchant Portal Auth ─────────────────────────────────────────────────
+
+// POST /v1/connect/portal/login — sub-merchant logs in with email + password
+app.post('/v1/connect/portal/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+
+    try {
+        const bcrypt = require('bcrypt');
+        const crypto = require('crypto');
+
+        const acctRes = await pool.query(
+            `SELECT * FROM connected_accounts WHERE email = $1`,
+            [email.toLowerCase().trim()]
+        );
+        if (acctRes.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
+        const account = acctRes.rows[0];
+
+        if (!account.password_hash) return res.status(401).json({ error: 'Account has no password set. Use invite link to register.' });
+
+        const match = await bcrypt.compare(password, account.password_hash);
+        if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+
+        if (account.status === 'SUSPENDED') return res.status(403).json({ error: 'Account is suspended' });
+
+        // Create session token
+        const token = crypto.randomBytes(48).toString('hex');
+        await pool.query(
+            `INSERT INTO submerchant_sessions (account_id, token, expires_at)
+             VALUES ($1, $2, NOW() + INTERVAL '24 hours')`,
+            [account.id, token]
+        );
+
+        const { id, business_name, kyc_status, status, platform_merchant_id } = account;
+        res.json({ token, account: { id, business_name, email: account.email, kyc_status, status, platform_merchant_id } });
+    } catch (err) {
+        console.error('[PortalLogin] Error:', err.message);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+// Middleware: authenticate sub-merchant portal session
+async function authenticateSubMerchant(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+    const token = authHeader.slice(7);
+    try {
+        const sesRes = await pool.query(
+            `SELECT s.*, ca.* FROM submerchant_sessions s
+             JOIN connected_accounts ca ON ca.id = s.account_id
+             WHERE s.token = $1 AND s.expires_at > NOW()`,
+            [token]
+        );
+        if (sesRes.rows.length === 0) return res.status(401).json({ error: 'Session expired or invalid' });
+        req.subMerchant = sesRes.rows[0];
+        next();
+    } catch (err) {
+        res.status(500).json({ error: 'Auth error' });
+    }
+}
+
+// GET /v1/connect/portal/me — get own account details including payout methods + onboarding status
+app.get('/v1/connect/portal/me', authenticateSubMerchant, async (req, res) => {
+    const acct = req.subMerchant;
+    try {
+        const [balRes, payoutMethodsRes, onboardingRes] = await Promise.all([
+            pool.query(`SELECT pending_amount, available_amount FROM balances WHERE merchant_id = $1`, [acct.account_id]),
+            pool.query(`SELECT id, type, details, is_default FROM connected_account_payout_methods WHERE connected_account_id = $1 ORDER BY is_default DESC, created_at DESC`, [acct.account_id]),
+            pool.query(`SELECT status, used_at, expires_at FROM onboarding_links WHERE account_id = $1 ORDER BY created_at DESC LIMIT 1`, [acct.account_id]),
+        ]);
+        const balance = balRes.rows[0] || { pending_amount: 0, available_amount: 0 };
+        const onboardingLink = onboardingRes.rows[0] || null;
+        res.json({
+            id: acct.account_id,
+            business_name: acct.business_name,
+            email: acct.email,
+            kyc_status: acct.kyc_status,
+            status: acct.status,
+            platform_merchant_id: acct.platform_merchant_id,
+            balance: {
+                available: Math.max(parseFloat(balance.available_amount || 0), 0),
+                pending: Math.max(parseFloat(balance.pending_amount || 0), 0),
+            },
+            payout_methods: payoutMethodsRes.rows,
+            onboarding: onboardingLink ? {
+                status: onboardingLink.status,
+                completed: onboardingLink.status === 'completed',
+            } : null,
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch account' });
+    }
+});
+
+// GET /v1/connect/portal/charges — own charge history
+app.get('/v1/connect/portal/charges', authenticateSubMerchant, async (req, res) => {
+    const { limit = 50, offset = 0 } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT id, amount, currency, status, payment_method, description, created_at
+             FROM charges
+             WHERE destination_merchant_id = $1
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+            [req.subMerchant.account_id, parseInt(limit), parseInt(offset)]
+        );
+        res.json({ charges: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch charges' });
+    }
+});
+
+// GET /v1/connect/portal/payouts — own payout history
+app.get('/v1/connect/portal/payouts', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, amount, currency, direction, description, created_at
+             FROM connect_ledger
+             WHERE account_id = $1 AND entry_type = 'payout_disbursed'
+             ORDER BY created_at DESC LIMIT 20`,
+            [req.subMerchant.account_id]
+        );
+        res.json({ payouts: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch payouts' });
+    }
+});
+
+// GET /v1/connect/portal/statements — own statements
+app.get('/v1/connect/portal/statements', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM connect_statements WHERE account_id = $1 ORDER BY period_start DESC LIMIT 24`,
+            [req.subMerchant.account_id]
+        );
+        res.json({ statements: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch statements' });
+    }
+});
+
+// POST /v1/connect/portal/payout-requests — sub-merchant requests a payout
+app.post('/v1/connect/portal/payout-requests', authenticateSubMerchant, async (req, res) => {
+    const { amount, currency = 'ZMW', note } = req.body;
+    const acct = req.subMerchant;
+
+    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0)
+        return res.status(400).json({ error: 'Valid amount required' });
+
+    try {
+        const balRes = await pool.query(
+            `SELECT (pending_amount + available_amount) as total FROM balances WHERE merchant_id = $1`,
+            [acct.account_id]
+        );
+        const available = parseFloat(balRes.rows[0]?.total || 0);
+        if (parseFloat(amount) > available)
+            return res.status(400).json({ error: 'Requested amount exceeds available balance', available });
+
+        // Check for already-pending request
+        const existingRes = await pool.query(
+            `SELECT id FROM payout_requests WHERE account_id = $1 AND status = 'pending' LIMIT 1`,
+            [acct.account_id]
+        );
+        if (existingRes.rows.length > 0)
+            return res.status(409).json({ error: 'You already have a pending payout request' });
+
+        const result = await pool.query(
+            `INSERT INTO payout_requests (account_id, platform_merchant_id, amount, currency, note)
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [acct.account_id, acct.platform_merchant_id, parseFloat(amount), currency, note || null]
+        );
+
+        const { emitWebhookForMerchant } = require('./services/PayoutSchedulerService');
+        emitWebhookForMerchant(acct.platform_merchant_id, 'payout_request.created', {
+            request_id: result.rows[0].id, account_id: acct.account_id, amount, currency
+        }).catch(() => {});
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[PortalPayoutRequest] Error:', err.message);
+        res.status(500).json({ error: 'Failed to submit payout request' });
+    }
+});
+
+// GET /v1/connect/portal/payout-requests — own payout request history
+app.get('/v1/connect/portal/payout-requests', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM payout_requests WHERE account_id = $1 ORDER BY created_at DESC LIMIT 20`,
+            [req.subMerchant.account_id]
+        );
+        res.json({ requests: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch payout requests' });
+    }
+});
+
+// GET /v1/connect/portal/kyc — sub-merchant lists their own KYC documents
+app.get('/v1/connect/portal/kyc', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, document_type, file_url, file_name, status, rejection_reason, uploaded_at
+             FROM connected_account_kyc
+             WHERE account_id = $1
+             ORDER BY uploaded_at DESC`,
+            [req.subMerchant.account_id]
+        );
+        res.json({ documents: result.rows });
+    } catch (err) {
+        console.error('[Portal KYC] List error:', err);
+        res.status(500).json({ error: 'Failed to fetch KYC documents' });
+    }
+});
+
+// POST /v1/connect/portal/kyc — sub-merchant uploads a KYC document
+app.post('/v1/connect/portal/kyc', authenticateSubMerchant, uploadKyc.single('document'), async (req, res) => {
+    const { document_type, file_url: bodyFileUrl, file_name: bodyFileName } = req.body;
+    const accountId = req.subMerchant.account_id;
+
+    if (!document_type) return res.status(400).json({ error: 'document_type is required' });
+    if (!req.file && !bodyFileUrl) return res.status(400).json({ error: 'A document file or file_url is required' });
+
+    const file_url = req.file ? `/assets/images/kyc/${req.file.filename}` : bodyFileUrl;
+    const file_name = req.file ? req.file.originalname : (bodyFileName || null);
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO connected_account_kyc (account_id, document_type, file_url, file_name)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [accountId, document_type, file_url, file_name]
+        );
+        await pool.query(
+            `UPDATE connected_accounts SET kyc_status = 'pending_review', kyc_submitted_at = NOW()
+             WHERE id = $1 AND kyc_status = 'unverified'`,
+            [accountId]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Portal KYC] Upload error:', err);
+        res.status(500).json({ error: 'Failed to upload KYC document' });
+    }
+});
+
+// POST /v1/connect/portal/payout-execute — process real payout via PawaPay (mobile) or Lenco (bank)
+app.post('/v1/connect/portal/payout-execute', authenticateSubMerchant, async (req, res) => {
+    const { amount, type = 'standard' } = req.body;
+    const acct = req.subMerchant;
+    const accountId = acct.account_id;
+
+    const amountZmw = parseFloat(amount);
+    if (!amount || isNaN(amountZmw) || amountZmw <= 0)
+        return res.status(400).json({ error: 'Valid amount required' });
+
+    // balances.available_amount is stored in ngwe (1/100 ZMW); client sends ZMW
+    const amountNgwe = Math.round(amountZmw * 100);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Check balance in ngwe
+        const balRes = await client.query(
+            `SELECT available_amount FROM balances WHERE merchant_id = $1 FOR UPDATE`,
+            [accountId]
+        );
+        const availableNgwe = parseFloat(balRes.rows[0]?.available_amount || 0);
+        if (amountNgwe > availableNgwe)
+            return res.status(400).json({ error: 'Amount exceeds available balance', available: availableNgwe / 100 });
+
+        // 2. Get default payout method
+        const pmRes = await client.query(
+            `SELECT * FROM connected_account_payout_methods
+             WHERE connected_account_id = $1 AND is_default = TRUE LIMIT 1`,
+            [accountId]
+        );
+        if (pmRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'No default payout method. Complete onboarding first.' });
+        }
+        const pm = pmRes.rows[0];
+        const details = pm.details || {};
+
+        // 3. Fee calculation in ngwe; response amounts in ZMW
+        const instantFeeNgwe = type === 'instant' ? Math.round(amountNgwe * 0.02) : 0;
+        const netAmountNgwe  = amountNgwe - instantFeeNgwe;
+        const netAmountZmw   = netAmountNgwe / 100;
+        const feeZmw         = instantFeeNgwe / 100;
+
+        const mobileNetwork = (details.mobile_network || details.provider || '').toUpperCase();
+        const mobileNumber  = details.mobile_number || details.number || '';
+        const destStr = pm.type === 'mobile_money'
+            ? `${mobileNetwork} ${mobileNumber}`.trim()
+            : `${details.bank_name || 'Bank'} ****${String(details.account_number || '').slice(-4)}`;
+
+        // 4. Deduct available balance (ngwe), floor at 0 to prevent negatives
+        await client.query(
+            `UPDATE balances
+             SET available_amount = GREATEST(available_amount - $1, 0), updated_at = NOW()
+             WHERE merchant_id = $2`,
+            [amountNgwe, accountId]
+        );
+
+        // 5. Record in connect_ledger (amount in ngwe for consistency with charges)
+        const payoutRef = 'CPO-' + crypto.randomBytes(6).toString('hex').toUpperCase();
+        await client.query(
+            `INSERT INTO connect_ledger
+                (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+             VALUES ($1, 'payout_disbursed', $2, $3, $4, 'ZMW', 'debit', $5, FALSE)`,
+            [acct.platform_merchant_id, payoutRef, accountId, amountNgwe,
+             `${type === 'instant' ? 'Instant' : 'Standard'} payout to ${destStr}`]
+        );
+
+        // 6. INSERT a new payout_requests row so history is always tracked
+        await client.query(
+            `INSERT INTO payout_requests (account_id, platform_merchant_id, amount, currency, status, note, livemode)
+             VALUES ($1, $2, $3, 'ZMW', 'completed', $4, FALSE)`,
+            [accountId, acct.platform_merchant_id, amountNgwe,
+             `${type === 'instant' ? 'Instant' : 'Standard'} payout to ${destStr} — ref ${payoutRef}`]
+        );
+
+        // 7. Mark any older pending requests resolved too
+        await client.query(
+            `UPDATE payout_requests SET status = 'completed'
+             WHERE account_id = $1 AND status = 'pending'`,
+            [accountId]
+        );
+
+        await client.query('COMMIT');
+
+        // 8. External transfer (after commit — non-fatal)
+        let externalResult = { provider: pm.type, status: 'processing', reference: payoutRef };
+
+        if (pm.type === 'mobile_money') {
+            const NETWORK_PROVIDER = {
+                mtn: 'MTN_MOMO_ZMB',
+                airtel: 'AIRTEL_OAPI_ZMB',
+                zamtel: 'ZAMTEL_ZMB',
+            };
+            const provider = NETWORK_PROVIDER[(mobileNetwork).toLowerCase()] || 'MTN_MOMO_ZMB';
+            const pawapayId = crypto.randomUUID();
+            try {
+                const r = await axios.post(`${PAWAPAY_BASE_URL}/v2/payouts`, {
+                    payoutId: pawapayId,
+                    recipient: { type: 'MMO', accountDetails: { phoneNumber: mobileNumber, provider } },
+                    amount: netAmountZmw.toFixed(2),
+                    currency: 'ZMW',
+                    clientReferenceId: payoutRef,
+                    customerMessage: `FlapaPay Connect payout — ${acct.business_name || acct.email}`,
+                    metadata: [{ orderId: payoutRef }]
+                }, {
+                    headers: { 'Authorization': `Bearer ${PAWAPAY_TOKEN}`, 'Content-Type': 'application/json' }
+                });
+                externalResult = { provider: 'pawapay', payout_id: pawapayId, status: r.data.status, reference: payoutRef };
+            } catch (e) {
+                console.error('[ConnectPayout][PawaPay]', e.response?.data || e.message);
+                externalResult = { provider: 'pawapay', status: 'ENQUEUED', reference: payoutRef, note: 'Will retry' };
+            }
+        } else if (pm.type === 'bank_account') {
+            const LENCO_ACCOUNT = 'e24f5dee-3b7b-4fbd-835f-b75365a7c4cd';
+            try {
+                await axios.post(`${LENCO_BASE_URL}/transfers/bank-account`, {
+                    accountId: LENCO_ACCOUNT,
+                    amount: netAmountZmw,
+                    reference: payoutRef,
+                    narration: `FlapaPay Connect payout — ${acct.business_name || acct.email}`,
+                    accountNumber: details.account_number,
+                    bankId: details.bank_id,
+                    country: 'ZM'
+                }, {
+                    headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+                });
+                externalResult = { provider: 'lenco', status: 'processing', reference: payoutRef };
+            } catch (e) {
+                console.error('[ConnectPayout][Lenco]', e.response?.data || e.message);
+                externalResult = { provider: 'lenco', status: 'pending', reference: payoutRef, note: e.response?.data?.message || e.message };
+            }
+        }
+
+        res.json({
+            success: true,
+            reference: payoutRef,
+            amount: amountZmw,
+            net_amount: netAmountZmw,
+            fee: feeZmw,
+            type,
+            payout_method: pm.type,
+            external: externalResult,
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[ConnectPayoutExecute]', err.message);
+        res.status(500).json({ error: err.message || 'Payout failed' });
+    } finally {
+        client.release();
+    }
+});
+
+// GET /v1/connect/portal/payout_methods — sub-merchant's saved payout destinations
+app.get('/v1/connect/portal/payout_methods', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, type, details, is_default, created_at
+             FROM connected_account_payout_methods
+             WHERE connected_account_id = $1
+             ORDER BY is_default DESC, created_at DESC`,
+            [req.subMerchant.account_id]
+        );
+        res.json({ payout_methods: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch payout methods' });
+    }
+});
+
+// GET /v1/connect/portal/analytics — server-aggregated analytics for the submerchant
+app.get('/v1/connect/portal/analytics', authenticateSubMerchant, async (req, res) => {
+    const { days = 30 } = req.query;
+    const numDays = Math.min(parseInt(days) || 30, 365);
+    const accountId = req.subMerchant.account_id;
+    try {
+        const [kpiRes, dailyRes, methodRes, statusRes, topRes] = await Promise.all([
+            // KPI totals for current period vs previous period
+            pool.query(`
+                SELECT
+                  COALESCE(SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays} days' AND status='succeeded'), 0) AS revenue,
+                  COALESCE(SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays * 2} days' AND created_at < NOW() - INTERVAL '${numDays} days' AND status='succeeded'), 0) AS prev_revenue,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays} days') AS tx_count,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays * 2} days' AND created_at < NOW() - INTERVAL '${numDays} days') AS prev_tx_count,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays} days' AND status='succeeded') AS success_count,
+                  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '${numDays * 2} days' AND created_at < NOW() - INTERVAL '${numDays} days' AND status='succeeded') AS prev_success_count
+                FROM charges WHERE destination_merchant_id = $1
+            `, [accountId]),
+            // Daily revenue for bar chart
+            pool.query(`
+                SELECT DATE_TRUNC('day', created_at) AS day,
+                       COALESCE(SUM(amount) FILTER (WHERE status='succeeded'), 0) AS revenue,
+                       COUNT(*) AS tx_count
+                FROM charges
+                WHERE destination_merchant_id = $1
+                  AND created_at >= NOW() - INTERVAL '${numDays} days'
+                GROUP BY day ORDER BY day ASC
+            `, [accountId]),
+            // Payment method breakdown
+            pool.query(`
+                SELECT payment_method, COALESCE(SUM(amount),0) AS total, COUNT(*) AS count
+                FROM charges
+                WHERE destination_merchant_id = $1
+                  AND created_at >= NOW() - INTERVAL '${numDays} days'
+                GROUP BY payment_method ORDER BY total DESC
+            `, [accountId]),
+            // Status breakdown
+            pool.query(`
+                SELECT status, COUNT(*) AS count
+                FROM charges
+                WHERE destination_merchant_id = $1
+                  AND created_at >= NOW() - INTERVAL '${numDays} days'
+                GROUP BY status
+            `, [accountId]),
+            // Top 5 transactions
+            pool.query(`
+                SELECT id, amount, currency, status, description, payment_method, created_at
+                FROM charges
+                WHERE destination_merchant_id = $1 AND status = 'succeeded'
+                  AND created_at >= NOW() - INTERVAL '${numDays} days'
+                ORDER BY amount DESC LIMIT 5
+            `, [accountId]),
+        ]);
+
+        const kpi = kpiRes.rows[0];
+        const txCount = parseInt(kpi.tx_count);
+        const prevTxCount = parseInt(kpi.prev_tx_count);
+        const successCount = parseInt(kpi.success_count);
+        const prevSuccessCount = parseInt(kpi.prev_success_count);
+        const revenue = parseFloat(kpi.revenue);
+        const prevRevenue = parseFloat(kpi.prev_revenue);
+
+        res.json({
+            period_days: numDays,
+            kpi: {
+                revenue,
+                prev_revenue: prevRevenue,
+                revenue_pct: prevRevenue === 0 ? 0 : ((revenue - prevRevenue) / prevRevenue) * 100,
+                tx_count: txCount,
+                prev_tx_count: prevTxCount,
+                tx_pct: prevTxCount === 0 ? 0 : ((txCount - prevTxCount) / prevTxCount) * 100,
+                success_rate: txCount === 0 ? 0 : (successCount / txCount) * 100,
+                prev_success_rate: prevTxCount === 0 ? 0 : (prevSuccessCount / prevTxCount) * 100,
+                avg_tx: successCount === 0 ? 0 : revenue / successCount,
+                prev_avg_tx: prevSuccessCount === 0 ? 0 : prevRevenue / prevSuccessCount,
+            },
+            daily: dailyRes.rows.map(r => ({
+                day: r.day,
+                revenue: parseFloat(r.revenue),
+                tx_count: parseInt(r.tx_count),
+            })),
+            by_method: methodRes.rows.map(r => ({
+                method: r.payment_method || 'mobile_money',
+                total: parseFloat(r.total),
+                count: parseInt(r.count),
+            })),
+            by_status: statusRes.rows.map(r => ({
+                status: r.status,
+                count: parseInt(r.count),
+            })),
+            top_transactions: topRes.rows,
+        });
+    } catch (err) {
+        console.error('[Portal Analytics]', err.message);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+});
+
+// POST /v1/connect/portal/onboarding_link — sub-merchant requests a new onboarding link for self-edit
+app.post('/v1/connect/portal/onboarding_link', authenticateSubMerchant, async (req, res) => {
+    const acct = req.subMerchant;
+    try {
+        const crypto = require('crypto');
+        const token = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+        await pool.query(
+            `INSERT INTO onboarding_links (platform_merchant_id, account_id, token, expires_at, return_url, status)
+             VALUES ($1, $2, $3, $4, $5, 'pending')`,
+            [acct.platform_merchant_id, acct.account_id, token, expiresAt, req.body.return_url || `${frontendUrl}/merchant/connect`]
+        );
+
+        res.json({
+            url: `${frontendUrl}/connect/onboarding/${token}`,
+            expires_at: expiresAt,
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create onboarding link' });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE 6: RISK & FRAUD ENGINE + WEBHOOK DELIVERY DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Risk Scoring Engine ──────────────────────────────────────────────────────
+// Called during charge creation. Returns { blocked, flagged, events[] }
+async function evaluateRisk({ merchantId, accountId, amount, currency, country, chargeId }) {
+    try {
+        const rulesRes = await pool.query(
+            `SELECT * FROM risk_rules WHERE merchant_id = $1 AND enabled = TRUE ORDER BY created_at ASC`,
+            [merchantId]
+        );
+        if (rulesRes.rows.length === 0) return { blocked: false, flagged: false, events: [] };
+
+        const events = [];
+        let blocked = false;
+        let flagged = false;
+
+        for (const rule of rulesRes.rows) {
+            const p = rule.parameters || {};
+            let triggered = false;
+            let description = '';
+            let riskScore = 0;
+            let metadata = {};
+
+            if (rule.rule_type === 'max_transaction_amount') {
+                if (parseFloat(amount) > parseFloat(p.amount || 0)) {
+                    triggered = true;
+                    riskScore = 85;
+                    description = `Transaction amount ${currency} ${amount} exceeds limit of ${currency} ${p.amount}`;
+                    metadata = { amount, threshold: p.amount };
+                }
+            } else if (rule.rule_type === 'velocity_count') {
+                const windowMs = parseInt(p.window_minutes || 60) * 60 * 1000;
+                const since = new Date(Date.now() - windowMs);
+                const countRes = await pool.query(
+                    `SELECT COUNT(*) FROM charges WHERE ${accountId ? 'destination_merchant_id = $1' : 'merchant_id = $1'} AND created_at >= $2`,
+                    [accountId || merchantId, since]
+                );
+                const count = parseInt(countRes.rows[0].count);
+                if (count >= parseInt(p.count || 10)) {
+                    triggered = true;
+                    riskScore = 70;
+                    description = `Velocity limit: ${count} charges in ${p.window_minutes || 60} min (limit: ${p.count})`;
+                    metadata = { count, limit: p.count, window_minutes: p.window_minutes };
+                }
+            } else if (rule.rule_type === 'velocity_amount') {
+                const windowMs = parseInt(p.window_minutes || 1440) * 60 * 1000;
+                const since = new Date(Date.now() - windowMs);
+                const sumRes = await pool.query(
+                    `SELECT COALESCE(SUM(amount),0) as total FROM charges WHERE ${accountId ? 'destination_merchant_id = $1' : 'merchant_id = $1'} AND created_at >= $2 AND status = 'succeeded'`,
+                    [accountId || merchantId, since]
+                );
+                const total = parseFloat(sumRes.rows[0].total) + parseFloat(amount);
+                if (total > parseFloat(p.amount || 0)) {
+                    triggered = true;
+                    riskScore = 75;
+                    description = `Volume limit: ${currency} ${total.toFixed(2)} in ${p.window_minutes || 1440} min exceeds ${currency} ${p.amount}`;
+                    metadata = { total: total.toFixed(2), threshold: p.amount };
+                }
+            } else if (rule.rule_type === 'block_country') {
+                const blockedCountries = p.countries || [];
+                if (country && blockedCountries.includes(country.toUpperCase())) {
+                    triggered = true;
+                    riskScore = 90;
+                    description = `Transaction from blocked country: ${country}`;
+                    metadata = { country, blocked_countries: blockedCountries };
+                }
+            } else if (rule.rule_type === 'require_kyc' && accountId) {
+                const kycRes = await pool.query(
+                    `SELECT kyc_status FROM connected_accounts WHERE id = $1`,
+                    [accountId]
+                );
+                if (kycRes.rows.length > 0 && kycRes.rows[0].kyc_status !== 'verified') {
+                    triggered = true;
+                    riskScore = 60;
+                    description = `Sub-merchant KYC not verified (status: ${kycRes.rows[0].kyc_status})`;
+                    metadata = { kyc_status: kycRes.rows[0].kyc_status };
+                }
+            }
+
+            if (triggered) {
+                if (rule.operator === 'block') blocked = true;
+                else flagged = true;
+
+                // Write risk event asynchronously
+                pool.query(
+                    `INSERT INTO risk_events (merchant_id, rule_id, charge_id, account_id, event_type, operator, status, risk_score, description, metadata, livemode)
+                     VALUES ($1,$2,$3,$4,$5,$6,'open',$7,$8,$9,FALSE)`,
+                    [merchantId, rule.id, chargeId, accountId || null, rule.rule_type, rule.operator, riskScore, description, JSON.stringify(metadata)]
+                ).catch(e => console.error('[Risk] Event write failed:', e.message));
+
+                events.push({ rule_id: rule.id, rule_type: rule.rule_type, operator: rule.operator, description });
+            }
+        }
+
+        return { blocked, flagged, events };
+    } catch (err) {
+        console.error('[Risk] Evaluation error:', err.message);
+        return { blocked: false, flagged: false, events: [] };
+    }
+}
+
+// ─── Risk Rules CRUD ──────────────────────────────────────────────────────────
+
+// GET /v1/connect/risk/rules
+app.get('/v1/connect/risk/rules', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM risk_rules WHERE merchant_id = $1 ORDER BY created_at ASC`,
+            [req.merchant.merchant_id]
+        );
+        res.json({ rules: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch risk rules' });
+    }
+});
+
+// POST /v1/connect/risk/rules
+app.post('/v1/connect/risk/rules', authenticateMerchant, async (req, res) => {
+    const { name, rule_type, operator = 'block', parameters = {}, applies_to = 'all' } = req.body;
+    const VALID_TYPES = ['max_transaction_amount','velocity_count','velocity_amount','block_country','require_kyc'];
+    if (!name || !rule_type) return res.status(400).json({ error: 'name and rule_type required' });
+    if (!VALID_TYPES.includes(rule_type)) return res.status(400).json({ error: `rule_type must be one of: ${VALID_TYPES.join(', ')}` });
+    if (!['block','flag','review'].includes(operator)) return res.status(400).json({ error: 'operator must be block, flag, or review' });
+    try {
+        const result = await pool.query(
+            `INSERT INTO risk_rules (merchant_id, name, rule_type, operator, parameters, applies_to)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+            [req.merchant.merchant_id, name, rule_type, operator, JSON.stringify(parameters), applies_to]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to create risk rule' });
+    }
+});
+
+// PATCH /v1/connect/risk/rules/:id
+app.patch('/v1/connect/risk/rules/:id', authenticateMerchant, async (req, res) => {
+    const { name, operator, parameters, applies_to, enabled } = req.body;
+    try {
+        const existing = await pool.query(
+            `SELECT * FROM risk_rules WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+        if (existing.rows.length === 0) return res.status(404).json({ error: 'Rule not found' });
+
+        const result = await pool.query(
+            `UPDATE risk_rules SET
+                name = COALESCE($1, name),
+                operator = COALESCE($2, operator),
+                parameters = COALESCE($3, parameters),
+                applies_to = COALESCE($4, applies_to),
+                enabled = COALESCE($5, enabled),
+                updated_at = NOW()
+             WHERE id = $6 AND merchant_id = $7 RETURNING *`,
+            [name || null, operator || null, parameters ? JSON.stringify(parameters) : null,
+             applies_to || null, enabled != null ? enabled : null,
+             req.params.id, req.merchant.merchant_id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update risk rule' });
+    }
+});
+
+// DELETE /v1/connect/risk/rules/:id
+app.delete('/v1/connect/risk/rules/:id', authenticateMerchant, async (req, res) => {
+    try {
+        await pool.query(
+            `DELETE FROM risk_rules WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+        res.json({ deleted: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete risk rule' });
+    }
+});
+
+// ─── Risk Events ──────────────────────────────────────────────────────────────
+
+// GET /v1/connect/risk/events
+app.get('/v1/connect/risk/events', authenticateMerchant, async (req, res) => {
+    const { status = 'open', limit = 50, offset = 0 } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT re.*, ca.business_name, rr.name as rule_name
+             FROM risk_events re
+             LEFT JOIN connected_accounts ca ON ca.id = re.account_id
+             LEFT JOIN risk_rules rr ON rr.id = re.rule_id
+             WHERE re.merchant_id = $1
+               AND ($2 = 'all' OR re.status = $2)
+             ORDER BY re.created_at DESC
+             LIMIT $3 OFFSET $4`,
+            [req.merchant.merchant_id, status, parseInt(limit), parseInt(offset)]
+        );
+        const countRes = await pool.query(
+            `SELECT COUNT(*) FROM risk_events WHERE merchant_id = $1 AND ($2 = 'all' OR status = $2)`,
+            [req.merchant.merchant_id, status]
+        );
+        res.json({ events: result.rows, total: parseInt(countRes.rows[0].count) });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch risk events' });
+    }
+});
+
+// PATCH /v1/connect/risk/events/:id — review/clear/confirm fraud
+app.patch('/v1/connect/risk/events/:id', authenticateMerchant, async (req, res) => {
+    const { status, review_note } = req.body;
+    const VALID = ['reviewed','cleared','confirmed_fraud'];
+    if (!status || !VALID.includes(status)) return res.status(400).json({ error: `status must be one of: ${VALID.join(', ')}` });
+    try {
+        const result = await pool.query(
+            `UPDATE risk_events
+             SET status = $1, review_note = $2, reviewed_at = NOW(), reviewed_by = $3
+             WHERE id = $4 AND merchant_id = $5 RETURNING *`,
+            [status, review_note || null, req.merchant.email || 'platform', req.params.id, req.merchant.merchant_id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Event not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to update risk event' });
+    }
+});
+
+// GET /v1/connect/risk/summary — KPI summary for dashboard
+app.get('/v1/connect/risk/summary', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    try {
+        const [openRes, blockedRes, last24Res, rulesRes] = await Promise.all([
+            pool.query(`SELECT COUNT(*) FROM risk_events WHERE merchant_id=$1 AND status='open'`, [merchantId]),
+            pool.query(`SELECT COUNT(*) FROM risk_events WHERE merchant_id=$1 AND operator='block'`, [merchantId]),
+            pool.query(`SELECT COUNT(*) FROM risk_events WHERE merchant_id=$1 AND created_at >= NOW() - INTERVAL '24 hours'`, [merchantId]),
+            pool.query(`SELECT COUNT(*) FROM risk_rules WHERE merchant_id=$1 AND enabled=TRUE`, [merchantId]),
+        ]);
+        res.json({
+            open_events: parseInt(openRes.rows[0].count),
+            total_blocked: parseInt(blockedRes.rows[0].count),
+            events_last_24h: parseInt(last24Res.rows[0].count),
+            active_rules: parseInt(rulesRes.rows[0].count),
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch risk summary' });
+    }
+});
+
+// ─── Webhook Delivery Dashboard ───────────────────────────────────────────────
+
+// GET /v1/webhooks/deliveries — list deliveries with optional event filter
+app.get('/v1/webhooks/deliveries', authenticateMerchant, async (req, res) => {
+    const { event_type, status, endpoint_id, limit = 50, offset = 0 } = req.query;
+    const merchantId = req.merchant.merchant_id;
+    try {
+        const conditions = ['we.merchant_id = $1'];
+        const values = [merchantId];
+        let idx = 2;
+
+        if (event_type) { conditions.push(`wd.event ILIKE $${idx++}`); values.push(`%${event_type}%`); }
+        if (endpoint_id) { conditions.push(`wd.endpoint_id = $${idx++}`); values.push(endpoint_id); }
+        if (status === 'failed') { conditions.push(`wd.response_status >= 400`); }
+        else if (status === 'success') { conditions.push(`wd.response_status < 300`); }
+
+        values.push(parseInt(limit), parseInt(offset));
+
+        const result = await pool.query(
+            `SELECT wd.*, we.url as endpoint_url, we.description as endpoint_name
+             FROM webhook_deliveries wd
+             JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+             WHERE ${conditions.join(' AND ')}
+             ORDER BY wd.delivered_at DESC
+             LIMIT $${idx++} OFFSET $${idx}`,
+            values
+        );
+        const countValues = values.slice(0, -2);
+        const countResult = await pool.query(
+            `SELECT COUNT(*) FROM webhook_deliveries wd
+             JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+             WHERE ${conditions.slice(0, -0).join(' AND ')}`,
+            countValues
+        );
+        res.json({ deliveries: result.rows, total: parseInt(countResult.rows[0].count) });
+    } catch (err) {
+        console.error('[WebhookDeliveries]', err.message);
+        res.status(500).json({ error: 'Failed to fetch webhook deliveries' });
+    }
+});
+
+// POST /v1/webhooks/deliveries/:id/retry — retry a failed delivery
+app.post('/v1/webhooks/deliveries/:id/retry', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    try {
+        const delRes = await pool.query(
+            `SELECT wd.*, we.url, we.signing_secret, we.merchant_id
+             FROM webhook_deliveries wd
+             JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+             WHERE wd.id = $1 AND we.merchant_id = $2`,
+            [req.params.id, merchantId]
+        );
+        if (delRes.rows.length === 0) return res.status(404).json({ error: 'Delivery not found' });
+        const delivery = delRes.rows[0];
+
+        const payload = typeof delivery.payload === 'string' ? JSON.parse(delivery.payload) : delivery.payload;
+        const body = JSON.stringify(payload);
+        const sig = require('crypto').createHmac('sha256', delivery.signing_secret).update(body).digest('hex');
+
+        let responseStatus, responseBody;
+        try {
+            const retryRes = await axios.post(delivery.url, payload, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'FlapaPay-Signature': `sha256=${sig}`,
+                    'FlapaPay-Event': payload.event,
+                    'X-FlapaPay-Retry': 'true',
+                },
+                timeout: 10000,
+            });
+            responseStatus = retryRes.status;
+            responseBody = JSON.stringify(retryRes.data).slice(0, 500);
+        } catch (httpErr) {
+            responseStatus = httpErr.response?.status || 0;
+            responseBody = httpErr.message;
+        }
+
+        // Log the retry attempt as a new delivery record
+        const newDelivery = await pool.query(
+            `INSERT INTO webhook_deliveries (endpoint_id, event, payload, response_status, response_body, delivered_at)
+             VALUES ($1,$2,$3,$4,$5,NOW()) RETURNING *`,
+            [delivery.endpoint_id, payload.event, body, responseStatus, responseBody]
+        );
+
+        res.json({
+            delivery_id: newDelivery.rows[0].id,
+            response_status: responseStatus,
+            success: responseStatus >= 200 && responseStatus < 300,
+        });
+    } catch (err) {
+        console.error('[WebhookRetry]', err.message);
+        res.status(500).json({ error: 'Retry failed' });
+    }
+});
+
+// GET /v1/webhooks/endpoints — list endpoints for webhook delivery UI
+app.get('/v1/webhooks/endpoints', authenticateMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, url, description, events, enabled, created_at FROM webhook_endpoints WHERE merchant_id = $1 ORDER BY created_at DESC`,
+            [req.merchant.merchant_id]
+        );
+        res.json({ endpoints: result.rows });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to fetch endpoints' });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 7 — PLATFORM EARNINGS + CONNECT NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Notification helper (called internally when events occur) ───────────
+async function createPlatformNotification(merchantId, type, title, body, metadata = {}, livemode = false) {
+    try {
+        await pool.query(
+            `INSERT INTO platform_notifications (merchant_id, type, title, body, metadata, livemode)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [merchantId, type, title, body, JSON.stringify(metadata), livemode]
+        );
+    } catch (err) {
+        console.error('[Notification] Failed to create notification:', err.message);
+    }
+}
+
+// ─── Platform Earnings ───────────────────────────────────────────────────
+
+// GET /v1/connect/platform/earnings — aggregate platform fee income by period
+app.get('/v1/connect/platform/earnings', authenticateMerchant, async (req, res) => {
+    const { from, to, groupBy = 'month', currency = 'ZMW' } = req.query;
+    const merchantId = req.merchant.merchant_id;
+    const livemode = req.headers['x-flapapay-test-mode'] !== 'true';
+
+    const fromDate = from || (() => { const d = new Date(); d.setMonth(d.getMonth() - 11); return d.toISOString().slice(0, 10); })();
+    const toDate = to || new Date().toISOString().slice(0, 10);
+
+    try {
+        // Summary totals for the period
+        const summaryRes = await pool.query(
+            `SELECT
+                COALESCE(SUM(CASE WHEN direction='credit' AND entry_type='fee_collected' THEN amount ELSE 0 END), 0)   AS charge_fees,
+                COALESCE(SUM(CASE WHEN direction='debit'  AND entry_type='refund_reversal' THEN amount ELSE 0 END), 0) AS refund_reversals,
+                COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE 0 END), 0)  AS total_credits,
+                COALESCE(SUM(CASE WHEN direction='debit'  THEN amount ELSE 0 END), 0)  AS total_debits,
+                COUNT(*) FILTER (WHERE entry_type='fee_collected') AS charge_count
+             FROM connect_ledger
+             WHERE platform_merchant_id = $1
+               AND currency = $2
+               AND livemode = $3
+               AND created_at >= $4
+               AND created_at <= ($5::date + interval '1 day')`,
+            [merchantId, currency, livemode, fromDate, toDate]
+        );
+
+        // Per-period breakdown
+        let truncFn;
+        if (groupBy === 'day') truncFn = 'day';
+        else if (groupBy === 'week') truncFn = 'week';
+        else if (groupBy === 'quarter') truncFn = 'quarter';
+        else truncFn = 'month';
+
+        const breakdownRes = await pool.query(
+            `SELECT
+                DATE_TRUNC($1, created_at) AS period,
+                COALESCE(SUM(CASE WHEN direction='credit' AND entry_type='fee_collected' THEN amount ELSE 0 END), 0) AS fee_income,
+                COALESCE(SUM(CASE WHEN direction='debit' AND entry_type='payout_disbursed' THEN amount ELSE 0 END), 0) AS payouts_out,
+                COUNT(*) FILTER (WHERE entry_type='fee_collected') AS transactions
+             FROM connect_ledger
+             WHERE platform_merchant_id = $2
+               AND currency = $3
+               AND livemode = $4
+               AND created_at >= $5
+               AND created_at <= ($6::date + interval '1 day')
+             GROUP BY 1
+             ORDER BY 1 ASC`,
+            [truncFn, merchantId, currency, livemode, fromDate, toDate]
+        );
+
+        // Per sub-merchant breakdown
+        const perAccountRes = await pool.query(
+            `SELECT
+                cl.account_id,
+                COALESCE(
+                    ca.business_name,
+                    ca.metadata->'kyc_payload'->'identity'->>'business_name',
+                    ca.metadata->'kyc_payload'->'identity'->>'full_name',
+                    ca.email
+                ) AS business_name,
+                COALESCE(SUM(CASE WHEN cl.direction='credit' AND cl.entry_type='fee_collected' THEN cl.amount ELSE 0 END), 0) AS fees_earned,
+                COALESCE(SUM(CASE WHEN cl.direction='debit' AND cl.entry_type='payout_disbursed' THEN cl.amount ELSE 0 END), 0) AS payouts_sent,
+                COUNT(*) FILTER (WHERE cl.entry_type='fee_collected') AS transaction_count
+             FROM connect_ledger cl
+             LEFT JOIN connected_accounts ca ON ca.id = cl.account_id
+             WHERE cl.platform_merchant_id = $1
+               AND cl.currency = $2
+               AND cl.livemode = $3
+               AND cl.created_at >= $4
+               AND cl.created_at <= ($5::date + interval '1 day')
+             GROUP BY cl.account_id, ca.business_name, ca.metadata, ca.email
+             ORDER BY fees_earned DESC
+             LIMIT 20`,
+            [merchantId, currency, livemode, fromDate, toDate]
+        );
+
+        const summary = summaryRes.rows[0];
+        res.json({
+            period: { from: fromDate, to: toDate, groupBy, currency },
+            summary: {
+                charge_fees: parseFloat(summary.charge_fees),
+                refund_reversals: parseFloat(summary.refund_reversals),
+                total_credits: parseFloat(summary.total_credits),
+                total_debits: parseFloat(summary.total_debits),
+                net_earnings: parseFloat(summary.total_credits) - parseFloat(summary.total_debits),
+                transaction_count: parseInt(summary.charge_count),
+            },
+            breakdown: breakdownRes.rows.map(r => ({
+                period: r.period,
+                fee_income: parseFloat(r.fee_income),
+                payouts_out: parseFloat(r.payouts_out),
+                transactions: parseInt(r.transactions),
+            })),
+            top_accounts: perAccountRes.rows.map(r => ({
+                account_id: r.account_id,
+                business_name: r.business_name || r.account_id,
+                fees_earned: parseFloat(r.fees_earned),
+                payouts_sent: parseFloat(r.payouts_sent),
+                transaction_count: parseInt(r.transaction_count),
+            })),
+        });
+    } catch (err) {
+        console.error('[Earnings] Error:', err.message);
+        res.status(500).json({ error: 'Failed to load earnings data' });
+    }
+});
+
+// GET /v1/connect/platform/earnings/export — CSV download
+app.get('/v1/connect/platform/earnings/export', authenticateMerchant, async (req, res) => {
+    const { from, to, currency = 'ZMW' } = req.query;
+    const merchantId = req.merchant.merchant_id;
+    const livemode = req.headers['x-flapapay-test-mode'] !== 'true';
+
+    const fromDate = from || (() => { const d = new Date(); d.setMonth(d.getMonth() - 11); return d.toISOString().slice(0, 10); })();
+    const toDate = to || new Date().toISOString().slice(0, 10);
+
+    try {
+        const result = await pool.query(
+            `SELECT cl.created_at, cl.entry_type, cl.direction, cl.amount, cl.currency,
+                    ca.business_name, cl.charge_id, cl.description
+             FROM connect_ledger cl
+             LEFT JOIN connected_accounts ca ON ca.id = cl.account_id
+             WHERE cl.platform_merchant_id = $1
+               AND cl.currency = $2
+               AND cl.livemode = $3
+               AND cl.created_at >= $4
+               AND cl.created_at <= ($5::date + interval '1 day')
+             ORDER BY cl.created_at DESC`,
+            [merchantId, currency, livemode, fromDate, toDate]
+        );
+
+        const header = 'Date,Entry Type,Direction,Amount,Currency,Sub-Merchant,Charge ID,Description';
+        const rows = result.rows.map(r =>
+            [
+                new Date(r.created_at).toISOString(),
+                r.entry_type,
+                r.direction,
+                r.amount,
+                r.currency,
+                r.business_name || '',
+                r.charge_id || '',
+                (r.description || '').replace(/,/g, ';'),
+            ].join(',')
+        );
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="flapapay_earnings_${fromDate}_${toDate}.csv"`);
+        res.send([header, ...rows].join('\n'));
+    } catch (err) {
+        res.status(500).json({ error: 'Export failed' });
+    }
+});
+
+// ─── Connect Notifications ────────────────────────────────────────────────
+
+// GET /v1/connect/notifications — list platform notifications
+app.get('/v1/connect/notifications', authenticateMerchant, async (req, res) => {
+    const { limit = 50, offset = 0, unread_only } = req.query;
+    const merchantId = req.merchant.merchant_id;
+    const livemode = req.headers['x-flapapay-test-mode'] !== 'true';
+
+    try {
+        // Ensure table exists
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS platform_notifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID NOT NULL,
+                type VARCHAR(80) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                body TEXT,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                read BOOLEAN NOT NULL DEFAULT false,
+                livemode BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+
+        const conditions = ['merchant_id = $1', 'livemode = $2'];
+        const params = [merchantId, livemode];
+        if (unread_only === 'true') { conditions.push('read = false'); }
+
+        const [countRes, rows, unreadCount] = await Promise.all([
+            pool.query(`SELECT COUNT(*) FROM platform_notifications WHERE ${conditions.join(' AND ')}`, params),
+            pool.query(
+                `SELECT * FROM platform_notifications WHERE ${conditions.join(' AND ')}
+                 ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+                [...params, parseInt(limit), parseInt(offset)]
+            ),
+            pool.query(
+                `SELECT COUNT(*) FROM platform_notifications WHERE merchant_id = $1 AND livemode = $2 AND read = false`,
+                [merchantId, livemode]
+            )
+        ]);
+
+        res.json({
+            notifications: rows.rows,
+            total: parseInt(countRes.rows[0].count),
+            unread_count: parseInt(unreadCount.rows[0].count),
+        });
+    } catch (err) {
+        console.error('[Notifications]', err.message);
+        res.status(500).json({ error: 'Failed to load notifications', details: err.message });
+    }
+});
+
+// PATCH /v1/connect/notifications/:id/read — mark single as read
+app.patch('/v1/connect/notifications/:id/read', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    try {
+        await pool.query(
+            `UPDATE platform_notifications SET read = true WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, merchantId]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to mark as read' });
+    }
+});
+
+// PATCH /v1/connect/notifications/read-all — mark all as read
+app.patch('/v1/connect/notifications/read-all', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    const livemode = req.headers['x-flapapay-test-mode'] !== 'true';
+    try {
+        const result = await pool.query(
+            `UPDATE platform_notifications SET read = true WHERE merchant_id = $1 AND livemode = $2 AND read = false`,
+            [merchantId, livemode]
+        );
+        res.json({ updated: result.rowCount });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to mark all as read' });
+    }
+});
+
+// DELETE /v1/connect/notifications/:id — delete a notification
+app.delete('/v1/connect/notifications/:id', authenticateMerchant, async (req, res) => {
+    const merchantId = req.merchant.merchant_id;
+    try {
+        await pool.query(
+            `DELETE FROM platform_notifications WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, merchantId]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to delete notification' });
+    }
+});
+
+// Helpers for Subscription Lifecycle
+async function recordSubscriptionPayment(subId, paymentIntent) {
+    const subRes = await pool.query(
+        "UPDATE subscriptions SET status = $1, current_period_start = NOW(), current_period_end = NOW() + INTERVAL '1 month', updated_at = NOW() WHERE id = $2 RETURNING *",
+        ['active', subId]
+    );
+    if (subRes.rows.length === 0) throw new Error('Subscription not found');
+    const subscription = subRes.rows[0];
+
+    // Create Sub Invoice
+    const invoiceRes = await pool.query(
+        "INSERT INTO sub_invoice (subscription_id, customer_id, amount, currency, status, payment_intent_id, due_date, paid_at) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING *",
+        [subId, subscription.customer_id, paymentIntent.amount / 100, paymentIntent.currency.toUpperCase(), 'paid', paymentIntent.id]
+    );
+    const invoice = invoiceRes.rows[0];
+
+    // Find Merchant/Owner
+    const custRes = await pool.query('SELECT merchant_id FROM customers WHERE id = $1', [subscription.customer_id]);
+    const merchantId = custRes.rows[0].merchant_id;
+
+    const transactionRef = 'SUB_INV_' + invoice.id;
+
+    // Update Wallets table
+    const walletRes = await pool.query(
+        "UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE user_id = $2 AND currency = $3 RETURNING *",
+        [paymentIntent.amount / 100, merchantId, paymentIntent.currency.toUpperCase()]
+    );
+
+    let walletId = null;
+    if (walletRes.rows.length > 0) {
+        walletId = walletRes.rows[0].id;
+    } else {
+        const newWallet = await pool.query(
+            "INSERT INTO wallets (user_id, currency, balance, status) VALUES ($1, $2, $3, 'active') RETURNING *",
+            [merchantId, paymentIntent.currency.toUpperCase(), paymentIntent.amount / 100]
+        );
+        walletId = newWallet.rows[0].id;
+    }
+
+    // Insert into ledger_entries
+    await pool.query(
+        "INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status) VALUES ($1, $2, $3, $4, $5, 'subscription_invoice', 'completed')",
+        [transactionRef, walletId, paymentIntent.amount / 100, paymentIntent.currency.toUpperCase(), 'Subscription Payment']
+    );
+
+    // Insert into wallet_transactions
+    await pool.query(
+        "INSERT INTO wallet_transactions (wallet_id, amount, transaction_type, reference_type, reference_id) VALUES ($1, $2, 'credit', 'subscription_invoice', $3)",
+        [walletId, paymentIntent.amount / 100, invoice.id]
+    );
+
+    // Notifications
+    try {
+        await pool.query(
+            "INSERT INTO notifications (user_id, type, title, message) VALUES ($1, 'SUBSCRIPTION_PAID', 'Subscription Payment', $2)",
+            [merchantId, `New subscription payment of ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()} received.`]
+        );
+    } catch (e) { console.error('Notification error', e.message); }
+
+    return { subscription, invoice };
+}
+
+// =============================================================================
+// CYBERSOURCE ENDPOINTS
+// =============================================================================
+
+// GET Flex capture context — called by LinkCard.tsx and AddMoney.tsx before card input
+app.post('/v1/card-setup/context', authenticateToken, async (req, res) => {
+    try {
+        const targetOrigin   = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
+        const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
+        const csCustomerId   = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
+        res.json({
+            captureContext,
+            customerId: csCustomerId,
+            expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        });
+    } catch (err) {
+        console.error('[CyberSource] Card setup context error:', err.message);
+        res.status(500).json({ error: 'Failed to generate card setup context' });
+    }
+});
+
+// POST /v1/payment-methods — link a card via Flex transient token (replaces Stripe Setup Intent confirm)
+app.post('/v1/payment-methods', authenticateToken, async (req, res) => {
+    const { transientToken, transient_token, billing_address = {} } = req.body;
+    const token = transientToken || transient_token;
+    if (!token) return res.status(400).json({ error: 'transientToken is required' });
+    try {
+        const csCustomerId = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
+        _dbgLog(`[LinkCard] customerId=${csCustomerId} tokenLen=${token.length}`);
+        const instrument   = await CybersourceService.tokens.linkCard({
+            customerId:      csCustomerId,
+            transientToken:  token,
+            billingAddress:  billing_address,
+            userEmail:       req.user.email,
+        });
+
+        const existing = await pool.query(
+            'SELECT id FROM payment_instruments WHERE user_id = $1', [req.user.id]
+        );
+        const isFirst = existing.rows.length === 0;
+
+        await pool.query(
+            `INSERT INTO payment_instruments
+             (user_id, cybersource_customer_id, cybersource_instrument_id, cybersource_identifier_id,
+              last4, brand, exp_month, exp_year, is_default)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             ON CONFLICT (cybersource_instrument_id) DO NOTHING`,
+            [
+                req.user.id, csCustomerId, instrument.instrumentId,
+                instrument.identifierId || null,
+                instrument.last4, instrument.brand,
+                instrument.expirationMonth, instrument.expirationYear,
+                isFirst,
+            ]
+        );
+
+        res.json({
+            id:           instrument.instrumentId,
+            last4:        instrument.last4,
+            brand:        instrument.brand,
+            exp_month:    instrument.expirationMonth,
+            exp_year:     instrument.expirationYear,
+            is_default:   isFirst,
+        });
+    } catch (err) {
+        _dbgLog('[CyberSource] Link card error FULL:', err.message);
+        res.status(500).json({ error: 'Failed to link card', detail: err.message });
+    }
+});
+
+// GET /v1/payment-methods — list user's linked cards (replaces GET /payments/methods)
+app.get('/v1/payment-methods', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT cybersource_instrument_id as id, last4, brand, exp_month, exp_year, is_default
+             FROM payment_instruments WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC`,
+            [req.user.id]
+        );
+        res.json({ instruments: result.rows });
+    } catch (err) {
+        console.error('[CyberSource] List cards error:', err.message);
+        res.status(500).json({ error: 'Failed to fetch payment methods', detail: err.message });
+    }
+});
+
+// DELETE /v1/payment-methods/:id — unlink a card
+app.delete('/v1/payment-methods/:id', authenticateToken, async (req, res) => {
+    try {
+        const instRes = await pool.query(
+            'SELECT cybersource_customer_id, cybersource_instrument_id FROM payment_instruments WHERE cybersource_instrument_id = $1 AND user_id = $2',
+            [req.params.id, req.user.id]
+        );
+        if (instRes.rows.length === 0) return res.status(404).json({ error: 'Payment method not found' });
+
+        const { cybersource_customer_id, cybersource_instrument_id } = instRes.rows[0];
+        await CybersourceService.tokens.deleteCard(cybersource_customer_id, cybersource_instrument_id);
+        await pool.query('DELETE FROM payment_instruments WHERE cybersource_instrument_id = $1', [cybersource_instrument_id]);
+        res.json({ deleted: true });
+    } catch (err) {
+        console.error('[CyberSource] Delete card error:', err.message);
+        res.status(500).json({ error: 'Failed to delete payment method' });
+    }
+});
+
+// POST /webhooks/cybersource — receive CyberSource event notifications
+app.post('/webhooks/cybersource', express.json(), CybersourceService.webhooks.handler, async (req, res) => {
+    const event = req.cybersourceEvent;
+    try {
+        const eventType = CybersourceService.webhooks.eventType(event);
+        switch (eventType) {
+            case 'payment.updated':
+            case 'payment.created':
+                console.log(`[CyberSource Webhook] Payment event: ${event.id} status=${event.status}`);
+                break;
+            case 'risk.casemanagement.order.updated':
+                console.log(`[CyberSource Webhook] Risk event: ${event.id}`);
+                break;
+            case 'tms.tokenized.card.created':
+            case 'tms.customer.updated':
+                console.log(`[CyberSource Webhook] Token event: ${eventType}`);
+                break;
+            default:
+                console.log(`[CyberSource Webhook] Unhandled event type: ${eventType}`);
+        }
+        res.json({ received: true });
+    } catch (err) {
+        console.error('[CyberSource Webhook] Handler error:', err.message);
+        res.status(500).json({ error: 'Webhook processing failed' });
+    }
+});
+
+// --- Stripe Subscription Webhooks ---
+app.post('/webhooks/stripe', async (req, res) => {
+    try {
+        const event = req.body;
+        // In production, signature verification usually happens here
+
+        if (event.type === 'payment_intent.succeeded') {
+            const paymentIntent = event.data.object;
+            const metadata = paymentIntent.metadata;
+
+            if (metadata && metadata.type === 'subscription_first_payment') {
+                await recordSubscriptionPayment(metadata.subscription_id, paymentIntent);
+            }
+        }
+        else if (event.type === 'invoice.payment_succeeded') {
+            // Future compatibility for native Stripe Subs
+        }
+        else if (event.type === 'invoice.payment_failed' || event.type === 'payment_intent.payment_failed') {
+            const paymentIntent = event.data.object;
+            const metadata = paymentIntent.metadata;
+            if (metadata && metadata.type === 'subscription_first_payment') {
+                const subId = metadata.subscription_id;
+                await pool.query("UPDATE subscriptions SET status = 'past_due', updated_at = NOW() WHERE id = $1", [subId]);
+            }
+        }
+
+        res.json({ received: true });
+    } catch (err) {
+        console.error('Stripe Webhook Error:', err);
+        res.status(400).send('Webhook Error: ' + err.message);
+    }
+});
+
 // Webhook Management
+
 app.post('/merchants/webhooks', authenticateToken, async (req, res) => {
     const { url } = req.body;
     try {
@@ -5761,71 +10498,98 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
         client_reference_id,
         metadata,
         line_items,
-        mode,
+        mode = 'payment',
+        customer,
+        customer_email,
         transfer_data,
-        application_fee_amount
+        application_fee_amount,
+        subscription_data
     } = req.body;
 
     try {
-        // Calculate amount from line_items if not provided directly
         let finalAmount = amount;
-        if (!finalAmount && line_items) {
+        let dbCustomerId = null;
+
+        // 1. Resolve Customer if provided
+        if (customer) {
+            const custRes = await pool.query('SELECT id FROM customers WHERE id = $1 OR email = $1 AND merchant_id = $2', [customer, req.merchant.merchant_id]);
+            if (custRes.rows.length > 0) dbCustomerId = custRes.rows[0].id;
+        } else if (customer_email) {
+            const custRes = await pool.query('SELECT id FROM customers WHERE email = $1 AND merchant_id = $2', [customer_email, req.merchant.merchant_id]);
+            if (custRes.rows.length > 0) dbCustomerId = custRes.rows[0].id;
+        }
+
+        // 2. Handle Subscription Mode
+        if (mode === 'subscription') {
+            if (!line_items || line_items.length === 0) {
+                return res.status(400).json({ error: 'Line items (price IDs) are required for subscription mode' });
+            }
+            // For now, assume single price subscription
+            const priceId = line_items[0].price;
+            const priceRes = await pool.query('SELECT amount, currency FROM prices WHERE id = $1', [priceId]);
+            if (priceRes.rows.length === 0) {
+                return res.status(400).json({ error: 'Invalid Price ID' });
+            }
+            finalAmount = parseFloat(priceRes.rows[0].amount);
+        } else if (!finalAmount && line_items) {
             finalAmount = line_items.reduce((sum, item) => sum + (item.price_data.unit_amount * item.quantity), 0);
         }
 
-        // Allow NULL amount for dynamic payment links
-        if (finalAmount && (isNaN(finalAmount) || finalAmount <= 0)) {
-            return res.status(400).json({
-                error: 'Invalid amount',
-                message: 'The amount must be a positive integer in the smallest currency unit.',
-                suggestion: 'Ensure you are sending a valid number for amount or line_items.'
-            });
+        // 3. Validations
+        if (mode === 'payment' && (!finalAmount || isNaN(finalAmount) || finalAmount <= 0)) {
+            return res.status(400).json({ error: 'Invalid amount for payment mode' });
         }
-        if (!currency) {
-            return res.status(400).json({
-                error: 'Missing currency',
-                message: 'A three-letter ISO currency code is required (e.g., ZMW, USD).',
-                suggestion: 'Add "currency": "ZMW" to your request body.'
-            });
+        if (!currency && mode === 'payment') {
+            return res.status(400).json({ error: 'Currency is required for one-time payments' });
         }
         if (!success_url || !cancel_url) {
-            return res.status(400).json({
-                error: 'Missing redirect URLs',
-                message: 'Both success_url and cancel_url are required to redirect the user after payment.',
-                suggestion: 'Provide absolute URLs for redirection.'
-            });
+            return res.status(400).json({ error: 'success_url and cancel_url are required' });
         }
 
         const sessionId = 'cs_test_' + crypto.randomBytes(24).toString('hex');
 
+        // Store customer_email in metadata for later use
+        const sessionMetadata = {
+            ...(metadata || {}),
+            customer_email: customer_email || ''
+        };
+
         await pool.query(
-            `INSERT INTO checkout_sessions 
-             (id, merchant_id, amount, currency, payment_method_types, success_url, cancel_url, client_reference_id, metadata, transfer_data, application_fee_amount, livemode)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+            `INSERT INTO checkout_sessions
+             (id, merchant_id, amount, currency, payment_method_types, success_url, cancel_url, client_reference_id, metadata, transfer_data, application_fee_amount, mode, subscription_data, customer_id, livemode)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
                 sessionId,
                 req.merchant.merchant_id,
                 finalAmount,
-                currency.toUpperCase(),
+                (currency || 'ZMW').toUpperCase(),
                 JSON.stringify(payment_method_types || ['card', 'mobile_money']),
                 success_url,
                 cancel_url,
                 client_reference_id,
-                JSON.stringify(metadata || {}),
+                JSON.stringify(sessionMetadata),
                 JSON.stringify(transfer_data || {}),
                 application_fee_amount || null,
+                mode,
+                JSON.stringify(subscription_data || (mode === 'subscription' ? { price: line_items[0].price } : {})),
+                dbCustomerId,
                 !req.isTestMode
             ]
         );
 
+        const checkoutUrl = mode === 'subscription'
+            ? `http://localhost:5173/checkout/subscription/${sessionId}`
+            : `http://localhost:5173/checkout/${sessionId}`;
+
         res.json({
             id: sessionId,
             object: 'checkout.session',
-            url: `http://localhost:5173/checkout/${sessionId}`,
+            url: checkoutUrl,
             status: 'open',
             payment_status: 'unpaid',
             amount_total: finalAmount || null,
-            currency: currency.toUpperCase()
+            currency: (currency || 'ZMW').toUpperCase(),
+            mode: mode
         });
 
     } catch (err) {
@@ -5838,20 +10602,37 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
 app.get('/v1/checkout/sessions/:id', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT cs.*, m.business_name 
-            FROM checkout_sessions cs 
-            JOIN merchants m ON cs.merchant_id = m.id 
+            SELECT cs.*, m.business_name,
+                   ca.business_name as sub_merchant_name
+            FROM checkout_sessions cs
+            JOIN merchants m ON cs.merchant_id = m.id
+            LEFT JOIN connected_accounts ca ON ca.id = (cs.transfer_data->>'destination')::uuid
             WHERE cs.id = $1
         `, [req.params.id]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
 
         const session = result.rows[0];
+        let priceInfo = null;
+
+        if (session.mode === 'subscription' && session.subscription_data?.price) {
+            const priceRes = await pool.query(`
+                SELECT p.*, prod.name as product_name, prod.description as product_description
+                FROM prices p
+                JOIN products prod ON p.product_id = prod.id
+                WHERE p.id = $1
+            `, [session.subscription_data.price]);
+            if (priceRes.rows.length > 0) priceInfo = priceRes.rows[0];
+        }
+
+        const transferData = session.transfer_data && Object.keys(session.transfer_data).length > 0 ? session.transfer_data : null;
+        const appFee = session.application_fee_amount ? parseFloat(session.application_fee_amount) : null;
+        const amountTotal = session.amount ? parseFloat(session.amount) : null;
 
         res.json({
             id: session.id,
             object: 'checkout.session',
-            amount_total: session.amount ? parseFloat(session.amount) : null,
+            amount_total: amountTotal,
             currency: session.currency,
             status: session.status,
             payment_method_types: session.payment_method_types,
@@ -5860,7 +10641,18 @@ app.get('/v1/checkout/sessions/:id', async (req, res) => {
             },
             success_url: session.success_url,
             cancel_url: session.cancel_url,
-            livemode: session.livemode
+            livemode: session.livemode,
+            mode: session.mode,
+            transfer_data: transferData,
+            application_fee_amount: appFee,
+            sub_merchant_name: session.sub_merchant_name || null,
+            subscription_details: priceInfo ? {
+                product_name: priceInfo.product_name,
+                product_description: priceInfo.product_description,
+                billing_interval: priceInfo.billing_interval,
+                interval_count: priceInfo.interval_count,
+                trial_days: priceInfo.trial_days
+            } : null
         });
 
     } catch (err) {
@@ -5877,29 +10669,23 @@ app.post('/v1/checkout/sessions/:id/intent', async (req, res) => {
 
         const session = sessionRes.rows[0];
         const amountToCharge = session.amount ? parseFloat(session.amount) : parseFloat(req.body.amount);
-
         if (!amountToCharge || isNaN(amountToCharge) || amountToCharge <= 0) {
             return res.status(400).json({ error: 'Valid amount is required' });
         }
 
-        // We are using the Stripe test instance even for Live mode right now (per user request)
-        let sessionStripe = stripe;
+        // CyberSource Flex Microform — generate capture context for secure card input
+        const targetOrigin = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
+        const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
 
-        // Create Stripe PaymentIntent
-        const intent = await sessionStripe.paymentIntents.create({
-            amount: Math.round(amountToCharge * 100), // Stripe uses cents
-            currency: (session.currency || 'ZMW').toLowerCase(),
-            metadata: {
-                checkout_session_id: session.id,
-                merchant_id: session.merchant_id
-            },
-            automatic_payment_methods: { enabled: true },
+        res.json({
+            captureContext,           // JWT passed to new Flex(captureContext) on frontend
+            amount: amountToCharge,
+            currency: session.currency || 'ZMW',
+            sessionId: session.id,
         });
-
-        res.json({ clientSecret: intent.client_secret });
     } catch (err) {
-        console.error('Stripe Intent Error:', err);
-        res.status(500).json({ error: 'Failed to create payment intent' });
+        console.error('[CyberSource] Flex capture context error:', err.message);
+        res.status(500).json({ error: 'Failed to generate payment context' });
     }
 });
 
@@ -5981,6 +10767,7 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
     const { payment_method, payment_details } = req.body;
     // payment_method: 'card' or 'mobile_money'
     // payment_details: { token: 'tok_visa' } or { phone: '...', network: '...' }
+    console.log(`[Checkout] Confirming session: ${req.params.id}`, { payment_method, payment_details });
 
     try {
         // 1. Get Session
@@ -6002,15 +10789,22 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
         }
         amount = parseFloat(amount.toFixed(2)); // Ensure precision and number type
 
+        // Fetch settlement delay for this session's platform
+        const settlementCfgRes = await pool.query(
+            `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
+            [session.merchant_id]
+        );
+        const settlementDelayForSession = settlementCfgRes.rows[0]?.settlement_delay_days ?? 1;
+        const sessionAvailableAt = new Date();
+        sessionAvailableAt.setDate(sessionAvailableAt.getDate() + settlementDelayForSession);
+
         // Reuse Logic: Credit Merchant (and Split if needed)
         // Start TX
         await pool.query('BEGIN');
 
-        // Logic similar to /v1/charges...
-        // For simplicity, we just mark session complete and update balances
-
         let platformFee = 0;
         let merchantAmount = amount;
+        const csChargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
         let subMerchantId = null;
 
         const isSessionLive = session.livemode;
@@ -6018,8 +10812,23 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
 
         if (transfer_data && transfer_data.destination) {
             subMerchantId = transfer_data.destination;
-            // Use provided application_fee_amount or fallback to 5% default
-            platformFee = session.application_fee_amount ? parseFloat(session.application_fee_amount) : Math.round(amount * 0.05);
+            // Phase 3: per-account override → platform config → 5% default
+            if (session.application_fee_amount) {
+                platformFee = parseFloat(session.application_fee_amount);
+            } else {
+                const overrideRes = await pool.query(
+                    `SELECT fee_percent FROM connected_account_fee_overrides WHERE account_id = $1`, [subMerchantId]
+                );
+                if (overrideRes.rows.length > 0) {
+                    platformFee = Math.round(amount * (parseFloat(overrideRes.rows[0].fee_percent) / 100) * 100) / 100;
+                } else {
+                    const cfgRes = await pool.query(
+                        `SELECT platform_fee_percent FROM connect_config WHERE merchant_id = $1`, [session.merchant_id]
+                    );
+                    const feeRate = cfgRes.rows.length > 0 ? parseFloat(cfgRes.rows[0].platform_fee_percent) / 100 : 0.05;
+                    platformFee = Math.round(amount * feeRate * 100) / 100;
+                }
+            }
             merchantAmount = amount - platformFee;
 
             // Credit Sub
@@ -6038,36 +10847,143 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
                 [session.merchant_id, platformFee, currency]
             );
 
+            // Write ledger entries for split (fee_collected + split_credit)
+            if (platformFee > 0) {
+                await pool.query(
+                    `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                     VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
+                    [session.merchant_id, csChargeId, subMerchantId,
+                     platformFee, currency,
+                     `Platform fee on checkout ${currency} ${amount}`, isSessionLive]
+                );
+            }
+            await pool.query(
+                `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
+                 VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
+                [session.merchant_id, csChargeId, subMerchantId,
+                 merchantAmount, currency,
+                 `Net earnings on checkout ${currency} ${amount} (T+${settlementDelayForSession})`, isSessionLive]
+            );
+
         } else {
             // Credit Platform (Direct)
             await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
+                `INSERT INTO balances (merchant_id, ${targetColumn}, currency)
                  VALUES ($1, $2, $3)
                  ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
                 [session.merchant_id, amount, currency]
             );
         }
 
+        // --- Process Card Payment via CyberSource ---
+        let finalPaymentIntentId = 'pi_mock_' + Date.now();
+
+        if (payment_method === 'card') {
+            const transientToken  = payment_details?.transientToken;
+            const csCustomerId    = payment_details?.customerId;
+            const legacyToken     = payment_details?.token;
+
+            if (transientToken || csCustomerId) {
+                // CyberSource path: Flex transient token or TMS customer token
+                try {
+                    const chargeResult = await CybersourceService.payments.sale({
+                        amount,
+                        currency,
+                        transientToken: transientToken || undefined,
+                        customerId:     csCustomerId    || undefined,
+                        metadata:       { ref: `CS-SESSION-${session.id}`, merchantId: session.merchant_id },
+                    });
+
+                    if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(chargeResult.status?.toUpperCase())) {
+                        await pool.query('ROLLBACK');
+                        return res.status(402).json({ error: 'Card declined', code: chargeResult.status });
+                    }
+                    finalPaymentIntentId = chargeResult.id;
+                } catch (csErr) {
+                    await pool.query('ROLLBACK');
+                    console.error('[CyberSource] Checkout confirm error:', csErr.message);
+                    return res.status(402).json({ error: 'Card payment failed', details: csErr.message });
+                }
+            } else if (legacyToken === 'tok_visa') {
+                // Legacy test token fallback (sandbox simulation)
+                finalPaymentIntentId = 'cs_test_tok_visa_' + Date.now();
+            } else {
+                await pool.query('ROLLBACK');
+                return res.status(400).json({ error: 'Card payment requires transientToken or customerId' });
+            }
+        }
+
         // Update Session
         await pool.query("UPDATE checkout_sessions SET status = 'complete', payment_intent = $1, amount = $2 WHERE id = $3",
-            ['pi_mock_' + Date.now(), amount, session.id]
+            [finalPaymentIntentId, amount, session.id]
         );
 
-        // Record Charge in DB
-
-        // Stripe-like Rolling Settlement (T+2)
-        const availableAt = new Date();
-        availableAt.setDate(availableAt.getDate() + 2);
-
+        // Record charge with settlement tracking
         await pool.query(
-            `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, livemode, available_at, application_fee_amount, destination_merchant_id, is_settled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
+                                 description, metadata, livemode, destination_merchant_id, application_fee_amount,
+                                 available_at, is_settled)
+             VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)
+             ON CONFLICT (id) DO NOTHING`,
             [
-                'ch_' + crypto.randomBytes(12).toString('hex'), session.merchant_id, amount, currency, 'succeeded',
-                payment_method, JSON.stringify(payment_details), 'Checkout Session ' + session.id, isSessionLive, availableAt,
-                platformFee, subMerchantId, isSessionLive // Mark as settled immediately if Live
+                csChargeId, session.merchant_id, amount, currency,
+                payment_method || 'mobile_money',
+                JSON.stringify({ payment_intent: finalPaymentIntentId }),
+                session.description || `Checkout ${session.id}`,
+                JSON.stringify(session.metadata || {}), isSessionLive,
+                subMerchantId || null, platformFee || null, sessionAvailableAt
             ]
         );
+
+        // --- Handle Subscription Mode ---
+        if (session.mode === 'subscription' && session.subscription_data) {
+            const subData = session.subscription_data;
+            const priceId = subData.price;
+            let customerId = session.customer_id;
+
+            // 1. Ensure Customer exists if not already linked (e.g. guest checkout)
+            if (!customerId) {
+                const email = session.metadata?.customer_email || session.metadata?.email || 'guest@example.com';
+                const name = session.metadata?.name || 'Guest';
+                const custRes = await pool.query(
+                    'INSERT INTO customers (email, name, merchant_id) VALUES ($1, $2, $3) ON CONFLICT (email, merchant_id) DO UPDATE SET name=EXCLUDED.name RETURNING id',
+                    [email, name, session.merchant_id]
+                );
+                customerId = custRes.rows[0].id;
+            }
+
+            // 2. Fetch Price Info for interval
+            const priceRes = await pool.query('SELECT billing_interval, interval_count FROM prices WHERE id = $1', [priceId]);
+            if (priceRes.rows.length > 0) {
+                const price = priceRes.rows[0];
+
+                // 3. Create Subscription
+                const periodStart = new Date();
+                const periodEnd = new Date();
+                if (price.billing_interval === 'monthly') {
+                    periodEnd.setMonth(periodEnd.getMonth() + (price.interval_count || 1));
+                } else if (price.billing_interval === 'yearly') {
+                    periodEnd.setFullYear(periodEnd.getFullYear() + (price.interval_count || 1));
+                }
+
+                const subRes = await pool.query(
+                    `INSERT INTO subscriptions (customer_id, price_id, status, current_period_start, current_period_end)
+                     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                    [customerId, priceId, 'active', periodStart, periodEnd]
+                );
+                const subId = subRes.rows[0].id;
+
+                // 4. Create Initial Invoice
+                await pool.query(
+                    `INSERT INTO sub_invoice (subscription_id, customer_id, amount, currency, status, paid_at)
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [subId, customerId, amount, currency, 'paid', new Date()]
+                );
+            }
+        }
+
+        // NOTE: The authoritative charge record was already inserted above (csChargeId)
+        // with correct split amounts and is_settled=false. Do NOT insert a second charge here.
 
         await pool.query('COMMIT');
 
@@ -6078,7 +10994,12 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
 
     } catch (err) {
         await pool.query('ROLLBACK');
-        console.error('Session Confirm Error:', err);
+        console.error('Session Confirm Error Details:', {
+            message: err.message,
+            stack: err.stack,
+            code: err.code,
+            detail: err.detail
+        });
         res.status(500).json({ error: 'Payment failed' });
     }
 });
@@ -6726,9 +11647,11 @@ app.post('/merchants/register', async (req, res) => {
         );
         const user = userResult.rows[0];
 
-        // Create default ZMW + USD wallets (Zambia primary currency = ZMW)
-        await client.query(`INSERT INTO wallets (user_id, currency, balance) VALUES ($1, 'ZMW', 0.00)`, [user.id]);
-        await client.query(`INSERT INTO wallets (user_id, currency, balance) VALUES ($1, 'USD', 0.00)`, [user.id]);
+        // Create default live and test wallets
+        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, true)`, [user.id]);
+        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, true)`, [user.id]);
+        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, false)`, [user.id]);
+        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, false)`, [user.id]);
 
         // Determine compliance/PACRA status for Zambia
         const pacraVerified = country === 'Zambia' && isIncorporated;
@@ -7042,6 +11965,224 @@ app.post('/admin/merchants/kyc/:merchantId/review', authenticateToken, async (re
     }
 });
 
+// ─── ADMIN: Sub-merchant (Connected Account) KYC Review ──────────────────────
+
+// GET /admin/sub-merchants — list all connected accounts, filterable by kyc_status
+app.get('/admin/sub-merchants', authenticateToken, isAdmin, async (req, res) => {
+    const { status = 'all', platform_id, search, limit = 50, offset = 0 } = req.query;
+    try {
+        let where = 'WHERE 1=1';
+        const params = [];
+        let idx = 1;
+
+        if (status !== 'all') {
+            where += ` AND ca.kyc_status = $${idx++}`;
+            params.push(status);
+        }
+        if (platform_id) {
+            where += ` AND ca.platform_merchant_id = $${idx++}`;
+            params.push(platform_id);
+        }
+        if (search) {
+            where += ` AND (ca.email ILIKE $${idx} OR ca.business_name ILIKE $${idx})`;
+            params.push(`%${search}%`);
+            idx++;
+        }
+
+        params.push(parseInt(limit), parseInt(offset));
+
+        const result = await pool.query(
+            `SELECT ca.id, ca.business_name, ca.email, ca.status, ca.kyc_status,
+                    ca.kyc_submitted_at, ca.kyc_rejection_reason, ca.country,
+                    ca.metadata, ca.created_at,
+                    m.business_name as platform_name, m.id as platform_id
+             FROM connected_accounts ca
+             JOIN merchants m ON m.id = ca.platform_merchant_id
+             ${where}
+             ORDER BY ca.kyc_submitted_at DESC NULLS LAST, ca.created_at DESC
+             LIMIT $${idx++} OFFSET $${idx++}`,
+            params
+        );
+
+        const countRes = await pool.query(
+            `SELECT COUNT(*) FROM connected_accounts ca ${where}`,
+            params.slice(0, -2)
+        );
+
+        res.json({
+            accounts: result.rows.map(row => {
+                const identity = row.metadata?.kyc_payload?.identity || {};
+                const displayName = row.business_name || identity.business_name || identity.full_name || row.email;
+                return { ...row, display_name: displayName };
+            }),
+            total: parseInt(countRes.rows[0].count)
+        });
+    } catch (err) {
+        console.error('[Admin Sub-merchants]', err.message);
+        res.status(500).json({ error: 'Failed to fetch sub-merchants' });
+    }
+});
+
+// GET /admin/sub-merchants/:id — full detail for one connected account
+app.get('/admin/sub-merchants/:id', authenticateToken, isAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT ca.*, m.business_name as platform_name, m.id as platform_id
+             FROM connected_accounts ca
+             JOIN merchants m ON m.id = ca.platform_merchant_id
+             WHERE ca.id = $1`,
+            [req.params.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
+
+        const ca = result.rows[0];
+        const kycPayload = ca.metadata?.kyc_payload || {};
+        const identity   = kycPayload.identity   || {};
+        const contact    = kycPayload.contact     || {};
+        const payout     = kycPayload.payout      || {};
+        const displayName = ca.business_name || identity.business_name || identity.full_name || ca.email;
+
+        // Get payout methods
+        const pmRes = await pool.query(
+            'SELECT * FROM connected_account_payout_methods WHERE connected_account_id = $1',
+            [ca.id]
+        );
+
+        res.json({
+            id: ca.id,
+            display_name: displayName,
+            business_name: ca.business_name,
+            email: ca.email,
+            country: ca.country,
+            status: ca.status,
+            kyc_status: ca.kyc_status,
+            kyc_submitted_at: ca.kyc_submitted_at,
+            kyc_rejection_reason: ca.kyc_rejection_reason,
+            platform_name: ca.platform_name,
+            platform_id: ca.platform_id,
+            created_at: ca.created_at,
+            identity,
+            contact,
+            payout_info: payout,
+            payout_methods: pmRes.rows,
+            requirements: ca.requirements,
+            suspended_at: ca.suspended_at,
+            suspension_reason: ca.suspension_reason,
+        });
+    } catch (err) {
+        console.error('[Admin Sub-merchant Detail]', err.message);
+        res.status(500).json({ error: 'Failed to fetch account' });
+    }
+});
+
+// POST /admin/sub-merchants/:id/kyc/approve
+app.post('/admin/sub-merchants/:id/kyc/approve', authenticateToken, isAdmin, async (req, res) => {
+    const { notes = '' } = req.body || {};
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const caRes = await client.query(
+            'SELECT * FROM connected_accounts WHERE id = $1 FOR UPDATE',
+            [req.params.id]
+        );
+        if (caRes.rows.length === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Account not found' }); }
+        const ca = caRes.rows[0];
+
+        await client.query(
+            `UPDATE connected_accounts SET
+                kyc_status = 'verified',
+                status = 'ACTIVE',
+                kyc_reviewed_at = NOW(),
+                kyc_rejection_reason = NULL,
+                requirements = '{"currently_due":[],"pending_verification":[]}'
+             WHERE id = $1`,
+            [req.params.id]
+        );
+
+        await client.query('COMMIT');
+
+        // Email sub-merchant
+        const identity = ca.metadata?.kyc_payload?.identity || {};
+        const displayName = ca.business_name || identity.business_name || identity.full_name || ca.email;
+        try {
+            await EmailService.sendKycUpdate(ca.email, {
+                accountName: displayName,
+                status: 'approved',
+                dashboardUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/sub-merchant`,
+            });
+        } catch (e) { console.warn('[KYC Approve Email]', e.message); }
+
+        // Webhook to platform
+        await emitWebhookForMerchant(ca.platform_merchant_id, 'connect.kyc.approved', {
+            account_id: ca.id, business_name: displayName, email: ca.email
+        });
+        io.to(`merchant:${ca.platform_merchant_id}`).emit('kyc.approved', {
+            account_id: ca.id, business_name: displayName
+        });
+
+        res.json({ approved: true, account_id: ca.id });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Admin KYC Approve]', err.message);
+        res.status(500).json({ error: 'Failed to approve account' });
+    } finally { client.release(); }
+});
+
+// POST /admin/sub-merchants/:id/kyc/reject
+app.post('/admin/sub-merchants/:id/kyc/reject', authenticateToken, isAdmin, async (req, res) => {
+    const { reason = 'Your documents could not be verified. Please resubmit.' } = req.body || {};
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const caRes = await client.query(
+            'SELECT * FROM connected_accounts WHERE id = $1 FOR UPDATE',
+            [req.params.id]
+        );
+        if (caRes.rows.length === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Account not found' }); }
+        const ca = caRes.rows[0];
+
+        await client.query(
+            `UPDATE connected_accounts SET
+                kyc_status = 'rejected',
+                kyc_reviewed_at = NOW(),
+                kyc_rejection_reason = $1,
+                requirements = '{"currently_due":["kyc_documents"],"pending_verification":[]}'
+             WHERE id = $2`,
+            [reason, req.params.id]
+        );
+
+        await client.query('COMMIT');
+
+        // Email sub-merchant
+        const identity = ca.metadata?.kyc_payload?.identity || {};
+        const displayName = ca.business_name || identity.business_name || identity.full_name || ca.email;
+        try {
+            await EmailService.sendKycUpdate(ca.email, {
+                accountName: displayName,
+                status: 'rejected',
+                reason,
+                dashboardUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/sub-merchant`,
+            });
+        } catch (e) { console.warn('[KYC Reject Email]', e.message); }
+
+        // Webhook + socket
+        await emitWebhookForMerchant(ca.platform_merchant_id, 'connect.kyc.rejected', {
+            account_id: ca.id, reason
+        });
+        io.to(`merchant:${ca.platform_merchant_id}`).emit('kyc.rejected', {
+            account_id: ca.id, reason
+        });
+
+        res.json({ rejected: true, account_id: ca.id });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Admin KYC Reject]', err.message);
+        res.status(500).json({ error: 'Failed to reject account' });
+    } finally { client.release(); }
+});
+
 // ---- GET /merchants/profile ----
 app.get('/merchants/profile', authenticateToken, async (req, res) => {
     try {
@@ -7085,7 +12226,20 @@ app.get('/merchants/profile', authenticateToken, async (req, res) => {
 app.get('/merchants/stats', authenticateToken, async (req, res) => {
     try {
         const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
+        if (merchantRes.rows.length === 0) return res.json({
+            stats: [
+                { label: 'Test Volume', value: 'ZK 0.00', count: 0, change: '+0%', trend: 'up' },
+                { label: 'Test Available Balance', value: 'ZK 0.00', change: '+0%', trend: 'up' },
+                { label: 'Test Transactions', value: '0', change: '+0%', trend: 'up' },
+                { label: 'Success Rate', value: '100%', change: '+0%', trend: 'up' },
+            ],
+            rawBalance: 0,
+            recentActivity: [],
+            volumeHistory: [],
+            methodBreakdown: [],
+            geographicData: [],
+            cohortData: []
+        });
         const merchantId = merchantRes.rows[0].id;
 
         // Honour the mode requested from the dashboard (default: test)
@@ -7095,37 +12249,122 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
         if (periodParam === '7d') days = 7;
         else if (periodParam === '90d') days = 90;
 
-        // Sum successful charges, filtered by mode AND period
+        // Volume stats:
+        //   gross_volume  = sum of all charge amounts (what customers paid)
+        //   net_earnings  = what the merchant actually keeps:
+        //                     direct charge  → full amount
+        //                     marketplace    → application_fee_amount (their commission)
         const volumeRes = await pool.query(
-            `SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count 
-             FROM charges 
+            `SELECT
+                COALESCE(SUM(amount), 0) AS gross_volume,
+                COALESCE(SUM(
+                    CASE WHEN destination_merchant_id IS NOT NULL
+                         THEN COALESCE(application_fee_amount, 0)
+                         ELSE amount
+                    END
+                ), 0) AS net_earnings,
+                COUNT(*) AS count,
+                COUNT(*) FILTER (WHERE destination_merchant_id IS NOT NULL) AS split_count,
+                COUNT(*) FILTER (WHERE destination_merchant_id IS NULL) AS direct_count
+             FROM charges
              WHERE merchant_id = $1 AND status = 'succeeded' AND livemode = $2
                AND created_at >= NOW() - INTERVAL '${days} days'`,
             [merchantId, isLive]
         );
 
-        // Get Balance
-        // Compute balance dynamically for both Test and Live mode from the 'charges' table
-        // This includes settlements and fees which are now recorded as negative charges
-        let availableBalance = volumeRes.rows[0].total || 0;
+        let availableBalance = 0;
+        let pendingBalance = 0;
+        if (isLive) {
+            // Live: use real balances table (ngwe)
+            const balanceRes = await pool.query(
+                `SELECT COALESCE(available_amount, 0) AS available, COALESCE(pending_amount, 0) AS pending
+                 FROM balances WHERE merchant_id = $1`,
+                [merchantId]
+            );
+            availableBalance = parseFloat(balanceRes.rows[0]?.available || 0);
+            pendingBalance = parseFloat(balanceRes.rows[0]?.pending || 0);
+        } else {
+            // Test: ALL successful test charges count as available immediately (no T+N for test mode)
+            // Subtract any amounts already settled to test wallet (tracked in test ledger_entries)
+            const merchantUserRes = await pool.query('SELECT user_id FROM merchants WHERE id = $1', [merchantId]);
+            const merchantUserId = merchantUserRes.rows[0]?.user_id;
 
+            const testBalRes = await pool.query(
+                `SELECT
+                    COALESCE(SUM(
+                        CASE WHEN destination_merchant_id IS NOT NULL
+                             THEN COALESCE(application_fee_amount, 0)
+                             ELSE amount
+                        END
+                    ), 0) AS net_earned
+                 FROM charges
+                 WHERE merchant_id = $1 AND livemode = false AND status = 'succeeded' AND amount > 0`,
+                [merchantId]
+            );
+
+            // Subtract test settlements already moved to test wallet
+            const testSettledRes = await pool.query(
+                `SELECT COALESCE(SUM(le.amount), 0) AS settled_out
+                 FROM ledger_entries le
+                 JOIN wallets w ON le.credit_wallet_id = w.id
+                 WHERE le.livemode = false
+                   AND le.transaction_type = 'SETTLEMENT'
+                   AND w.livemode = false
+                   AND w.user_id = $1`,
+                [merchantUserId]
+            );
+
+            const grossEarned = parseFloat(testBalRes.rows[0]?.net_earned || 0);
+            const settledOut = parseFloat(testSettledRes.rows[0]?.settled_out || 0);
+            // Convert settled_out from ZMW to ngwe for consistent comparison
+            availableBalance = Math.max(0, grossEarned - (settledOut * 100));
+            pendingBalance = 0;
+        }
+        const totalBalance = availableBalance + pendingBalance;
+
+        const grossVolume = parseFloat(volumeRes.rows[0].gross_volume);
+        const netEarnings = parseFloat(volumeRes.rows[0].net_earnings);
         const stats = [
-            { label: isLive ? 'Total Volume' : 'Test Volume', value: `ZK ${parseFloat(volumeRes.rows[0].total).toFixed(2)}`, count: volumeRes.rows[0].count, change: '+0%', trend: 'up' },
-            { label: isLive ? 'Available Balance' : 'Test Available Balance', value: `ZK ${parseFloat(availableBalance).toFixed(2)}`, change: '+0%', trend: 'up' },
-            { label: isLive ? 'Total Transactions' : 'Test Transactions', value: volumeRes.rows[0].count.toString(), change: '+0%', trend: 'up' },
+            // Net earnings = what the merchant actually keeps
+            // (full amount for direct; commission only for marketplace splits)
+            { label: isLive ? 'Net Earnings' : 'Test Earnings', value: `ZK ${(netEarnings / 100).toFixed(2)}`, count: parseInt(volumeRes.rows[0].count), change: '+0%', trend: 'up' },
+            { label: isLive ? 'Available Balance' : 'Test Balance', value: `ZK ${(availableBalance / 100).toFixed(2)}`, change: '+0%', trend: 'up' },
+            { label: isLive ? 'Volume Processed' : 'Test Volume', value: `ZK ${(grossVolume / 100).toFixed(2)}`, change: '+0%', trend: 'up' },
             { label: 'Success Rate', value: '100%', change: '+0%', trend: 'up' },
         ];
 
-        // Fetch recent activity (mode-filtered)
+        // Fetch recent activity — always return full gross amount so the merchant sees
+        // exactly what the customer paid. For marketplace splits, also return the
+        // commission (application_fee_amount) they kept and how much went to the seller.
         const recentRes = await pool.query(
-            "SELECT id, amount, currency, status, payment_method, created_at FROM charges WHERE merchant_id = $1 AND livemode = $2 ORDER BY created_at DESC LIMIT 5",
+            `SELECT id,
+                amount AS gross_amount,
+                CASE WHEN destination_merchant_id IS NOT NULL
+                     THEN COALESCE(application_fee_amount, 0)
+                     ELSE amount
+                END AS merchant_net,
+                CASE WHEN destination_merchant_id IS NOT NULL
+                     THEN amount - COALESCE(application_fee_amount, 0)
+                     ELSE 0
+                END AS submerchant_net,
+                currency, status, payment_method, description, created_at,
+                destination_merchant_id IS NOT NULL AS is_split,
+                application_fee_amount,
+                destination_merchant_id
+             FROM charges
+             WHERE merchant_id = $1 AND livemode = $2
+             ORDER BY created_at DESC LIMIT 10`,
             [merchantId, isLive]
         );
 
-        // Fetch Volume by Day (Filtered)
+        // Fetch Volume by Day — merchant earnings (fee for splits, full for direct)
         const historyRes = await pool.query(
-            `SELECT DATE_TRUNC('day', created_at) as day, SUM(amount) as val 
-             FROM charges 
+            `SELECT DATE_TRUNC('day', created_at) as day,
+                SUM(CASE WHEN destination_merchant_id IS NOT NULL
+                         THEN COALESCE(application_fee_amount, 0)
+                         ELSE amount
+                    END) as val
+             FROM charges
              WHERE merchant_id = $1 AND status = 'succeeded' AND livemode = $2
                AND created_at >= NOW() - INTERVAL '${days} days'
              GROUP BY day ORDER BY day ASC`,
@@ -7144,18 +12383,40 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
 
         res.json({
             stats,
-            rawBalance: availableBalance,
-            recentActivity: recentRes.rows.map(c => ({
-                id: c.id,
-                amount: parseFloat(c.amount).toFixed(2),
-                currency: c.currency,
-                status: c.status,
-                method: c.payment_method,
-                createdAt: c.created_at
-            })),
+            totalCount:   parseInt(volumeRes.rows[0].count || 0),
+            splitCount:   parseInt(volumeRes.rows[0].split_count || 0),
+            directCount:  parseInt(volumeRes.rows[0].direct_count || 0),
+            rawBalance: availableBalance,        // ngwe — frontend divides by 100
+            pendingBalance: pendingBalance,       // ngwe
+            totalBalance: totalBalance,           // ngwe
+            recentActivity: recentRes.rows.map(c => {
+                const isSplit = c.is_split;
+                const gross = parseFloat(c.gross_amount || 0);
+                const appFee = c.application_fee_amount ? parseFloat(c.application_fee_amount) : null;
+                // merchantEarning: for direct → full amount; for split → platform commission only
+                const merchantEarning = isSplit ? (appFee ?? 0) : gross;
+                // submerchantEarning: for split → gross minus commission; for direct → 0
+                const submerchantEarning = isSplit ? (gross - (appFee ?? 0)) : 0;
+                return {
+                    id: c.id,
+                    grossAmount: gross.toFixed(2),
+                    merchantNet: merchantEarning.toFixed(2),
+                    submerchantNet: submerchantEarning.toFixed(2),
+                    currency: c.currency,
+                    status: c.status,
+                    method: c.payment_method,
+                    description: c.description,
+                    created_at: c.created_at,
+                    isSplit,
+                    // null for direct charges, commission amount for marketplace
+                    applicationFee: isSplit && appFee != null ? appFee.toFixed(2) : null,
+                    hasSubMerchant: isSplit,
+                    chargeType: isSplit ? 'marketplace' : 'direct',
+                };
+            }),
             volumeHistory: historyRes.rows.map(r => ({
                 label: new Date(r.day).toLocaleDateString('en-US', { weekday: 'short' }),
-                value: parseFloat(r.val)
+                value: parseFloat(r.val) / 100    // convert to ZMW for chart
             })),
             methodBreakdown: methodRes.rows.map(m => ({
                 label: m.label === 'card' ? 'Cards' : m.label === 'mobile_money' ? 'Mobile' : 'Other',
@@ -7180,112 +12441,19 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
     }
 });
 
-// ---- POST /merchants/transfer-to-wallet ----
-// Moves funds from the merchant platform balance to a specific user wallet
-app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) => {
-    const { amount, walletId, applyFX, fxRate, isTestMode } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        const merchantRes = await client.query('SELECT id, compliance_status FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) throw new Error('Merchant not found');
-        const merchant = merchantRes.rows[0];
-        const isLive = merchant.compliance_status === 'ACTIVE' && req.body.isTestMode !== true;
-
-        // 1. Verify Wallet Ownership
-        const walletRes = await client.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2', [walletId, req.user.id]);
-        if (walletRes.rows.length === 0) throw new Error('Target wallet not found or unauthorized');
-        const wallet = walletRes.rows[0];
-
-        // Calculate 1% Fee
-        const processedAmount = parseFloat(amount);
-        const fee = parseFloat((processedAmount * 0.01).toFixed(2));
-        const totalDeduction = processedAmount + fee;
-
-        if (isLive) {
-            // Real Money logic
-            const balanceRes = await client.query('SELECT available_amount FROM balances WHERE merchant_id = $1 FOR UPDATE', [merchant.id]);
-            const available = parseFloat(balanceRes.rows[0]?.available_amount || 0);
-
-            if (available < totalDeduction) throw new Error(`Insufficient platform balance to cover amount and ${fee} ZMW fee`);
-
-            // Deduct amount + fee from platform balance
-            await client.query('UPDATE balances SET available_amount = available_amount - $1 WHERE merchant_id = $2', [totalDeduction, merchant.id]);
-
-            // Credit Wallet (only base amount after FX)
-            const creditingAmount = applyFX ? processedAmount * fxRate : processedAmount;
-            await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [creditingAmount, walletId]);
-
-            // Log settlement entry in ledger
-            const ref = 'SETTLE-' + crypto.randomBytes(8).toString('hex').toUpperCase();
-            await client.query(
-                `INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-                 VALUES ($1, $2, $3, $4, $5, 'SETTLEMENT', 'COMPLETED')`,
-                [ref, walletId, creditingAmount, wallet.currency, 'Settlement from Platform Balance']
-            );
-
-            // Log fee entry in ledger
-            const feeRef = 'FEE-' + crypto.randomBytes(8).toString('hex').toUpperCase();
-            await client.query(
-                `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
-                 VALUES ($1, $2, $3, $4, $5, 'SYSTEM_FEE', 'COMPLETED')`,
-                [feeRef, walletId, fee, wallet.currency, '1% Platform Settlement Fee']
-            );
-
-            // Log Settlement as a negative "charge" so it appears in transactions and deducts from volume
-            await client.query(
-                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode, is_settled)
-                 VALUES ($1, $2, $3, $4, 'succeeded', 'wallet_transfer', '{}', 'Settlement to Wallet', '{}', true, true)`,
-                ['ch_stl_' + crypto.randomBytes(8).toString('hex'), merchant.id, -processedAmount, 'ZMW']
-            );
-            await client.query(
-                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode, is_settled)
-                 VALUES ($1, $2, $3, $4, 'succeeded', 'platform_fee', '{}', '1% Settlement Fee', '{}', true, true)`,
-                ['ch_fee_' + crypto.randomBytes(8).toString('hex'), merchant.id, -fee, 'ZMW']
-            );
-        } else {
-            // Test Mode logic 
-            const creditingAmount = applyFX ? processedAmount * fxRate : processedAmount;
-            await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [creditingAmount, walletId]);
-
-            const ref = 'TEST-SETTLE-' + crypto.randomBytes(8).toString('hex').toUpperCase();
-            await client.query(
-                `INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-                 VALUES ($1, $2, $3, $4, $5, 'SETTLEMENT', 'COMPLETED')`,
-                [ref, walletId, creditingAmount, wallet.currency, 'Test Settlement (Simulated)']
-            );
-
-            // Log Test Settlement & Fee into charges so volume adjusts
-            await client.query(
-                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode, is_settled)
-                 VALUES ($1, $2, $3, $4, 'succeeded', 'wallet_transfer', '{}', 'Test Settlement to Wallet', '{}', false, true)`,
-                ['ch_stl_' + crypto.randomBytes(8).toString('hex'), merchant.id, -processedAmount, 'ZMW']
-            );
-            await client.query(
-                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details, description, metadata, livemode, is_settled)
-                 VALUES ($1, $2, $3, $4, 'succeeded', 'platform_fee', '{}', '1% Test Settlement Fee', '{}', false, true)`,
-                ['ch_fee_' + crypto.randomBytes(8).toString('hex'), merchant.id, -fee, 'ZMW']
-            );
-        }
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: 'Settlement processed successfully' });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('[Settlement] Error:', err);
-        res.status(500).json({ error: err.message });
-    } finally {
-        client.release();
-    }
-});
+// NOTE: /merchants/transfer-to-wallet is registered earlier in this file (canonical handler).
+// This duplicate entry has been removed to avoid Express double-registration.
 
 // ---- GET /merchants/keys ----
 // Returns both test and live key pairs for the authenticated merchant
 app.get('/merchants/keys', authenticateToken, async (req, res) => {
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
+        const merchantRes = await pool.query('SELECT id, compliance_status FROM merchants WHERE user_id = $1', [req.user.id]);
+        if (merchantRes.rows.length === 0) return res.json({
+            test: { public: '', secret: '' },
+            live: { public: '', secret: '' },
+            isApproved: false
+        });
 
         const merchantId = merchantRes.rows[0].id;
         const complianceStatus = merchantRes.rows[0].compliance_status;
@@ -7863,6 +13031,1346 @@ app.get('/api/v1/escrows/:id', async (req, res) => {
     }
 });
 
+// --- Subscription Billing API (Developer Gateway) ---
+
+// Products
+app.post('/v1/products', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { name, description, metadata } = req.body;
+        if (!name) return res.status(400).json({ error: 'Missing required field: name' });
+
+        const result = await pool.query(
+            'INSERT INTO products (name, description, metadata, merchant_id) VALUES ($1, $2, $3, $4) RETURNING *',
+            [name, description || '', metadata || {}, merchant.merchantId]
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        console.error('[v1/products] Create error:', err);
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/products', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT * FROM products WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/products/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT * FROM products WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.patch('/v1/products/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { name, description, status, metadata } = req.body;
+        const result = await pool.query(
+            'UPDATE products SET name = COALESCE($1, name), description = COALESCE($2, description), status = COALESCE($3, status), metadata = COALESCE($4, metadata), updated_at = NOW() WHERE id = $5 AND merchant_id = $6 RETURNING *',
+            [name, description, status, metadata, req.params.id, merchant.merchantId]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.delete('/v1/products/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('DELETE FROM products WHERE id = $1 AND merchant_id = $2 RETURNING id', [req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+        res.json(DeveloperGateway.formatResponse({ deleted: true, id: req.params.id }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Prices
+app.post('/v1/prices', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { product_id, amount, currency, interval, interval_count, trial_days } = req.body;
+        if (!product_id || !amount || !currency || !interval) return res.status(400).json({ error: 'Missing req fields' });
+
+        const prodCheck = await pool.query('SELECT id FROM products WHERE id = $1 AND merchant_id = $2', [product_id, merchant.merchantId]);
+        if (prodCheck.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
+
+        const result = await pool.query(
+            'INSERT INTO prices (product_id, amount, currency, interval, billing_interval, interval_count, trial_days) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+            [product_id, amount, currency.toUpperCase(), interval, interval, interval_count || 1, trial_days || 0]
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        console.error('[v1/prices] Create error:', err);
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/prices', async (req, res) => {
+    try {
+        const { product_id } = req.query;
+        let query = 'SELECT * FROM prices';
+        let params = [];
+        if (product_id) {
+            query += ' WHERE product_id = $1';
+            params.push(product_id);
+        }
+        query += ' ORDER BY created_at DESC';
+        const result = await pool.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('[v1/prices] Fetch error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/v1/prices/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2', [req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Customers
+app.post('/v1/customers', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { email, name } = req.body;
+        if (!email) return res.status(400).json({ error: 'Missing email' });
+
+        let stripeCustomerId = null;
+        try {
+            const stripeCust = await stripe.customers.create({ email, name, metadata: { merchant_id: merchant.merchantId } });
+            stripeCustomerId = stripeCust.id;
+        } catch (e) { console.error('Stripe cust err', e.message); }
+
+        const result = await pool.query(
+            'INSERT INTO customers (email, name, stripe_id, merchant_id) VALUES ($1, $2, $3, $4) ON CONFLICT (email, merchant_id) DO UPDATE SET name = $2 RETURNING *',
+            [email, name || '', stripeCustomerId, merchant.merchantId]
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/customers', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT * FROM customers WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/customers/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT * FROM customers WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.patch('/v1/customers/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { name, phone, mobile_money_provider } = req.body;
+        const result = await pool.query(
+            `UPDATE customers
+             SET name                  = COALESCE($1, name),
+                 phone                 = COALESCE($2, phone),
+                 mobile_money_provider = COALESCE($3, mobile_money_provider),
+                 updated_at            = NOW()
+             WHERE id = $4 AND merchant_id = $5 RETURNING *`,
+            [name, phone, mobile_money_provider, req.params.id, merchant.merchantId]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Subscriptions
+app.post('/v1/subscriptions', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { customer_id, price_id } = req.body;
+
+        const custCheck = await pool.query('SELECT id, stripe_id FROM customers WHERE id = $1 AND merchant_id = $2', [customer_id, merchant.merchantId]);
+        if (custCheck.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
+
+        const priceCheck = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2', [price_id, merchant.merchantId]);
+        if (priceCheck.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
+
+        const price = priceCheck.rows[0];
+        const customer = custCheck.rows[0];
+
+        // Determine trial end
+        const trialDays = parseInt(price.trial_days) || 0;
+        const trialStatus = trialDays > 0 ? 'trialing' : 'incomplete';
+        const now = new Date();
+        const periodStart = now;
+        const periodEnd = trialDays > 0
+            ? new Date(now.getTime() + trialDays * 86400 * 1000)
+            : now; // will be advanced on first payment
+
+        const subInsert = await pool.query(`
+            INSERT INTO subscriptions
+              (customer_id, price_id, status, merchant_id, livemode,
+               current_period_start, current_period_end, trial_end)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+        `, [customer_id, price_id, trialStatus, merchant.merchantId,
+            merchant.environment === 'live',
+            periodStart, periodEnd,
+            trialDays > 0 ? periodEnd : null]);
+        const subscription = subInsert.rows[0];
+
+        // Emit webhook
+        setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.created', {
+            id: subscription.id, customer_id, price_id,
+            status: trialStatus, livemode: subscription.livemode,
+            current_period_end: periodEnd,
+        }));
+
+        // In sandbox, auto-activate if no trial — create payment intent for first charge
+        let clientSecret = null;
+        try {
+            const amountInCents = Math.round(parseFloat(price.amount) * 100);
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amountInCents,
+                currency: price.currency.toLowerCase(),
+                customer: customer.stripe_id || undefined,
+                setup_future_usage: 'off_session',
+                metadata: {
+                    subscription_id: subscription.id,
+                    merchant_id: merchant.merchantId,
+                    price_id: price.id,
+                    type: 'subscription_first_payment'
+                }
+            });
+            clientSecret = paymentIntent.client_secret;
+        } catch (_stripeErr) {
+            // Stripe unavailable (sandbox without keys) — auto-activate
+            if (!subscription.livemode) {
+                const fakePI = { id: 'pi_sandbox_' + crypto.randomUUID().replace(/-/g,'').slice(0,24), amount: Math.round(parseFloat(price.amount) * 100), currency: price.currency.toUpperCase() };
+                await recordSubscriptionPayment(subscription.id, fakePI).catch(() => {});
+            }
+        }
+
+        res.status(201).json(DeveloperGateway.formatResponse({
+            ...subscription,
+            client_secret: clientSecret,
+        }, merchant.environment));
+
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/subscriptions', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { customer_id } = req.query;
+        // Use merchant_id directly from subscriptions table (with fallback to customers join)
+        let query = `SELECT s.* FROM subscriptions s 
+                     WHERE s.merchant_id = $1 
+                     OR (s.merchant_id IS NULL AND s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $1))`;
+        let params = [merchant.merchantId];
+        if (customer_id) {
+            query += ` AND s.customer_id = $2`;
+            params.push(customer_id);
+        }
+        query += ' ORDER BY s.created_at DESC';
+        const result = await pool.query(query, params);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Dedicated endpoint for subscription invoices — MUST be before /:id routes
+app.get('/v1/subscriptions/invoices', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { subscription_id } = req.query;
+
+        let query = `SELECT si.*, c.email as customer_email, c.name as customer_name
+                     FROM public.sub_invoice si
+                     LEFT JOIN customers c ON si.customer_id = c.id
+                     WHERE si.merchant_id = $1`;
+        let params = [merchant.merchantId];
+        if (subscription_id) {
+            query += ` AND si.subscription_id = $2`;
+            params.push(subscription_id);
+        }
+        query += ' ORDER BY si.created_at DESC';
+
+        const result = await pool.query(query, params);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        console.error('[v1/subscriptions/invoices] Error:', err.message);
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Get single subscription invoice by ID — MUST be before /:id routes
+app.get('/v1/subscriptions/invoices/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const query = `SELECT i.*, c.email as customer_email, c.name as customer_name,
+                              s.id as subscription_id, s.status as subscription_status, s.price_id,
+                              p.amount as price_amount, p.currency as price_currency, p.interval,
+                              pr.name as product_name, pr.id as product_id
+                       FROM sub_invoice i
+                       LEFT JOIN customers c ON i.customer_id = c.id
+                       LEFT JOIN subscriptions s ON i.subscription_id = s.id
+                       LEFT JOIN prices p ON s.price_id = p.id
+                       LEFT JOIN products pr ON p.product_id = pr.id
+                       WHERE i.merchant_id = $1 AND i.id = $2`;
+        const result = await pool.query(query, [merchant.merchantId, req.params.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Invoice not found' });
+        }
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/subscriptions/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('SELECT s.* FROM subscriptions s JOIN customers c ON s.customer_id = c.id WHERE s.id = $1 AND c.merchant_id = $2', [req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query('UPDATE subscriptions s SET status = $1, updated_at = NOW() FROM customers c WHERE s.customer_id = c.id AND s.id = $2 AND c.merchant_id = $3 RETURNING s.*', ['canceled', req.params.id, merchant.merchantId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.post('/v1/payment-intents', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { amount, currency, customer_id } = req.body;
+
+        let stripeCustomerId;
+        if (customer_id) {
+            const custCheck = await pool.query('SELECT stripe_id FROM customers WHERE id = $1 AND merchant_id = $2', [customer_id, merchant.merchantId]);
+            if (custCheck.rows.length > 0) stripeCustomerId = custCheck.rows[0].stripe_id;
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: Math.round(parseFloat(amount) * 100),
+            currency: currency.toLowerCase(),
+            customer: stripeCustomerId,
+            metadata: { merchant_id: merchant.merchantId }
+        });
+
+        res.status(201).json(DeveloperGateway.formatResponse(paymentIntent, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/invoices', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { subscription_id, customer_id } = req.query;
+        let query = `SELECT i.*, c.email as customer_email, c.name as customer_name 
+                     FROM sub_invoice i 
+                     JOIN customers c ON i.customer_id = c.id 
+                     WHERE c.merchant_id = $1`;
+        let params = [merchant.merchantId];
+        let paramCount = 2;
+        if (subscription_id) {
+            query += ` AND i.subscription_id = $${paramCount++}`;
+            params.push(subscription_id);
+        }
+        if (customer_id) {
+            query += ` AND i.customer_id = $${paramCount++}`;
+            params.push(customer_id);
+        }
+        query += ' ORDER BY i.created_at DESC';
+        const result = await pool.query(query, params);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+
+app.post('/v1/subscriptions/:id/activate', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const subId = req.params.id;
+
+        // Verify sub belongs to merchant
+        const subCheck = await pool.query(
+            "SELECT s.*, pr.amount, pr.currency FROM subscriptions s JOIN prices p ON s.price_id = p.id JOIN products pr ON p.product_id = pr.id WHERE s.id = $1 AND pr.merchant_id = $2",
+            [subId, merchant.merchantId]
+        );
+        if (subCheck.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+        const sub = subCheck.rows[0];
+
+        // Simulate Stripe Payment Intent
+        const paymentIntent = {
+            id: 'pi_sim_' + crypto.randomBytes(8).toString('hex'),
+            amount: sub.amount * 100,
+            currency: sub.currency.toLowerCase()
+        };
+
+        const result = await recordSubscriptionPayment(subId, paymentIntent);
+        res.json(DeveloperGateway.formatResponse({ success: true, ...result }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /v1/subscriptions/:id  — plan change with proration
+// ─────────────────────────────────────────────────────────────────────────────
+// Calculates unused days credit on the old plan and creates an immediate
+// proration invoice charged against (new_amount − credit).
+app.patch('/v1/subscriptions/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { price_id } = req.body;
+        if (!price_id) return res.status(400).json({ error: 'price_id is required' });
+
+        // Load subscription + old price
+        const subRes = await pool.query(
+            `SELECT s.*, p.amount AS old_amount, p.currency AS old_currency,
+                    p.interval AS old_interval, p.billing_interval AS old_billing_interval,
+                    p.interval_count AS old_interval_count
+             FROM subscriptions s
+             JOIN prices p ON s.price_id = p.id
+             WHERE s.id = $1
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+        const sub = subRes.rows[0];
+
+        if (['canceled'].includes(sub.status)) {
+            return res.status(400).json({ error: 'Cannot change plan on a canceled subscription' });
+        }
+
+        // Validate new price belongs to this merchant
+        const newPriceRes = await pool.query(
+            `SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id
+             WHERE p.id = $1 AND pr.merchant_id = $2`,
+            [price_id, merchant.merchantId]
+        );
+        if (!newPriceRes.rows.length) return res.status(404).json({ error: 'New price not found' });
+        const newPrice = newPriceRes.rows[0];
+
+        // ── Proration calculation ────────────────────────────────────────────
+        const now            = new Date();
+        const periodStart    = new Date(sub.current_period_start);
+        const periodEnd      = new Date(sub.current_period_end);
+        const totalMs        = periodEnd - periodStart;
+        const remainingMs    = Math.max(0, periodEnd - now);
+        const usedRatio      = totalMs > 0 ? remainingMs / totalMs : 0;
+
+        const oldAmount       = parseFloat(sub.old_amount);
+        const newAmount       = parseFloat(newPrice.amount);
+        const unusedCredit    = parseFloat((oldAmount * usedRatio).toFixed(2));
+        const prorationCharge = parseFloat(Math.max(0, newAmount - unusedCredit).toFixed(2));
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            // Update subscription to new price, reset period from now
+            const intervalUnit = (newPrice.billing_interval || newPrice.interval || 'month').toLowerCase();
+            const intervalCount = parseInt(newPrice.interval_count) || 1;
+            const unit = intervalUnit.startsWith('day')  ? 'days'
+                       : intervalUnit.startsWith('week') ? 'weeks'
+                       : intervalUnit.startsWith('year') ? 'years'
+                       : 'months';
+
+            const updRes = await client.query(
+                `UPDATE subscriptions
+                 SET price_id             = $1,
+                     current_period_start = NOW(),
+                     current_period_end   = NOW() + INTERVAL '${intervalCount} ${unit}',
+                     updated_at           = NOW()
+                 WHERE id = $2 RETURNING *`,
+                [price_id, sub.id]
+            );
+            const updSub = updRes.rows[0];
+
+            // Create proration invoice
+            const invoiceNumber = 'PROR-' + Date.now().toString(36).toUpperCase();
+            const invRes = await client.query(
+                `INSERT INTO sub_invoice
+                   (subscription_id, customer_id, merchant_id, amount, currency, status,
+                    period_start, period_end, invoice_number, attempt_count, livemode, discount_amount)
+                 VALUES ($1,$2,$3,$4,$5,'open', NOW(), $6, $7, 0, $8, $9) RETURNING *`,
+                [sub.id, sub.customer_id, merchant.merchantId, prorationCharge, newPrice.currency,
+                 updSub.current_period_end, invoiceNumber, updSub.livemode, unusedCredit]
+            );
+            const proroInvoice = invRes.rows[0];
+
+            // Auto-pay proration in sandbox
+            if (!updSub.livemode) {
+                const mRes = await client.query('SELECT user_id FROM merchants WHERE id=$1', [merchant.merchantId]);
+                if (mRes.rows.length && prorationCharge > 0) {
+                    const userId = mRes.rows[0].user_id;
+                    await client.query(
+                        `INSERT INTO wallets (user_id, currency, balance)
+                         VALUES ($1,$2,$3)
+                         ON CONFLICT (user_id, currency) DO UPDATE SET balance = wallets.balance + $3, updated_at=NOW()`,
+                        [userId, newPrice.currency, prorationCharge]
+                    );
+                }
+                await client.query(`UPDATE sub_invoice SET status='paid', paid_at=NOW() WHERE id=$1`, [proroInvoice.id]);
+            }
+
+            await client.query('COMMIT');
+
+            setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.plan_changed', {
+                subscription_id: sub.id,
+                old_price_id:    sub.price_id,
+                new_price_id:    price_id,
+                proration_credit: unusedCredit,
+                proration_charge: prorationCharge,
+            }));
+
+            res.json(DeveloperGateway.formatResponse({
+                ...updRes.rows[0],
+                proration: {
+                    unused_credit:    unusedCredit,
+                    charged:          prorationCharge,
+                    invoice_id:       proroInvoice.id,
+                    invoice_number:   invoiceNumber,
+                },
+            }, merchant.environment));
+
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/subscriptions/:id/pause  &  POST /v1/subscriptions/:id/resume
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/v1/subscriptions/:id/pause', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        // pause_at defaults to now; caller may pass a future timestamp
+        const pauseAt = req.body.pause_at ? new Date(req.body.pause_at) : new Date();
+
+        const result = await pool.query(
+            `UPDATE subscriptions
+             SET pause_at   = $1,
+                 resumed_at = NULL,
+                 updated_at = NOW()
+             WHERE id = $2
+               AND (merchant_id = $3 OR customer_id IN (SELECT id FROM customers WHERE merchant_id = $3))
+               AND status NOT IN ('canceled')
+             RETURNING *`,
+            [pauseAt, req.params.id, merchant.merchantId]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
+
+        setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.paused', {
+            subscription_id: req.params.id, pause_at: pauseAt,
+        }));
+
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.post('/v1/subscriptions/:id/resume', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+
+        const result = await pool.query(
+            `UPDATE subscriptions
+             SET pause_at    = NULL,
+                 resumed_at  = NOW(),
+                 updated_at  = NOW()
+             WHERE id = $1
+               AND (merchant_id = $2 OR customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND status NOT IN ('canceled')
+             RETURNING *`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
+
+        setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.resumed', {
+            subscription_id: req.params.id, resumed_at: new Date(),
+        }));
+
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Coupon CRUD  — POST / GET / GET:id / DELETE
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/v1/coupons', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { code, name, amount_off, percent_off, duration, duration_in_months,
+                max_redemptions, valid_until } = req.body;
+
+        if (!code) return res.status(400).json({ error: 'code is required' });
+        if (!amount_off && !percent_off) return res.status(400).json({ error: 'Either amount_off or percent_off is required' });
+        if (amount_off && percent_off) return res.status(400).json({ error: 'Provide either amount_off or percent_off, not both' });
+        if (percent_off && (parseFloat(percent_off) <= 0 || parseFloat(percent_off) > 100)) {
+            return res.status(400).json({ error: 'percent_off must be between 1 and 100' });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO coupons
+               (merchant_id, code, name, amount_off, percent_off, currency, duration,
+                duration_in_months, max_redemptions, valid_until)
+             VALUES ($1, UPPER($2), $3, $4, $5, 'ZMW', $6, $7, $8, $9)
+             RETURNING *`,
+            [merchant.merchantId, code, name || code,
+             amount_off || null, percent_off || null,
+             duration || 'once', duration_in_months || null,
+             max_redemptions || null, valid_until || null]
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'A coupon with that code already exists' });
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/coupons', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { active } = req.query;
+        let query  = 'SELECT * FROM coupons WHERE merchant_id = $1';
+        const params = [merchant.merchantId];
+        if (active !== undefined) { query += ' AND active = $2'; params.push(active === 'true'); }
+        query += ' ORDER BY created_at DESC';
+        const result = await pool.query(query, params);
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/coupons/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        // Allow lookup by UUID or by code
+        const result = await pool.query(
+            `SELECT * FROM coupons WHERE merchant_id = $1 AND (id::text = $2 OR UPPER(code) = UPPER($2))`,
+            [merchant.merchantId, req.params.id]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Coupon not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.patch('/v1/coupons/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { active, name, max_redemptions, valid_until } = req.body;
+        const result = await pool.query(
+            `UPDATE coupons
+             SET active          = COALESCE($1, active),
+                 name            = COALESCE($2, name),
+                 max_redemptions = COALESCE($3, max_redemptions),
+                 valid_until     = COALESCE($4, valid_until)
+             WHERE id = $5 AND merchant_id = $6 RETURNING *`,
+            [active, name, max_redemptions, valid_until, req.params.id, merchant.merchantId]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Coupon not found' });
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.delete('/v1/coupons/:id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        // Soft-delete: deactivate so existing subscription discounts are unaffected
+        const result = await pool.query(
+            `UPDATE coupons SET active = FALSE WHERE id = $1 AND merchant_id = $2 RETURNING id`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Coupon not found' });
+        res.json(DeveloperGateway.formatResponse({ deleted: true, id: req.params.id }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/subscriptions/:id/discounts  — apply a coupon to a subscription
+// DELETE /v1/subscriptions/:id/discounts/:discount_id  — remove a discount
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/v1/subscriptions/:id/discounts', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { coupon_code } = req.body;
+        if (!coupon_code) return res.status(400).json({ error: 'coupon_code is required' });
+
+        // Verify subscription belongs to merchant
+        const subRes = await pool.query(
+            `SELECT s.* FROM subscriptions s
+             WHERE s.id = $1
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+
+        // Look up coupon
+        const couponRes = await pool.query(
+            `SELECT * FROM coupons
+             WHERE merchant_id = $1 AND UPPER(code) = UPPER($2) AND active = TRUE
+               AND (valid_until IS NULL OR valid_until > NOW())
+               AND (max_redemptions IS NULL OR redemption_count < max_redemptions)`,
+            [merchant.merchantId, coupon_code]
+        );
+        if (!couponRes.rows.length) return res.status(404).json({ error: 'Coupon not found, expired, or exhausted' });
+        const coupon = couponRes.rows[0];
+
+        // Calculate discount amount for display (on current price)
+        const priceRes = await pool.query('SELECT amount FROM prices WHERE id = $1', [subRes.rows[0].price_id]);
+        const currentAmount = priceRes.rows.length ? parseFloat(priceRes.rows[0].amount) : 0;
+        const discountAmount = coupon.amount_off
+            ? Math.min(parseFloat(coupon.amount_off), currentAmount)
+            : currentAmount * (parseFloat(coupon.percent_off) / 100);
+
+        // Set expires_at for repeating coupons
+        let expiresAt = null;
+        if (coupon.duration === 'once') {
+            // expires after one use — handled by consumeDiscounts
+        } else if (coupon.duration === 'repeating' && coupon.duration_in_months) {
+            expiresAt = new Date();
+            expiresAt.setMonth(expiresAt.getMonth() + coupon.duration_in_months);
+        }
+
+        // Insert discount
+        const discRes = await pool.query(
+            `INSERT INTO subscription_discounts
+               (subscription_id, coupon_id, discount_amount, expires_at)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [req.params.id, coupon.id, discountAmount.toFixed(2), expiresAt]
+        );
+
+        // Increment coupon redemption count
+        await pool.query('UPDATE coupons SET redemption_count = redemption_count + 1 WHERE id = $1', [coupon.id]);
+
+        res.status(201).json(DeveloperGateway.formatResponse({
+            ...discRes.rows[0],
+            coupon: { code: coupon.code, name: coupon.name, amount_off: coupon.amount_off, percent_off: coupon.percent_off },
+        }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/subscriptions/:id/discounts', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query(
+            `SELECT sd.*, c.code, c.name AS coupon_name, c.amount_off, c.percent_off, c.duration
+             FROM subscription_discounts sd
+             JOIN coupons c ON sd.coupon_id = c.id
+             WHERE sd.subscription_id = $1
+               AND c.merchant_id = $2
+             ORDER BY sd.applied_at DESC`,
+            [req.params.id, merchant.merchantId]
+        );
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.delete('/v1/subscriptions/:id/discounts/:discount_id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query(
+            `DELETE FROM subscription_discounts sd
+             USING coupons c
+             WHERE sd.id = $1 AND sd.subscription_id = $2 AND sd.coupon_id = c.id AND c.merchant_id = $3
+             RETURNING sd.id`,
+            [req.params.discount_id, req.params.id, merchant.merchantId]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Discount not found' });
+        res.json(DeveloperGateway.formatResponse({ deleted: true, id: req.params.discount_id }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Billing Settings  GET / PUT  /v1/billing/settings
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/v1/billing/settings', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query(
+            'SELECT * FROM merchant_billing_settings WHERE merchant_id = $1',
+            [merchant.merchantId]
+        );
+        const defaults = {
+            merchant_id: merchant.merchantId,
+            dunning_days: [0, 3, 7],
+            max_dunning_attempts: 3,
+            trial_reminder_days: 3,
+            payment_failed_email: true,
+            trial_ending_email: true,
+            receipt_email: true,
+            cancelation_email: true,
+        };
+        res.json(DeveloperGateway.formatResponse(result.rows[0] || defaults, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.put('/v1/billing/settings', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const {
+            dunning_days, max_dunning_attempts, trial_reminder_days,
+            payment_failed_email, trial_ending_email, receipt_email, cancelation_email,
+        } = req.body;
+
+        if (dunning_days && (!Array.isArray(dunning_days) || dunning_days.some(d => typeof d !== 'number'))) {
+            return res.status(400).json({ error: 'dunning_days must be an array of numbers, e.g. [0,3,7]' });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO merchant_billing_settings
+               (merchant_id, dunning_days, max_dunning_attempts, trial_reminder_days,
+                payment_failed_email, trial_ending_email, receipt_email, cancelation_email)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+             ON CONFLICT (merchant_id) DO UPDATE SET
+               dunning_days          = COALESCE($2, merchant_billing_settings.dunning_days),
+               max_dunning_attempts  = COALESCE($3, merchant_billing_settings.max_dunning_attempts),
+               trial_reminder_days   = COALESCE($4, merchant_billing_settings.trial_reminder_days),
+               payment_failed_email  = COALESCE($5, merchant_billing_settings.payment_failed_email),
+               trial_ending_email    = COALESCE($6, merchant_billing_settings.trial_ending_email),
+               receipt_email         = COALESCE($7, merchant_billing_settings.receipt_email),
+               cancelation_email     = COALESCE($8, merchant_billing_settings.cancelation_email),
+               updated_at            = NOW()
+             RETURNING *`,
+            [merchant.merchantId,
+             dunning_days || null, max_dunning_attempts || null, trial_reminder_days || null,
+             payment_failed_email ?? null, trial_ending_email ?? null,
+             receipt_email ?? null, cancelation_email ?? null]
+        );
+        res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /v1/subscriptions/:id/payment-method  — update customer's mobile money
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/v1/subscriptions/:id/payment-method', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { phone, mobile_money_provider } = req.body;
+        if (!phone) return res.status(400).json({ error: 'phone is required' });
+
+        // Verify subscription belongs to merchant
+        const subRes = await pool.query(
+            `SELECT s.customer_id FROM subscriptions s
+             WHERE s.id = $1 AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+
+        const result = await pool.query(
+            `UPDATE customers SET phone=$1, mobile_money_provider=$2, updated_at=NOW()
+             WHERE id=$3 AND merchant_id=$4 RETURNING id, email, name, phone, mobile_money_provider`,
+            [phone, mobile_money_provider || 'MTN', subRes.rows[0].customer_id, merchant.merchantId]
+        );
+        res.json(DeveloperGateway.formatResponse({ updated: true, customer: result.rows[0] }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/analytics/subscriptions  — MRR, ARR, churn, growth, 12-month forecast
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/v1/analytics/subscriptions', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const mid = merchant.merchantId;
+
+        const [subsRes, invoiceRes, newRes, canceledRes, recentRes] = await Promise.all([
+            // All active subscriptions with their monthly equivalent
+            pool.query(`
+                SELECT s.id, p.amount, p.currency,
+                       CASE p.interval
+                           WHEN 'day'   THEN p.amount * 30
+                           WHEN 'week'  THEN p.amount * 4
+                           WHEN 'year'  THEN p.amount / 12
+                           ELSE p.amount
+                       END AS monthly_amount
+                FROM subscriptions s
+                JOIN prices p ON s.price_id = p.id
+                WHERE s.status = 'active'
+                  AND (s.merchant_id = $1 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $1))
+            `, [mid]),
+
+            // Revenue last 30 days (paid invoices)
+            pool.query(`
+                SELECT COALESCE(SUM(amount), 0) AS total_30d,
+                       COALESCE(SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0) AS revenue_30d,
+                       COALESCE(SUM(amount) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'),  0) AS revenue_7d
+                FROM sub_invoice WHERE merchant_id=$1 AND status='paid'
+            `, [mid]),
+
+            // New subscriptions this month
+            pool.query(`
+                SELECT COUNT(*) AS count FROM subscriptions
+                WHERE (merchant_id=$1 OR customer_id IN (SELECT id FROM customers WHERE merchant_id=$1))
+                  AND created_at >= DATE_TRUNC('month', NOW())
+                  AND status != 'canceled'
+            `, [mid]),
+
+            // Canceled this month
+            pool.query(`
+                SELECT COUNT(*) AS count FROM subscriptions
+                WHERE (merchant_id=$1 OR customer_id IN (SELECT id FROM customers WHERE merchant_id=$1))
+                  AND canceled_at >= DATE_TRUNC('month', NOW())
+                  AND status = 'canceled'
+            `, [mid]),
+
+            // Last 12 months revenue for forecast
+            pool.query(`
+                SELECT DATE_TRUNC('month', created_at) AS month,
+                       SUM(amount) AS revenue,
+                       COUNT(*) AS invoice_count
+                FROM sub_invoice
+                WHERE merchant_id=$1 AND status='paid'
+                  AND created_at >= NOW() - INTERVAL '12 months'
+                GROUP BY 1 ORDER BY 1
+            `, [mid]),
+        ]);
+
+        const activeSubs  = subsRes.rows;
+        const totalSubs   = activeSubs.length;
+        const mrr         = activeSubs.reduce((s, r) => s + parseFloat(r.monthly_amount), 0);
+        const arr         = mrr * 12;
+        const revenue30d  = parseFloat(invoiceRes.rows[0].revenue_30d);
+        const newThisMonth = parseInt(newRes.rows[0].count);
+        const canceledThisMonth = parseInt(canceledRes.rows[0].count);
+
+        // All subscription counts for churn rate
+        const totalAllRes = await pool.query(
+            `SELECT COUNT(*) FROM subscriptions WHERE merchant_id=$1 OR customer_id IN (SELECT id FROM customers WHERE merchant_id=$1)`,
+            [mid]
+        );
+        const totalAll   = parseInt(totalAllRes.rows[0].count) || 1;
+        const churnRate  = totalAll > 0 ? parseFloat((canceledThisMonth / totalAll * 100).toFixed(2)) : 0;
+
+        // Average revenue per subscriber
+        const avgRevenue = totalSubs > 0 ? parseFloat((mrr / totalSubs).toFixed(2)) : 0;
+
+        // 12-month forecast: use average of last 3 months growth
+        const recentMonths = recentRes.rows.slice(-3);
+        const avgGrowth = recentMonths.length >= 2
+            ? recentMonths.reduce((sum, m, i) => {
+                if (i === 0) return 0;
+                const prev = parseFloat(recentMonths[i-1].revenue);
+                const curr = parseFloat(m.revenue);
+                return sum + (prev > 0 ? (curr - prev) / prev : 0);
+              }, 0) / Math.max(1, recentMonths.length - 1)
+            : 0;
+
+        const forecast = [];
+        let projectedMrr = mrr;
+        for (let i = 1; i <= 12; i++) {
+            projectedMrr = projectedMrr * (1 + avgGrowth);
+            const d = new Date();
+            d.setMonth(d.getMonth() + i);
+            forecast.push({
+                month: d.toISOString().slice(0, 7),
+                projected_mrr: parseFloat(projectedMrr.toFixed(2)),
+            });
+        }
+
+        res.json(DeveloperGateway.formatResponse({
+            mrr:                  parseFloat(mrr.toFixed(2)),
+            arr:                  parseFloat(arr.toFixed(2)),
+            active_subscriptions: totalSubs,
+            new_this_month:       newThisMonth,
+            canceled_this_month:  canceledThisMonth,
+            churn_rate:           churnRate,
+            avg_revenue_per_subscriber: avgRevenue,
+            revenue_last_30d:     revenue30d,
+            mrr_growth_rate:      parseFloat((avgGrowth * 100).toFixed(2)),
+            monthly_revenue:      recentRes.rows.map(r => ({
+                month: r.month?.toISOString?.().slice(0,7) || r.month,
+                revenue: parseFloat(r.revenue),
+                invoice_count: parseInt(r.invoice_count),
+            })),
+            forecast_12m: forecast,
+        }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/analytics/churn-cohorts
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/v1/analytics/churn-cohorts', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const mid = merchant.merchantId;
+
+        const cohortsRes = await pool.query(`
+            WITH cohort_base AS (
+                SELECT
+                    id,
+                    DATE_TRUNC('month', created_at)  AS cohort_month,
+                    DATE_TRUNC('month', canceled_at) AS cancel_month,
+                    status
+                FROM subscriptions
+                WHERE merchant_id = $1
+                   OR customer_id IN (SELECT id FROM customers WHERE merchant_id = $1)
+            ),
+            cohort_sizes AS (
+                SELECT cohort_month, COUNT(*) AS total_subscribed
+                FROM cohort_base GROUP BY 1
+            ),
+            survived AS (
+                SELECT
+                    cohort_month,
+                    EXTRACT(MONTH FROM AGE(
+                        COALESCE(cancel_month, DATE_TRUNC('month', NOW())),
+                        cohort_month
+                    )) AS months_survived,
+                    COUNT(*) AS count
+                FROM cohort_base GROUP BY 1, 2
+            )
+            SELECT
+                cs.cohort_month,
+                cs.total_subscribed,
+                COALESCE(s1.count, 0)  AS retained_1m,
+                COALESCE(s3.count, 0)  AS retained_3m,
+                COALESCE(s6.count, 0)  AS retained_6m,
+                COALESCE(s12.count, 0) AS retained_12m
+            FROM cohort_sizes cs
+            LEFT JOIN survived s1  ON s1.cohort_month  = cs.cohort_month AND s1.months_survived >= 1
+            LEFT JOIN survived s3  ON s3.cohort_month  = cs.cohort_month AND s3.months_survived >= 3
+            LEFT JOIN survived s6  ON s6.cohort_month  = cs.cohort_month AND s6.months_survived >= 6
+            LEFT JOIN survived s12 ON s12.cohort_month = cs.cohort_month AND s12.months_survived >= 12
+            WHERE cs.cohort_month >= NOW() - INTERVAL '12 months'
+            ORDER BY cs.cohort_month DESC
+        `, [mid]);
+
+        res.json(DeveloperGateway.formatResponse(cohortsRes.rows.map(r => ({
+            month:            r.cohort_month?.toISOString?.().slice(0,7) || r.cohort_month,
+            subscribed:       parseInt(r.total_subscribed),
+            retained_1m:      parseInt(r.retained_1m),
+            retained_3m:      parseInt(r.retained_3m),
+            retained_6m:      parseInt(r.retained_6m),
+            retained_12m:     parseInt(r.retained_12m),
+            retention_rate_1m: r.total_subscribed > 0 ? parseFloat((r.retained_1m / r.total_subscribed * 100).toFixed(1)) : 0,
+        })), merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Usage-based billing  — Meters + Usage reporting
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/v1/meters', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { name, key, unit, aggregation } = req.body;
+        if (!name || !key) return res.status(400).json({ error: 'name and key are required' });
+        const result = await pool.query(
+            `INSERT INTO billing_meters (merchant_id, name, key, unit, aggregation)
+             VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+            [merchant.merchantId, name, key.toLowerCase().replace(/[^a-z0-9_]/g,'_'),
+             unit || 'unit', aggregation || 'sum']
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ error: 'Meter key already exists' });
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+app.get('/v1/meters', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const result = await pool.query(
+            'SELECT * FROM billing_meters WHERE merchant_id=$1 ORDER BY created_at DESC',
+            [merchant.merchantId]
+        );
+        res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Report usage for a metered subscription
+app.post('/v1/usage', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { subscription_id, meter_key, quantity, idempotency_key } = req.body;
+        if (!subscription_id || !meter_key || quantity == null) {
+            return res.status(400).json({ error: 'subscription_id, meter_key, and quantity are required' });
+        }
+
+        // Verify subscription + meter belong to merchant
+        const [subRes, meterRes] = await Promise.all([
+            pool.query(
+                `SELECT s.id FROM subscriptions s WHERE s.id=$1 AND (s.merchant_id=$2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id=$2))`,
+                [subscription_id, merchant.merchantId]
+            ),
+            pool.query('SELECT id FROM billing_meters WHERE merchant_id=$1 AND key=$2', [merchant.merchantId, meter_key]),
+        ]);
+        if (!subRes.rows.length)  return res.status(404).json({ error: 'Subscription not found' });
+        if (!meterRes.rows.length) return res.status(404).json({ error: 'Meter not found' });
+
+        const result = await pool.query(
+            `INSERT INTO billing_usage (subscription_id, meter_id, quantity, idempotency_key)
+             VALUES ($1,$2,$3,$4)
+             ON CONFLICT (idempotency_key) DO UPDATE SET quantity = $3
+             RETURNING *`,
+            [subscription_id, meterRes.rows[0].id, quantity, idempotency_key || null]
+        );
+        res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Get usage for a subscription's current billing period
+app.get('/v1/usage/:subscription_id', async (req, res) => {
+    try {
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const subRes = await pool.query(
+            `SELECT s.current_period_start, s.current_period_end FROM subscriptions s
+             WHERE s.id=$1 AND (s.merchant_id=$2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id=$2))`,
+            [req.params.subscription_id, merchant.merchantId]
+        );
+        if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+        const { current_period_start, current_period_end } = subRes.rows[0];
+
+        const usage = await pool.query(`
+            SELECT m.key, m.name, m.unit, m.aggregation,
+                   CASE m.aggregation
+                       WHEN 'sum'    THEN SUM(u.quantity)
+                       WHEN 'max'    THEN MAX(u.quantity)
+                       WHEN 'latest' THEN (SELECT quantity FROM billing_usage WHERE meter_id=m.id AND subscription_id=$1 ORDER BY recorded_at DESC LIMIT 1)
+                       ELSE SUM(u.quantity)
+                   END AS total
+            FROM billing_meters m
+            LEFT JOIN billing_usage u
+              ON u.meter_id = m.id AND u.subscription_id=$1
+                 AND u.recorded_at >= $2 AND u.recorded_at < $3
+            WHERE m.merchant_id=$4
+            GROUP BY m.id, m.key, m.name, m.unit, m.aggregation
+        `, [req.params.subscription_id, current_period_start, current_period_end, merchant.merchantId]);
+
+        res.json(DeveloperGateway.formatResponse({
+            subscription_id:       req.params.subscription_id,
+            period_start:          current_period_start,
+            period_end:            current_period_end,
+            meters:                usage.rows,
+        }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Customer Self-Service Portal  — session creation + public endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+const PORTAL_JWT_SECRET = process.env.PORTAL_JWT_SECRET || 'flapa_portal_secret_change_in_prod';
+const PORTAL_TTL_HOURS  = 24;
+
+// Merchant creates a portal session for a customer
+app.post('/v1/customer-portal/sessions', async (req, res) => {
+    try {
+        const merchant     = await DeveloperGateway.authenticate(req.headers.authorization);
+        const { customer_id, return_url } = req.body;
+        if (!customer_id) return res.status(400).json({ error: 'customer_id is required' });
+
+        const custRes = await pool.query(
+            'SELECT id, email, name FROM customers WHERE id=$1 AND merchant_id=$2',
+            [customer_id, merchant.merchantId]
+        );
+        if (!custRes.rows.length) return res.status(404).json({ error: 'Customer not found' });
+
+        const expiresAt = new Date(Date.now() + PORTAL_TTL_HOURS * 3600 * 1000);
+        const token     = jwt.sign(
+            { customer_id, merchant_id: merchant.merchantId, type: 'portal' },
+            PORTAL_JWT_SECRET,
+            { expiresIn: `${PORTAL_TTL_HOURS}h` }
+        );
+
+        await pool.query(
+            `INSERT INTO customer_portal_sessions (merchant_id, customer_id, token, expires_at)
+             VALUES ($1,$2,$3,$4)`,
+            [merchant.merchantId, customer_id, token, expiresAt]
+        );
+
+        const portalUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/subscriptions/portal/${token}`;
+        res.status(201).json(DeveloperGateway.formatResponse({ url: portalUrl, token, expires_at: expiresAt }, merchant.environment));
+    } catch (err) {
+        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+    }
+});
+
+// Public portal — load customer data from token (no merchant auth needed)
+app.get('/v1/portal/:token', async (req, res) => {
+    try {
+        const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
+        const session = await pool.query(
+            'SELECT * FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()',
+            [req.params.token]
+        );
+        if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired or invalid' });
+
+        const [custRes, subsRes] = await Promise.all([
+            pool.query('SELECT id, email, name, phone, mobile_money_provider FROM customers WHERE id=$1', [decoded.customer_id]),
+            pool.query(`
+                SELECT s.id, s.status, s.current_period_end, s.pause_at, s.trial_end,
+                       p.amount, p.currency, p.interval,
+                       pr.name AS product_name
+                FROM subscriptions s
+                JOIN prices p ON s.price_id = p.id
+                JOIN products pr ON p.product_id = pr.id
+                WHERE s.customer_id=$1 AND s.status NOT IN ('canceled')
+                ORDER BY s.created_at DESC
+            `, [decoded.customer_id]),
+        ]);
+
+        if (!custRes.rows.length) return res.status(404).json({ error: 'Customer not found' });
+
+        res.json({
+            customer:      custRes.rows[0],
+            subscriptions: subsRes.rows,
+            merchant_id:   decoded.merchant_id,
+        });
+    } catch (err) {
+        res.status(401).json({ error: 'Invalid or expired portal token' });
+    }
+});
+
+// Portal — get invoices
+app.get('/v1/portal/:token/invoices', async (req, res) => {
+    try {
+        const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
+        const session = await pool.query('SELECT id FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()', [req.params.token]);
+        if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired' });
+
+        const invoices = await pool.query(
+            `SELECT si.*, pr.name AS product_name
+             FROM sub_invoice si
+             LEFT JOIN subscriptions s  ON si.subscription_id = s.id
+             LEFT JOIN prices p         ON s.price_id = p.id
+             LEFT JOIN products pr      ON p.product_id = pr.id
+             WHERE si.customer_id=$1 ORDER BY si.created_at DESC LIMIT 50`,
+            [decoded.customer_id]
+        );
+        res.json({ invoices: invoices.rows });
+    } catch (err) {
+        res.status(401).json({ error: 'Invalid portal token' });
+    }
+});
+
+// Portal — update payment method
+app.put('/v1/portal/:token/payment-method', async (req, res) => {
+    try {
+        const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
+        const session = await pool.query('SELECT id FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()', [req.params.token]);
+        if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired' });
+
+        const { phone, mobile_money_provider } = req.body;
+        if (!phone) return res.status(400).json({ error: 'phone is required' });
+
+        await pool.query(
+            'UPDATE customers SET phone=$1, mobile_money_provider=$2, updated_at=NOW() WHERE id=$3',
+            [phone, mobile_money_provider || 'MTN', decoded.customer_id]
+        );
+        res.json({ updated: true });
+    } catch (err) {
+        res.status(401).json({ error: 'Invalid portal token' });
+    }
+});
+
+// Portal — cancel subscription
+app.post('/v1/portal/:token/subscriptions/:sub_id/cancel', async (req, res) => {
+    try {
+        const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
+        const session = await pool.query('SELECT id FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()', [req.params.token]);
+        if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired' });
+
+        const result = await pool.query(
+            `UPDATE subscriptions SET status='canceled', canceled_at=NOW(), updated_at=NOW()
+             WHERE id=$1 AND customer_id=$2 RETURNING id`,
+            [req.params.sub_id, decoded.customer_id]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+        res.json({ canceled: true, subscription_id: req.params.sub_id });
+    } catch (err) {
+        res.status(401).json({ error: 'Invalid portal token' });
+    }
+});
+
 // --- FX Conversion Routes ---
 
 app.post('/fx/quote', authenticateToken, async (req, res) => {
@@ -7876,7 +14384,9 @@ app.post('/fx/quote', authenticateToken, async (req, res) => {
         const marketRate = rates[toCurrency];
 
         if (!marketRate) {
-            return res.status(400).json({ error: `Unsupported currency pair: ${fromCurrency}/${toCurrency}` });
+            return res.status(400).json({
+                error: `Unsupported currency pair: ${fromCurrency}/${toCurrency}`
+            });
         }
 
         // Apply spread: Platform Rate is 2% lower than market rate for the user
@@ -7902,7 +14412,8 @@ app.post('/fx/quote', authenticateToken, async (req, res) => {
         FX_QUOTES.set(quoteId, quote);
         res.json(quote);
     } catch (err) {
-        res.status(500).json({ error: 'Failed to generate FX quote' });
+        console.error('[FX Quote] Error:', err.message, err.stack?.split('\n')[1]);
+        res.status(500).json({ error: 'Failed to generate FX quote', details: err.message });
     }
 });
 
@@ -8022,11 +14533,196 @@ app.post('/fx/convert', authenticateToken, async (req, res) => {
 });
 
 const EscrowAgentMonitor = require('./services/EscrowAgentMonitor');
+const cron = require('node-cron');
+
+// Auto-create Phase 7 tables if not present (safe with IF NOT EXISTS)
+pool.query(`
+    CREATE TABLE IF NOT EXISTS platform_notifications (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_id UUID NOT NULL,
+        type        VARCHAR(80)  NOT NULL,
+        title       VARCHAR(200) NOT NULL,
+        body        TEXT,
+        metadata    JSONB        NOT NULL DEFAULT '{}',
+        read        BOOLEAN      NOT NULL DEFAULT false,
+        livemode    BOOLEAN      NOT NULL DEFAULT false,
+        created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_platform_notif_merchant ON platform_notifications(merchant_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_platform_notif_unread   ON platform_notifications(merchant_id, read) WHERE read = false;
+
+    CREATE TABLE IF NOT EXISTS platform_earnings_cache (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_id      UUID NOT NULL,
+        period_start     DATE NOT NULL,
+        period_end       DATE NOT NULL,
+        period_type      VARCHAR(20) NOT NULL DEFAULT 'month',
+        total_fees       NUMERIC(18,4) NOT NULL DEFAULT 0,
+        charge_fees      NUMERIC(18,4) NOT NULL DEFAULT 0,
+        payout_fees      NUMERIC(18,4) NOT NULL DEFAULT 0,
+        refund_reversals NUMERIC(18,4) NOT NULL DEFAULT 0,
+        currency         VARCHAR(10)   NOT NULL DEFAULT 'ZMW',
+        livemode         BOOLEAN       NOT NULL DEFAULT false,
+        computed_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+        UNIQUE (merchant_id, period_start, period_type, currency, livemode)
+    );
+    CREATE INDEX IF NOT EXISTS idx_platform_earnings_merchant ON platform_earnings_cache(merchant_id, period_start DESC);
+`).then(() => console.log('[Init] Phase 7 tables ready.')).catch(err => console.error('[Init] Phase 7 table error:', err.message));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Unified Server running on port ${PORT}`);
 
-    // Start Escrow AI Agent Monitor (Check every 12 hours)
+    // ── Connect Payout Scheduler — every hour ─────────────────────────────────
+    cron.schedule('0 * * * *', () => {
+        console.log('[Cron] Running Connect Payout Scheduler tick...');
+        runSchedulerTick().catch(err => console.error('[Cron] Scheduler error:', err.message));
+    });
+
+    // ── Connect Payout Retry Worker — every 30 min ────────────────────────────
+    cron.schedule('*/30 * * * *', () => {
+        console.log('[Cron] Running Payout Retry Worker...');
+        runRetryWorker().catch(err => console.error('[Cron] Retry Worker error:', err.message));
+    });
+
+    // ── Split Payment Settlement Worker — every hour ──────────────────────────
+    // Moves pending balance → available for all connected accounts where available_at <= NOW()
+    // and fires transaction.split.available webhooks
+    cron.schedule('15 * * * *', async () => {
+        console.log('[Cron] Running Split Payment Settlement Worker...');
+        try {
+            // Find all unsettled charges that are now available
+            const dueRes = await pool.query(
+                `SELECT c.id, c.merchant_id, c.destination_merchant_id, c.amount, c.currency, c.livemode
+                 FROM charges c
+                 WHERE c.is_settled = false
+                   AND c.available_at IS NOT NULL
+                   AND c.available_at <= NOW()
+                   AND c.status = 'succeeded'`
+            );
+            console.log(`[Settlement] ${dueRes.rows.length} charges ready to settle.`);
+            for (const charge of dueRes.rows) {
+                const merchantId = charge.destination_merchant_id || charge.merchant_id;
+                await refreshMerchantBalance(merchantId);
+                // Also refresh platform merchant if split
+                if (charge.destination_merchant_id && charge.destination_merchant_id !== charge.merchant_id) {
+                    await refreshMerchantBalance(charge.merchant_id);
+                }
+                // Fire transaction.split.available webhook after settlement
+                if (charge.destination_merchant_id) {
+                    dispatchWebhook(charge.merchant_id, 'transaction.split.available', {
+                        charge_id: charge.id,
+                        sub_merchant_id: charge.destination_merchant_id,
+                        amount: parseFloat(charge.amount),
+                        currency: charge.currency,
+                        settled_at: new Date().toISOString(),
+                        livemode: charge.livemode
+                    });
+                }
+            }
+        } catch (err) {
+            console.error('[Cron] Settlement Worker error:', err.message);
+        }
+    });
+
+    console.log('[UnifiedServer] Connect Payout Scheduler & Retry Worker initialized');
+
+    // ── Subscription Billing Engine ───────────────────────────────────────────
+    SubscriptionRenewalService.setWebhookEmitter(emitWebhookForMerchant);
+    SubscriptionRenewalService.ensureTables()
+        .then(() => console.log('[Billing] Subscription billing tables ready'))
+        .catch(err => console.error('[Billing] Table setup error:', err.message));
+
+    // Renewal: every hour, on the hour
+    cron.schedule('5 * * * *', () => {
+        console.log('[Cron] Running Subscription Renewal engine...');
+        SubscriptionRenewalService.processRenewals()
+            .catch(err => console.error('[Cron] Renewal error:', err.message));
+    });
+
+    // Dunning: every 15 minutes
+    cron.schedule('*/15 * * * *', () => {
+        SubscriptionRenewalService.processDunning()
+            .catch(err => console.error('[Cron] Dunning error:', err.message));
+    });
+
+    // Trial finalization: every 30 minutes
+    cron.schedule('*/30 * * * *', () => {
+        SubscriptionRenewalService.finalizeTrials()
+            .catch(err => console.error('[Cron] Trial finalization error:', err.message));
+    });
+
+    // Pending PawaPay deposits: every 5 minutes — settles in-flight STK push payments
+    cron.schedule('*/5 * * * *', () => {
+        SubscriptionRenewalService.checkPendingDeposits()
+            .catch(err => console.error('[Cron] Pending deposits check error:', err.message));
+    });
+
+    // Webhook auto-retry: every 5 minutes — exponential backoff, max 5 attempts
+    ensureWebhookRetryColumns()
+        .then(() => console.log('[Billing] Webhook retry columns ready'))
+        .catch(err => console.error('[Billing] Webhook column setup error:', err.message));
+
+    cron.schedule('*/5 * * * *', () => {
+        retryFailedWebhooks()
+            .catch(err => console.error('[Cron] Webhook retry error:', err.message));
+    });
+
+    // Trial ending soon reminder: daily at 09:00 (sends 3-day warning emails)
+    cron.schedule('0 9 * * *', () => {
+        SubscriptionRenewalService.checkTrialEndingSoon()
+            .catch(err => console.error('[Cron] Trial reminder error:', err.message));
+    });
+
+    // ── Unclaimed Payment Expiry — daily at 02:00 ─────────────────────────────
+    cron.schedule('0 2 * * *', async () => {
+        console.log('[Cron] Running unclaimed payment expiry job...');
+        try {
+            const expired = await pool.query(
+                `SELECT up.*, u.email AS sender_email, u.full_name AS sender_name
+                 FROM unclaimed_payments up
+                 JOIN users u ON up.sender_id = u.id
+                 WHERE up.status = 'PENDING' AND up.expires_at < NOW()`
+            );
+            let count = 0;
+            for (const p of expired.rows) {
+                const c = await pool.connect();
+                try {
+                    await c.query('BEGIN');
+                    const refundAmount = parseFloat(p.amount) + parseFloat(p.fee);
+                    await c.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [refundAmount, p.debit_wallet_id]);
+                    await c.query(`UPDATE unclaimed_payments SET status = 'EXPIRED' WHERE id = $1`, [p.id]);
+                    await c.query('COMMIT');
+                    count++;
+                    renderPaymentExpiredEmail({
+                        senderName: p.sender_name || p.sender_email,
+                        recipientEmail: p.recipient_email,
+                        amount: parseFloat(p.amount).toFixed(2),
+                        currency: p.currency,
+                        reference: p.id,
+                    }).then(html => {
+                        resend.emails.send({
+                            from: EMAIL_FROM,
+                            to: [p.sender_email],
+                            subject: `Payment expired — ${p.currency} ${parseFloat(p.amount).toFixed(2)} refunded to your wallet`,
+                            html,
+                        }).catch(e => console.error('[Cron] Expiry email error:', e));
+                    });
+                } catch (e) {
+                    await c.query('ROLLBACK');
+                    console.error('[Cron] Failed to expire payment:', p.id, e);
+                } finally {
+                    c.release();
+                }
+            }
+            console.log(`[Cron] Expired ${count} unclaimed payment(s).`);
+        } catch (err) {
+            console.error('[Cron] Unclaimed expiry error:', err.message);
+        }
+    });
+
+    console.log('[UnifiedServer] Subscription Billing Engine initialized');
+
+    // ── Escrow AI Agent Monitor (Check every 12 hours) ────────────────────────
     console.log('[UnifiedServer] Initializing AI Escrow Monitor scheduler...');
     setTimeout(() => {
         console.log('[UnifiedServer] Firing initial AI Escrow evaluation...');

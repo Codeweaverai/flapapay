@@ -101,45 +101,48 @@ export const CreateEscrow: React.FC = () => {
 
 
     return (
-        <div className="min-h-screen bg-gray-50 flex">
+        <div className="min-h-screen bg-white flex font-sans selection:bg-orange-100" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
             <Sidebar />
-            <main className="flex-1 ml-80 p-8 lg:p-12">
-                <div className="max-w-3xl mx-auto">
+            <main className="flex-1 min-h-screen p-6 md:p-8 md:ml-72 relative overflow-x-hidden">
+                {/* Decorative background element */}
+                <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-gradient-to-br from-emerald-100/20 via-blue-100/10 to-transparent rounded-full -mr-64 -mt-64 blur-3xl pointer-events-none"></div>
+
+                <div className="max-w-4xl mx-auto relative z-10">
                     <button
                         onClick={() => navigate('/escrow')}
-                        className="flex items-center gap-2 text-gray-400 hover:text-gray-600 font-bold text-sm mb-8 transition-colors group"
+                        className="flex items-center gap-2 text-gray-500 hover:text-gray-700 font-semibold text-sm mb-8 transition-colors group"
                     >
                         <svg className="w-5 h-5 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                         Back to Dashboard
                     </button>
 
-                    <div className="bg-white rounded-[40px] p-12 shadow-sm border border-gray-50">
-                        <header className="mb-10 text-center">
-                            <div className="w-16 h-16 bg-emerald-100 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                    <div className="bg-white rounded-2xl p-8 shadow-sm border border-gray-100">
+                        <header className="mb-8 text-center">
+                            <div className="w-16 h-16 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto mb-4">
                                 <svg className="w-8 h-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
                             </div>
-                            <h1 className="text-3xl font-black text-gray-900 tracking-tight">Create New Escrow</h1>
-                            <p className="text-gray-400 font-bold mt-2 uppercase text-xs tracking-widest">Define your transaction terms</p>
+                            <h1 className="text-3xl font-bold text-gray-900">Create New Escrow</h1>
+                            <p className="text-gray-500 mt-2">Define your transaction terms</p>
                         </header>
 
-                        <form onSubmit={handleSubmit} className="space-y-8">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Seller Email</label>
+                                    <label className="text-sm font-semibold text-gray-700">Seller Email</label>
                                     <input
                                         type="email"
                                         required
                                         placeholder="seller@example.com"
-                                        className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all placeholder:font-normal"
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all placeholder:font-normal"
                                         value={formData.sellerEmail}
                                         onChange={(e) => setFormData({ ...formData, sellerEmail: e.target.value })}
                                     />
-                                    <p className="text-[10px] text-gray-400 ml-1">If they don't have an account, we'll invite them.</p>
+                                    <p className="text-xs text-gray-500">If they don't have an account, we'll invite them.</p>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Currency</label>
+                                    <label className="text-sm font-semibold text-gray-700">Currency</label>
                                     <select
-                                        className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all appearance-none"
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all appearance-none"
                                         value={formData.currency}
                                         onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
                                     >
@@ -150,44 +153,44 @@ export const CreateEscrow: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="space-y-6">
+                            <div className="space-y-4">
                                 <div className="space-y-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Amount</label>
+                                    <label className="text-sm font-semibold text-gray-700">Amount</label>
                                     <div className="relative">
                                         <input
                                             type="number"
                                             required
                                             placeholder="0.00"
-                                            className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all placeholder:font-normal"
+                                            className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all placeholder:font-normal pr-20"
                                             value={formData.amount}
                                             onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
                                         />
-                                        <span className="absolute right-6 top-1/2 -translate-y-1/2 text-gray-300 font-black">{formData.currency}</span>
+                                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 font-semibold">{formData.currency}</span>
                                     </div>
                                 </div>
 
                                 {/* Funding Source Selector */}
-                                <div className="space-y-4 pt-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Funding Source</label>
+                                <div className="space-y-3">
+                                    <label className="text-sm font-semibold text-gray-700">Funding Source</label>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
                                         {/* Wallet Option */}
                                         <div
                                             onClick={() => setSelectedFundingType('wallet')}
-                                            className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${selectedFundingType === 'wallet' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}
+                                            className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${selectedFundingType === 'wallet' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 bg-white hover:border-emerald-300'}`}
                                         >
                                             <div className="flex items-center gap-3 mb-2">
                                                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${selectedFundingType === 'wallet' ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
                                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
                                                 </div>
-                                                <h3 className={`font-black text-sm ${selectedFundingType === 'wallet' ? 'text-emerald-900' : 'text-gray-900'}`}>FlapaPay Wallet</h3>
+                                                <h3 className={`font-semibold text-sm ${selectedFundingType === 'wallet' ? 'text-emerald-900' : 'text-gray-900'}`}>FlapaPay Wallet</h3>
                                             </div>
                                             <div className="flex justify-between items-center pl-11">
-                                                <p className={`text-[10px] font-bold uppercase tracking-widest ${isInsufficient ? 'text-red-500' : 'text-gray-400'}`}>
+                                                <p className={`text-xs font-medium ${isInsufficient ? 'text-red-500' : 'text-gray-500'}`}>
                                                     Available: {availableBalance.toLocaleString()} {formData.currency}
                                                 </p>
                                                 {isInsufficient && (
-                                                    <span className="text-[10px] text-red-500 font-bold uppercase tracking-widest bg-red-50 px-2 py-1 rounded-md">Insufficient</span>
+                                                    <span className="text-xs text-red-500 font-medium bg-red-50 px-2 py-1 rounded-md">Insufficient</span>
                                                 )}
                                             </div>
                                         </div>
@@ -195,18 +198,18 @@ export const CreateEscrow: React.FC = () => {
                                         {/* Linked Card Option */}
                                         <div
                                             onClick={() => setSelectedFundingType('card')}
-                                            className={`p-4 rounded-2xl border-2 cursor-pointer transition-all ${selectedFundingType === 'card' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}
+                                            className={`p-4 rounded-xl border-2 cursor-pointer transition-all ${selectedFundingType === 'card' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 bg-white hover:border-emerald-300'}`}
                                         >
                                             <div className="flex items-center gap-3 mb-2">
                                                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${selectedFundingType === 'card' ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
                                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
                                                 </div>
-                                                <h3 className={`font-black text-sm ${selectedFundingType === 'card' ? 'text-emerald-900' : 'text-gray-900'}`}>Linked Card</h3>
+                                                <h3 className={`font-semibold text-sm ${selectedFundingType === 'card' ? 'text-emerald-900' : 'text-gray-900'}`}>Linked Card</h3>
                                             </div>
                                             <div className="pl-11">
                                                 {cards.length > 0 ? (
                                                     <select
-                                                        className="w-full bg-transparent text-xs font-bold text-gray-500 focus:outline-none appearance-none cursor-pointer"
+                                                        className="w-full bg-transparent text-xs font-medium text-gray-500 focus:outline-none appearance-none cursor-pointer"
                                                         value={selectedCardId}
                                                         onChange={(e) => setSelectedCardId(e.target.value)}
                                                         onClick={(e) => e.stopPropagation()}
@@ -218,7 +221,7 @@ export const CreateEscrow: React.FC = () => {
                                                         ))}
                                                     </select>
                                                 ) : (
-                                                    <p className="text-[10px] font-bold text-gray-400">
+                                                    <p className="text-xs text-gray-500">
                                                         No cards linked. <span className="text-emerald-600 hover:underline cursor-pointer" onClick={() => navigate('/link-card')}>Link one now</span>
                                                     </p>
                                                 )}
@@ -231,34 +234,34 @@ export const CreateEscrow: React.FC = () => {
 
 
                             <div className="space-y-2">
-                                <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Transaction Description</label>
+                                <label className="text-sm font-semibold text-gray-700">Transaction Description</label>
                                 <input
                                     type="text"
                                     required
                                     placeholder="e.g. iPhone 13 Pro Max - Blue"
-                                    className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all placeholder:font-normal"
+                                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all placeholder:font-normal"
                                     value={formData.description}
                                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                                 />
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Delivery Time (Days)</label>
+                                    <label className="text-sm font-semibold text-gray-700">Delivery Time (Days)</label>
                                     <input
                                         type="number"
                                         required
-                                        className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all"
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                                         value={formData.deliveryTimeframe}
                                         onChange={(e) => setFormData({ ...formData, deliveryTimeframe: e.target.value })}
                                     />
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Inspection Period (Days)</label>
+                                    <label className="text-sm font-semibold text-gray-700">Inspection Period (Days)</label>
                                     <input
                                         type="number"
                                         required
-                                        className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all"
+                                        className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
                                         value={formData.inspectionPeriod}
                                         onChange={(e) => setFormData({ ...formData, inspectionPeriod: e.target.value })}
                                     />
@@ -266,11 +269,11 @@ export const CreateEscrow: React.FC = () => {
                             </div>
 
                             <div className="space-y-2">
-                                <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Special Instructions (Optional)</label>
+                                <label className="text-sm font-semibold text-gray-700">Special Instructions (Optional)</label>
                                 <textarea
                                     rows={4}
                                     placeholder="Specify any additional conditions..."
-                                    className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 font-bold text-gray-900 focus:ring-2 focus:ring-emerald-500 transition-all placeholder:font-normal resize-none"
+                                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-900 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all placeholder:font-normal resize-none"
                                     value={formData.instructions}
                                     onChange={(e) => setFormData({ ...formData, instructions: e.target.value })}
                                 />
@@ -279,12 +282,12 @@ export const CreateEscrow: React.FC = () => {
                             <Button
                                 type="submit"
                                 disabled={loading || isInsufficient || !formData.amount}
-                                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-6 rounded-2xl shadow-xl shadow-emerald-500/20 font-black text-lg transition-all active:scale-95 disabled:opacity-50"
+                                className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-xl shadow-lg font-bold text-base transition-all active:scale-95 disabled:opacity-50"
                             >
-                                {loading ? 'Creating...' : 'Create & Proposed Escrow'}
+                                {loading ? 'Creating...' : 'Create & Fund Escrow'}
                             </Button>
 
-                            <p className="text-center text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                            <p className="text-center text-xs text-gray-500">
                                 FlapaPay Fee: 2.0% applies upon fund release
                             </p>
                         </form>
