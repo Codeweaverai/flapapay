@@ -268,6 +268,23 @@ io.on('connection', (socket) => {
 });
 
 app.use(cors());
+
+// Override Express 5's strict default CSP with production-ready policy
+app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com https://js.stripe.com https://cdn.jsdelivr.net",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https:",
+        "connect-src 'self' https://www.flapapay.com wss://www.flapapay.com https://api.stripe.com https://api.stripe.com https://cloudflareinsights.com",
+        "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
+        "worker-src 'self' blob:",
+        "media-src 'self' blob:",
+    ].join('; '));
+    next();
+});
+
 app.use(express.json());
 app.use('/assets/images', express.static(path.join(__dirname, 'apps/web/public/assets/images')));
 
@@ -14568,6 +14585,15 @@ pool.query(`
     );
     CREATE INDEX IF NOT EXISTS idx_platform_earnings_merchant ON platform_earnings_cache(merchant_id, period_start DESC);
 `).then(() => console.log('[Init] Phase 7 tables ready.')).catch(err => console.error('[Init] Phase 7 table error:', err.message));
+
+// Serve React SPA for all non-API routes
+const FRONTEND_DIST = path.join(__dirname, 'apps/web/dist');
+if (fs.existsSync(FRONTEND_DIST)) {
+    app.use(express.static(FRONTEND_DIST));
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+    });
+}
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Unified Server running on port ${PORT}`);
