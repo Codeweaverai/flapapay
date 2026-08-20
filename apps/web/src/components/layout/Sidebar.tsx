@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useEnvironment } from '../../contexts/EnvironmentContext';
@@ -8,151 +8,38 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
     const location = useLocation();
     useAuth();
     const { environments, activeEnvironment, selectEnvironment, loading } = useEnvironment();
+    const developerActive = location.pathname.startsWith('/developers/');
+    const [developersOpen, setDevelopersOpen] = useState(developerActive);
 
     const menuItems = [
-        {
-            label: 'Dashboard', path: '/dashboard', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
-            )
-        },
-        {
-            label: 'Developers', path: '/developers/api-keys', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" /></svg>
-            )
-        },
-        {
-            label: 'Reports', path: '/reports', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-            )
-        },
-        {
-            label: 'Merchant Hub', path: '/merchant/dashboard', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
-            )
-        },
-
-        {
-            label: 'Payment Links', path: '/pay-links', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-            )
-        },
-        {
-            label: 'Cards', path: '/link-card', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
-            )
-        },
-        {
-            label: 'Virtual Cards', path: '/virtual-cards', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 3.5l.5 2 2 .5-2 .5-.5 2-.5-2-2-.5 2-.5.5-2z" />
-                </svg>
-            )
-        },
-        {
-            label: 'Settings', path: '/settings', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-            )
-        },
-        {
-            label: 'Analytics', path: '/merchant/analytics', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg>
-            )
-        },
-        {
-            label: 'Notifications', path: '/notifications', icon: (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
-            )
-        },
+        { label: 'Dashboard', path: '/dashboard', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg> },
+        { label: 'Reports', path: '/reports', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg> },
+        { label: 'Merchant Hub', path: '/merchant/dashboard', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg> },
+        { label: 'Payment Links', path: '/pay-links', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg> },
+        { label: 'Cards', path: '/link-card', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg> },
+        { label: 'Virtual Cards', path: '/virtual-cards', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 3.5l.5 2 2 .5-2 .5-.5 2-.5-2-2-.5 2-.5.5-2z" /></svg> },
+        { label: 'Settings', path: '/settings', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426 1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg> },
+        { label: 'Analytics', path: '/merchant/analytics', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" /></svg> },
+        { label: 'Notifications', path: '/notifications', icon: <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg> },
     ];
+    const developerItems = [
+        { label: 'API Keys', path: '/developers/api-keys' },
+        { label: 'Activity', path: '/developers/activity' },
+        { label: 'Environments', path: '/developers/environments' },
+    ];
+    const mainItemClass = (active: boolean) => `flex items-center w-full px-5 py-4 rounded-[20px] transition-all duration-300 group relative ${active ? 'bg-white text-amber-600 border border-gray-100 shadow-[0_10px_30px_rgba(0,0,0,0.04)]' : 'text-gray-400 hover:text-gray-900 hover:bg-white/80'} hover:translate-x-1`;
 
-    return (
-        <aside className={`fixed inset-y-0 left-0 bg-white border-r border-gray-100 w-72 z-50 transition-all duration-500 transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 flex flex-col overflow-hidden`} style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
-            {/* Soft Ambient Effects for Light Mode */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full blur-[80px]"></div>
-            <div className="absolute bottom-64 left-0 w-24 h-24 bg-orange-500/5 rounded-full blur-[60px]"></div>
-
-            {/* Logo Area */}
-            <div className="flex flex-col items-center justify-center pt-14 pb-12 px-8 z-10">
-                <div
-                    onClick={() => navigate('/dashboard')}
-                    className="group relative w-20 h-20 bg-white border border-gray-100 rounded-[28px] flex items-center justify-center shadow-xl shadow-gray-200 transition-all duration-700 hover:scale-110 hover:border-amber-500/30 cursor-pointer overflow-hidden"
-                >
-                    <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
-                    <img
-                        src="/assets/images/flapapaylogoicon.png"
-                        alt="FP"
-                        className="h-11 w-auto object-contain drop-shadow-[0_2px_10px_rgba(249,115,22,0.1)]"
-                    />
-                </div>
-                <div className="mt-4 flex flex-col items-center">
-                    <h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest ml-2">Terminal</h2>
-                </div>
-            </div>
-
-            <div className="px-12 mb-6">
-                <div className="h-[1px] bg-gradient-to-r from-transparent via-gray-200 to-transparent w-full"></div>
-            </div>
-
-            <div className="px-6 mb-5 z-10">
-                <div className="rounded-2xl border border-gray-200 bg-white/90 p-3 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="text-[9px] font-black uppercase tracking-[0.16em] text-gray-400">Environment</span>
-                        <span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'sandbox' ? 'bg-orange-500' : 'bg-amber-500'}`} />
-                    </div>
-                    <select
-                        aria-label="Select dashboard environment"
-                        value={activeEnvironment?.id || ''}
-                        disabled={loading || environments.length === 0}
-                        onChange={(event) => selectEnvironment(event.target.value).catch(() => undefined)}
-                        className="w-full appearance-none rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-gray-800 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                        {environments.length === 0 && <option value="">Loading workspace…</option>}
-                        {environments.map(environment => (
-                            <option key={environment.id} value={environment.id}>
-                                {environment.kind === 'sandbox' ? 'Sandbox' : 'Live'}
-                            </option>
-                        ))}
-                    </select>
-                    <p className="mt-2 text-[9px] leading-relaxed text-gray-400">
-                        {activeEnvironment?.kind === 'sandbox' ? 'Safe testing workspace' : 'Production workspace'}
-                    </p>
-                </div>
-            </div>
-
-            <nav className="p-6 pt-2 space-y-2 flex-1 overflow-y-auto no-scrollbar z-10">
-                {menuItems.map((item) => {
-                    const isActive = location.pathname.startsWith(item.path);
-                    return (
-                        <button
-                            key={item.path}
-                            onClick={() => navigate(item.path)}
-                            className={`flex items-center w-full px-5 py-4 rounded-[20px] transition-all duration-500 group relative ${isActive
-                                ? 'bg-white text-amber-600 border border-gray-100 shadow-[0_10px_30px_rgba(0,0,0,0.04)]'
-                                : 'text-gray-400 hover:text-gray-900 hover:bg-white/80'} hover:translate-x-2`}
-                        >
-                            {isActive && (
-                                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-amber-600 rounded-r-full shadow-[0_0_15px_rgba(245,158,11,0.3)]"></div>
-                            )}
-                            <span className={`mr-4 transition-all duration-500 ${isActive ? 'text-amber-600 scale-110' : 'text-gray-300 group-hover:text-gray-900 group-hover:scale-110'}`}>
-                                {item.icon}
-                            </span>
-                            <span className={`text-[11px] font-black uppercase tracking-[0.15em] ${isActive ? 'text-gray-900' : ''}`}>
-                                {item.label}
-                            </span>
-                            {isActive && (
-                                <span className="ml-auto flex h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse"></span>
-                            )}
-                        </button>
-                    )
-                })}
-            </nav>
-
-
-            {/* Security Footer */}
-            <div className="mt-auto p-8 transition-opacity">
-                <p className="text-sm font-black text-gray-800 uppercase tracking-widest text-center">Security Engine v1.0</p>
-            </div>
-        </aside>
-    );
+    return <aside className={`fixed inset-y-0 left-0 bg-white border-r border-gray-100 w-72 z-50 transition-all duration-500 transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 flex flex-col overflow-hidden`} style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
+        <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full blur-[80px]" />
+        <div className="absolute bottom-64 left-0 w-24 h-24 bg-orange-500/5 rounded-full blur-[60px]" />
+        <div className="flex flex-col items-center justify-center pt-14 pb-12 px-8 z-10"><button onClick={() => navigate('/dashboard')} className="group relative w-20 h-20 bg-white border border-gray-100 rounded-[28px] flex items-center justify-center shadow-xl shadow-gray-200 transition-all duration-500 hover:scale-105 hover:border-amber-500/30 overflow-hidden"><img src="/assets/images/flapapaylogoicon.png" alt="FlapaPay" className="h-11 w-auto object-contain" /></button><div className="mt-4 flex flex-col items-center"><h2 className="text-xs font-bold text-gray-400 uppercase tracking-widest ml-2">Terminal</h2></div></div>
+        <div className="px-12 mb-6"><div className="h-px bg-gradient-to-r from-transparent via-gray-200 to-transparent" /></div>
+        <div className="px-6 mb-5 z-10"><div className="rounded-2xl border border-gray-200 bg-white/90 p-3 shadow-sm"><div className="flex items-center justify-between mb-2"><span className="text-[9px] font-black uppercase tracking-[0.16em] text-gray-400">Environment</span><span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'sandbox' ? 'bg-orange-500' : 'bg-amber-500'}`} /></div><select aria-label="Select dashboard environment" value={activeEnvironment?.id || ''} disabled={loading || environments.length === 0} onChange={event => selectEnvironment(event.target.value).catch(() => undefined)} className="w-full appearance-none rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-gray-800 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:cursor-not-allowed disabled:opacity-60">{environments.length === 0 && <option value="">Loading workspace…</option>}{environments.map(environment => <option key={environment.id} value={environment.id}>{environment.kind === 'sandbox' ? 'Sandbox' : 'Live'}</option>)}</select><p className="mt-2 text-[9px] leading-relaxed text-gray-400">{activeEnvironment?.kind === 'sandbox' ? 'Safe testing workspace' : 'Production workspace'}</p></div></div>
+        <nav className="p-6 pt-2 space-y-2 flex-1 overflow-y-auto no-scrollbar z-10">
+          {menuItems.slice(0, 1).map(item => { const active = location.pathname.startsWith(item.path); return <button key={item.path} onClick={() => navigate(item.path)} className={mainItemClass(active)}>{active && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-amber-600 rounded-r-full" />}<span className={`mr-4 ${active ? 'text-amber-600' : 'text-gray-300 group-hover:text-gray-900'}`}>{item.icon}</span><span className="text-[11px] font-black uppercase tracking-[0.15em]">{item.label}</span></button> })}
+          <div><button onClick={() => setDevelopersOpen(open => !open)} className={mainItemClass(developerActive)}>{developerActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-amber-600 rounded-r-full" />}<span className={`mr-4 ${developerActive ? 'text-amber-600' : 'text-gray-300 group-hover:text-gray-900'}`}><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" /></svg></span><span className="flex-1 text-left text-[11px] font-black uppercase tracking-[0.15em]">Developers</span><svg className={`h-4 w-4 transition-transform ${developersOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m9 18 6-6-6-6" /></svg></button>{developersOpen && <div className="mt-1 ml-7 border-l border-orange-200 pl-3 space-y-1">{developerItems.map(item => { const active = location.pathname === item.path; return <button key={item.path} onClick={() => navigate(item.path)} className={`flex w-full items-center rounded-xl px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-[0.12em] transition ${active ? 'bg-orange-50 text-orange-700' : 'text-gray-400 hover:bg-white hover:text-gray-900'}`}><span className={`mr-2 h-1.5 w-1.5 rounded-full ${active ? 'bg-orange-500' : 'bg-gray-300'}`} />{item.label}</button> })}</div>}</div>
+          {menuItems.slice(1).map(item => { const active = location.pathname.startsWith(item.path); return <button key={item.path} onClick={() => navigate(item.path)} className={mainItemClass(active)}>{active && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-amber-600 rounded-r-full" />}<span className={`mr-4 ${active ? 'text-amber-600' : 'text-gray-300 group-hover:text-gray-900'}`}>{item.icon}</span><span className="text-[11px] font-black uppercase tracking-[0.15em]">{item.label}</span></button> })}
+        </nav>
+        <div className="mt-auto p-8"><p className="text-sm font-black text-gray-800 uppercase tracking-widest text-center">Security Engine v1.0</p></div>
+    </aside>;
 };
