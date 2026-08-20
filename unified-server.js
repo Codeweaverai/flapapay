@@ -8350,10 +8350,10 @@ app.post('/payment-links', authenticateToken, async (req, res) => {
 
     try {
         const result = await pool.query(
-            `INSERT INTO payment_links (user_id, wallet_id, title, description, amount, currency, allows_mobile_money, allows_card, redirect_url)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `INSERT INTO payment_links (user_id, wallet_id, title, description, amount, currency, allows_mobile_money, allows_card, redirect_url, environment_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING *`,
-            [req.user.id, wallet_id, title, description, amount, currency, allows_mobile_money, allows_card, redirect_url]
+            [req.user.id, wallet_id, title, description, amount, currency, allows_mobile_money, allows_card, redirect_url, req.environmentId]
         );
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -8366,8 +8366,8 @@ app.post('/payment-links', authenticateToken, async (req, res) => {
 app.get('/payment-links', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT * FROM payment_links WHERE user_id = $1 ORDER BY created_at DESC`,
-            [req.user.id]
+            `SELECT * FROM payment_links WHERE user_id = $1 AND ($2::uuid IS NULL OR environment_id = $2) ORDER BY created_at DESC`,
+            [req.user.id, req.environmentId]
         );
         res.json(result.rows);
     } catch (err) {
@@ -8380,8 +8380,8 @@ app.get('/payment-links', authenticateToken, async (req, res) => {
 app.delete('/payment-links/:id', authenticateToken, async (req, res) => {
     try {
         const result = await pool.query(
-            `UPDATE payment_links SET active = false WHERE id = $1 AND user_id = $2 RETURNING id`,
-            [req.params.id, req.user.id]
+            `UPDATE payment_links SET active = false WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR environment_id = $3) RETURNING id`,
+            [req.params.id, req.user.id, req.environmentId]
         );
         if (result.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
         res.json({ success: true });
@@ -22863,8 +22863,8 @@ app.post('/v1/products', async (req, res) => {
         if (!name) return res.status(400).json({ error: 'Missing required field: name' });
 
         const result = await pool.query(
-            'INSERT INTO products (name, description, metadata, merchant_id) VALUES ($1, $2, $3, $4) RETURNING *',
-            [name, description || '', metadata || {}, merchant.merchantId]
+            'INSERT INTO products (name, description, metadata, merchant_id, environment_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [name, description || '', metadata || {}, merchant.merchantId, merchant.environmentId]
         );
         res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -22876,7 +22876,7 @@ app.post('/v1/products', async (req, res) => {
 app.get('/v1/products', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT * FROM products WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
+        const result = await pool.query('SELECT * FROM products WHERE merchant_id = $1 AND ($2::uuid IS NULL OR environment_id = $2) ORDER BY created_at DESC', [merchant.merchantId, merchant.environmentId]);
         res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
     } catch (err) {
         res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
@@ -22886,7 +22886,7 @@ app.get('/v1/products', async (req, res) => {
 app.get('/v1/products/:id', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT * FROM products WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
+        const result = await pool.query('SELECT * FROM products WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [req.params.id, merchant.merchantId, merchant.environmentId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -22899,8 +22899,8 @@ app.patch('/v1/products/:id', async (req, res) => {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { name, description, status, metadata } = req.body;
         const result = await pool.query(
-            'UPDATE products SET name = COALESCE($1, name), description = COALESCE($2, description), status = COALESCE($3, status), metadata = COALESCE($4, metadata), updated_at = NOW() WHERE id = $5 AND merchant_id = $6 RETURNING *',
-            [name, description, status, metadata, req.params.id, merchant.merchantId]
+            'UPDATE products SET name = COALESCE($1, name), description = COALESCE($2, description), status = COALESCE($3, status), metadata = COALESCE($4, metadata), updated_at = NOW() WHERE id = $5 AND merchant_id = $6 AND ($7::uuid IS NULL OR environment_id = $7) RETURNING *',
+            [name, description, status, metadata, req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -22912,7 +22912,7 @@ app.patch('/v1/products/:id', async (req, res) => {
 app.delete('/v1/products/:id', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('DELETE FROM products WHERE id = $1 AND merchant_id = $2 RETURNING id', [req.params.id, merchant.merchantId]);
+        const result = await pool.query('DELETE FROM products WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3) RETURNING id', [req.params.id, merchant.merchantId, merchant.environmentId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
         res.json(DeveloperGateway.formatResponse({ deleted: true, id: req.params.id }, merchant.environment));
     } catch (err) {
@@ -22927,12 +22927,12 @@ app.post('/v1/prices', async (req, res) => {
         const { product_id, amount, currency, interval, interval_count, trial_days } = req.body;
         if (!product_id || !amount || !currency || !interval) return res.status(400).json({ error: 'Missing req fields' });
 
-        const prodCheck = await pool.query('SELECT id FROM products WHERE id = $1 AND merchant_id = $2', [product_id, merchant.merchantId]);
+        const prodCheck = await pool.query('SELECT id FROM products WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [product_id, merchant.merchantId, merchant.environmentId]);
         if (prodCheck.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
 
         const result = await pool.query(
-            'INSERT INTO prices (product_id, amount, currency, interval, billing_interval, interval_count, trial_days) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [product_id, amount, currency.toUpperCase(), interval, interval, interval_count || 1, trial_days || 0]
+            'INSERT INTO prices (product_id, amount, currency, interval, billing_interval, interval_count, trial_days, environment_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [product_id, amount, currency.toUpperCase(), interval, interval, interval_count || 1, trial_days || 0, merchant.environmentId]
         );
         res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -22944,13 +22944,13 @@ app.post('/v1/prices', async (req, res) => {
 app.get('/v1/prices', async (req, res) => {
     try {
         const { product_id } = req.query;
-        let query = 'SELECT * FROM prices';
-        let params = [];
+        let query = 'SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE pr.merchant_id = $1 AND ($2::uuid IS NULL OR p.environment_id = $2)';
+        let params = [merchant.merchantId, merchant.environmentId];
         if (product_id) {
-            query += ' WHERE product_id = $1';
+            query += ' AND p.product_id = $3';
             params.push(product_id);
         }
-        query += ' ORDER BY created_at DESC';
+        query += ' ORDER BY p.created_at DESC';
         const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (err) {
@@ -22962,7 +22962,7 @@ app.get('/v1/prices', async (req, res) => {
 app.get('/v1/prices/:id', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2', [req.params.id, merchant.merchantId]);
+        const result = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2 AND ($3::uuid IS NULL OR p.environment_id = $3)', [req.params.id, merchant.merchantId, merchant.environmentId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -22985,15 +22985,15 @@ app.post('/v1/customers', async (req, res) => {
         });
 
         const result = await pool.query(
-            `INSERT INTO customers (email, name, stripe_id, cybersource_customer_id, merchant_id)
-             VALUES ($1, $2, NULL, $3, $4)
+            `INSERT INTO customers (email, name, stripe_id, cybersource_customer_id, merchant_id, environment_id)
+             VALUES ($1, $2, NULL, $3, $4, $5)
              ON CONFLICT (email, merchant_id)
              DO UPDATE SET
                 name = EXCLUDED.name,
                 cybersource_customer_id = COALESCE(customers.cybersource_customer_id, EXCLUDED.cybersource_customer_id),
                 updated_at = NOW()
              RETURNING *`,
-            [email, name || '', cybersourceCustomerId, merchant.merchantId]
+            [email, name || '', cybersourceCustomerId, merchant.merchantId, merchant.environmentId]
         );
         res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -23004,7 +23004,7 @@ app.post('/v1/customers', async (req, res) => {
 app.get('/v1/customers', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT * FROM customers WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
+        const result = await pool.query('SELECT * FROM customers WHERE merchant_id = $1 AND ($2::uuid IS NULL OR environment_id = $2) ORDER BY created_at DESC', [merchant.merchantId, merchant.environmentId]);
         res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
     } catch (err) {
         res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
@@ -23014,7 +23014,7 @@ app.get('/v1/customers', async (req, res) => {
 app.get('/v1/customers/:id', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT * FROM customers WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
+        const result = await pool.query('SELECT * FROM customers WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [req.params.id, merchant.merchantId, merchant.environmentId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -23032,8 +23032,8 @@ app.patch('/v1/customers/:id', async (req, res) => {
                  phone                 = COALESCE($2, phone),
                  mobile_money_provider = COALESCE($3, mobile_money_provider),
                  updated_at            = NOW()
-             WHERE id = $4 AND merchant_id = $5 RETURNING *`,
-            [name, phone, mobile_money_provider, req.params.id, merchant.merchantId]
+             WHERE id = $4 AND merchant_id = $5 AND ($6::uuid IS NULL OR environment_id = $6) RETURNING *`,
+            [name, phone, mobile_money_provider, req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (result.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -23049,14 +23049,14 @@ app.post('/v1/subscriptions', async (req, res) => {
         const { customer_id, price_id } = req.body;
 
         const custCheck = await pool.query(
-            'SELECT id, cybersource_customer_id FROM customers WHERE id = $1 AND merchant_id = $2',
-            [customer_id, merchant.merchantId]
+            'SELECT id, cybersource_customer_id FROM customers WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3)',
+            [customer_id, merchant.merchantId, merchant.environmentId]
         );
         if (custCheck.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
 
         const priceCheck = await pool.query(
-            'SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2',
-            [price_id, merchant.merchantId]
+            'SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2 AND ($3::uuid IS NULL OR p.environment_id = $3)',
+            [price_id, merchant.merchantId, merchant.environmentId]
         );
         if (priceCheck.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
 
@@ -23072,11 +23072,11 @@ app.post('/v1/subscriptions', async (req, res) => {
 
         const subInsert = await pool.query(`
             INSERT INTO subscriptions
-              (customer_id, price_id, status, merchant_id, livemode, payment_rail,
+              (customer_id, price_id, status, merchant_id, livemode, payment_rail, environment_id,
                current_period_start, current_period_end, trial_end)
-            VALUES ($1,$2,$3,$4,$5,'cybersource',$6,$7,$8) RETURNING *
+            VALUES ($1,$2,$3,$4,$5,'cybersource',$6,$7,$8,$9) RETURNING *
         `, [customer_id, price_id, trialStatus, merchant.merchantId,
-            merchant.environment === 'live',
+            merchant.environment === 'live', merchant.environmentId,
             periodStart, periodEnd,
             trialDays > 0 ? periodEnd : null]);
         const subscription = subInsert.rows[0];
@@ -23104,11 +23104,12 @@ app.get('/v1/subscriptions', async (req, res) => {
         const { customer_id } = req.query;
         // Use merchant_id directly from subscriptions table (with fallback to customers join)
         let query = `SELECT s.* FROM subscriptions s 
-                     WHERE s.merchant_id = $1 
-                     OR (s.merchant_id IS NULL AND s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $1))`;
-        let params = [merchant.merchantId];
+                     WHERE (s.merchant_id = $1
+                       OR (s.merchant_id IS NULL AND s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $1)))
+                       AND ($2::uuid IS NULL OR s.environment_id = $2)`;
+        let params = [merchant.merchantId, merchant.environmentId];
         if (customer_id) {
-            query += ` AND s.customer_id = $2`;
+            query += ` AND s.customer_id = $3`;
             params.push(customer_id);
         }
         query += ' ORDER BY s.created_at DESC';
@@ -23128,10 +23129,10 @@ app.get('/v1/subscriptions/invoices', async (req, res) => {
         let query = `SELECT si.*, c.email as customer_email, c.name as customer_name
                      FROM public.sub_invoice si
                      LEFT JOIN customers c ON si.customer_id = c.id
-                     WHERE si.merchant_id = $1`;
-        let params = [merchant.merchantId];
+                     WHERE si.merchant_id = $1 AND ($2::uuid IS NULL OR si.environment_id = $2)`;
+        let params = [merchant.merchantId, merchant.environmentId];
         if (subscription_id) {
-            query += ` AND si.subscription_id = $2`;
+            query += ` AND si.subscription_id = $3`;
             params.push(subscription_id);
         }
         query += ' ORDER BY si.created_at DESC';
@@ -23157,8 +23158,8 @@ app.get('/v1/subscriptions/invoices/:id', async (req, res) => {
                        LEFT JOIN subscriptions s ON i.subscription_id = s.id
                        LEFT JOIN prices p ON s.price_id = p.id
                        LEFT JOIN products pr ON p.product_id = pr.id
-                       WHERE i.merchant_id = $1 AND i.id = $2`;
-        const result = await pool.query(query, [merchant.merchantId, req.params.id]);
+                       WHERE i.merchant_id = $1 AND i.id = $2 AND ($3::uuid IS NULL OR i.environment_id = $3)`;
+        const result = await pool.query(query, [merchant.merchantId, req.params.id, merchant.environmentId]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Invoice not found' });
         }
@@ -23171,7 +23172,7 @@ app.get('/v1/subscriptions/invoices/:id', async (req, res) => {
 app.get('/v1/subscriptions/:id', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
-        const result = await pool.query('SELECT s.* FROM subscriptions s JOIN customers c ON s.customer_id = c.id WHERE s.id = $1 AND c.merchant_id = $2', [req.params.id, merchant.merchantId]);
+        const result = await pool.query('SELECT s.* FROM subscriptions s JOIN customers c ON s.customer_id = c.id WHERE s.id = $1 AND c.merchant_id = $2 AND ($3::uuid IS NULL OR s.environment_id = $3)', [req.params.id, merchant.merchantId, merchant.environmentId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -23186,8 +23187,8 @@ app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
             `SELECT s.*
              FROM subscriptions s
              JOIN customers c ON s.customer_id = c.id
-             WHERE s.id = $1 AND c.merchant_id = $2`,
-            [req.params.id, merchant.merchantId]
+             WHERE s.id = $1 AND c.merchant_id = $2 AND ($3::uuid IS NULL OR s.environment_id = $3)`,
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (subRes.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
 
@@ -23201,9 +23202,9 @@ app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
              SET status = 'canceled',
                  canceled_at = NOW(),
                  updated_at = NOW()
-             WHERE id = $1
+             WHERE id = $1 AND ($2::uuid IS NULL OR environment_id = $2)
              RETURNING *`,
-            [req.params.id]
+            [req.params.id, merchant.environmentId]
         );
         if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -23219,7 +23220,7 @@ app.post('/v1/payment-intents', async (req, res) => {
 
         let stripeCustomerId;
         if (customer_id) {
-            const custCheck = await pool.query('SELECT stripe_id FROM customers WHERE id = $1 AND merchant_id = $2', [customer_id, merchant.merchantId]);
+            const custCheck = await pool.query('SELECT stripe_id FROM customers WHERE id = $1 AND merchant_id = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [customer_id, merchant.merchantId, merchant.environmentId]);
             if (custCheck.rows.length > 0) stripeCustomerId = custCheck.rows[0].stripe_id;
         }
 

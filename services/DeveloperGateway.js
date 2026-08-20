@@ -33,19 +33,20 @@ class DeveloperGateway {
         // 1. Try to find as an API Key first
         try {
             const keyData = await resolveApiKey(pool, tokenOrKey);
-            const environment = ENVIRONMENT_CONTEXT_ENABLED
-                ? await resolveEnvironment(pool, {
-                    merchantId: keyData.merchant_id,
-                    environmentId: keyData.environment_id,
-                })
-                : null;
+            // Resolve an environment even in compatibility mode. This keeps the
+            // legacy default (live) while allowing migrated resource rows to be
+            // written and read with environment_id before enforcement is enabled.
+            const environment = await resolveEnvironment(pool, {
+                merchantId: keyData.merchant_id,
+                environmentId: keyData.environment_id,
+            });
             return {
                 merchantId: keyData.merchant_id,
                 merchantName: keyData.merchant_name,
                 ownerId: keyData.owner_id,
                 apiKeyId: keyData.api_key_id,
-                environmentId: environment?.id || null,
-                environmentSlug: environment?.slug || null,
+                environmentId: environment.id,
+                environmentSlug: environment.slug,
                 environment: ENVIRONMENT_CONTEXT_ENABLED
                     ? environment?.kind
                     : (keyData.environment || 'test'),
@@ -82,8 +83,8 @@ class DeveloperGateway {
                 merchantName: merchant.merchant_name,
                 ownerId: merchant.owner_id,
                 apiKeyId: null,
-                environmentId: ENVIRONMENT_CONTEXT_ENABLED ? environment.id : null,
-                environmentSlug: ENVIRONMENT_CONTEXT_ENABLED ? environment.slug : null,
+                environmentId: environment.id,
+                environmentSlug: environment.slug,
                 environment: ENVIRONMENT_CONTEXT_ENABLED ? environment.kind : 'live',
                 permissions: ['all']
             };

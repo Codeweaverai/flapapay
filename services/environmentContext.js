@@ -112,9 +112,10 @@ async function resolveApiKey(pool, rawKey) {
 
 async function attachApiKeyEnvironment(req, pool, rawKey) {
     const key = await resolveApiKey(pool, rawKey);
-    const environment = ENVIRONMENT_CONTEXT_ENABLED
-        ? await resolveEnvironment(pool, { merchantId: key.merchant_id, environmentId: key.environment_id })
-        : null;
+    const environment = await resolveEnvironment(pool, {
+        merchantId: key.merchant_id,
+        environmentId: key.environment_id,
+    });
 
     req.merchant = {
         ...key,
@@ -122,9 +123,9 @@ async function attachApiKeyEnvironment(req, pool, rawKey) {
         user_id: key.owner_id,
     };
     req.apiKeyId = key.api_key_id;
-    req.environmentId = environment?.id || null;
-    req.environmentKind = environment?.kind || (key.key_type?.startsWith('test_') ? 'sandbox' : 'live');
-    req.environmentSlug = environment?.slug || null;
+    req.environmentId = environment.id;
+    req.environmentKind = environment.kind;
+    req.environmentSlug = environment.slug;
     req.isTestMode = req.environmentKind === 'sandbox';
     req.environmentSource = ENVIRONMENT_CONTEXT_ENABLED ? 'api_key' : 'legacy_key_type';
 
@@ -132,14 +133,6 @@ async function attachApiKeyEnvironment(req, pool, rawKey) {
 }
 
 async function attachJwtEnvironment(req, pool, { merchantId, actorUserId }) {
-    if (!ENVIRONMENT_CONTEXT_ENABLED) {
-        req.environmentId = null;
-        req.environmentKind = 'live';
-        req.environmentSource = 'legacy_jwt_default';
-        req.isTestMode = false;
-        return req;
-    }
-
     const requestedEnvironmentId = readEnvironmentId(req);
     if (ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT && !requestedEnvironmentId) {
         throw new EnvironmentError(400, 'ENVIRONMENT_REQUIRED', `Header ${ENVIRONMENT_HEADER} is required`);
@@ -153,18 +146,22 @@ async function attachJwtEnvironment(req, pool, { merchantId, actorUserId }) {
     // P0 rule: until environment-specific team grants exist, only the merchant
     // owner may use the dashboard environment context. Expand this check to a
     // merchant_environment_members table in the RBAC phase.
-    const owner = await pool.query(
-        'SELECT 1 FROM merchants WHERE id = $1 AND user_id = $2 LIMIT 1',
-        [merchantId, actorUserId],
-    );
-    if (owner.rows.length === 0) {
-        throw new EnvironmentError(403, 'ENVIRONMENT_ACCESS_DENIED', 'User is not the merchant owner for this environment');
+    if (ENVIRONMENT_CONTEXT_ENABLED) {
+        const owner = await pool.query(
+            'SELECT 1 FROM merchants WHERE id = $1 AND user_id = $2 LIMIT 1',
+            [merchantId, actorUserId],
+        );
+        if (owner.rows.length === 0) {
+            throw new EnvironmentError(403, 'ENVIRONMENT_ACCESS_DENIED', 'User is not the merchant owner for this environment');
+        }
     }
 
     req.environmentId = environment.id;
     req.environmentKind = environment.kind;
     req.environmentSlug = environment.slug;
-    req.environmentSource = requestedEnvironmentId ? 'jwt_header' : 'compat_live_default';
+    req.environmentSource = ENVIRONMENT_CONTEXT_ENABLED
+        ? (requestedEnvironmentId ? 'jwt_header' : 'compat_live_default')
+        : 'legacy_jwt_default';
     req.isTestMode = environment.kind === 'sandbox';
     return req;
 }
