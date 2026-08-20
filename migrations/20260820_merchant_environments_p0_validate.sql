@@ -15,8 +15,37 @@ GROUP BY merchant_id
 HAVING COUNT(*) FILTER (WHERE kind = 'live') <> 1
     OR COUNT(*) FILTER (WHERE kind = 'sandbox') < 1;
 
-SELECT 'wallets' AS table_name, COUNT(*) AS unresolved FROM wallets WHERE environment_id IS NULL
-UNION ALL SELECT 'ledger_entries', COUNT(*) FROM ledger_entries WHERE environment_id IS NULL
+SELECT 'merchant_owned_wallets' AS table_name, COUNT(*) AS unresolved
+FROM wallets w JOIN merchants m ON m.user_id = w.user_id
+WHERE w.environment_id IS NULL
+UNION ALL SELECT 'merchant_owned_ledger_entries', COUNT(*)
+FROM ledger_entries le
+WHERE le.environment_id IS NULL
+  AND (EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.credit_wallet_id)
+    OR EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.debit_wallet_id))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM wallets credit_wallet
+      JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
+      WHERE credit_wallet.id = le.credit_wallet_id
+        AND credit_wallet.environment_id IS NOT NULL
+        AND debit_wallet.environment_id IS NOT NULL
+        AND credit_wallet.environment_id <> debit_wallet.environment_id
+  )
+UNION ALL SELECT 'cross_environment_ledger_review' , COUNT(*)
+FROM ledger_entries le
+JOIN wallets credit_wallet ON credit_wallet.id = le.credit_wallet_id
+JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
+WHERE le.environment_id IS NULL
+  AND credit_wallet.environment_id IS NOT NULL
+  AND debit_wallet.environment_id IS NOT NULL
+  AND credit_wallet.environment_id <> debit_wallet.environment_id
+UNION ALL SELECT 'global_wallets_nullable', COUNT(*) FROM wallets WHERE environment_id IS NULL AND NOT EXISTS (SELECT 1 FROM merchants m WHERE m.user_id = wallets.user_id)
+UNION ALL SELECT 'global_only_ledger_entries_nullable', COUNT(*)
+FROM ledger_entries le
+WHERE le.environment_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.credit_wallet_id)
+  AND NOT EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.debit_wallet_id)
 UNION ALL SELECT 'charges', COUNT(*) FROM charges WHERE environment_id IS NULL
 UNION ALL SELECT 'balances', COUNT(*) FROM balances WHERE environment_id IS NULL
 UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE environment_id IS NULL
@@ -39,7 +68,24 @@ SELECT 'ledger_cross_environment' AS check_name, COUNT(*) AS failures
 FROM ledger_entries le
 JOIN wallets credit_wallet ON credit_wallet.id = le.credit_wallet_id
 JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
-WHERE credit_wallet.environment_id <> debit_wallet.environment_id;
+WHERE credit_wallet.environment_id IS NOT NULL
+  AND debit_wallet.environment_id IS NOT NULL
+  AND credit_wallet.environment_id <> debit_wallet.environment_id;
+
+SELECT 'merchant_ledger_missing_environment' AS check_name, COUNT(*) AS failures
+FROM ledger_entries le
+WHERE le.environment_id IS NULL
+  AND (EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.credit_wallet_id)
+    OR EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.debit_wallet_id))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM wallets credit_wallet
+      JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
+      WHERE credit_wallet.id = le.credit_wallet_id
+        AND credit_wallet.environment_id IS NOT NULL
+        AND debit_wallet.environment_id IS NOT NULL
+        AND credit_wallet.environment_id <> debit_wallet.environment_id
+  );
 
 SELECT 'api_key_prefix_mismatch' AS check_name, COUNT(*) AS failures
 FROM api_keys k

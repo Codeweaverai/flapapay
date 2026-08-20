@@ -100,23 +100,39 @@ SET environment_id = environment.id
 FROM merchants merchant
 JOIN merchant_environments environment
   ON environment.merchant_id = merchant.id
- AND environment.kind = CASE WHEN wallet.livemode THEN 'live' ELSE 'sandbox' END
 WHERE wallet.user_id = merchant.user_id
+  AND environment.kind = CASE WHEN wallet.livemode THEN 'live' ELSE 'sandbox' END
   AND wallet.environment_id IS NULL;
 
--- A ledger entry must resolve to one environment. First use the credit wallet,
--- then use the debit wallet for legacy debit-only rows.
+-- Merchant-owned wallets resolve to an environment. Non-merchant/system wallets
+-- remain global and nullable. For a system-wallet-to-merchant-wallet entry,
+-- the merchant-owned side supplies the ledger environment; system-to-system
+-- entries remain global until a separate platform-wallet model is introduced.
 UPDATE ledger_entries entry
 SET environment_id = credit_wallet.environment_id
 FROM wallets credit_wallet
 WHERE entry.credit_wallet_id = credit_wallet.id
-  AND entry.environment_id IS NULL;
+  AND entry.environment_id IS NULL
+  AND credit_wallet.environment_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM wallets debit_wallet
+      WHERE debit_wallet.id = entry.debit_wallet_id
+        AND debit_wallet.environment_id IS NOT NULL
+        AND debit_wallet.environment_id <> credit_wallet.environment_id
+  );
 
 UPDATE ledger_entries entry
 SET environment_id = debit_wallet.environment_id
 FROM wallets debit_wallet
 WHERE entry.debit_wallet_id = debit_wallet.id
-  AND entry.environment_id IS NULL;
+  AND entry.environment_id IS NULL
+  AND debit_wallet.environment_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM wallets credit_wallet
+      WHERE credit_wallet.id = entry.credit_wallet_id
+        AND credit_wallet.environment_id IS NOT NULL
+        AND credit_wallet.environment_id <> debit_wallet.environment_id
+  );
 
 UPDATE wallet_withdrawals withdrawal
 SET environment_id = wallet.environment_id
@@ -156,6 +172,15 @@ SET environment_id = environment.id
 FROM merchant_environments environment
 WHERE b.merchant_id = environment.merchant_id
   AND environment.kind = 'live'
+  AND b.environment_id IS NULL;
+
+-- Connected-account balances use connected_accounts.id in the legacy schema,
+-- not the parent merchant ID. Their environment was backfilled above.
+UPDATE balances b
+SET environment_id = connected_account.environment_id
+FROM connected_accounts connected_account
+WHERE b.merchant_id = connected_account.id
+  AND connected_account.environment_id IS NOT NULL
   AND b.environment_id IS NULL;
 
 UPDATE webhooks webhook
@@ -206,8 +231,9 @@ WHERE config.merchant_id = environment.merchant_id
   AND environment.kind = 'live'
   AND config.environment_id IS NULL;
 
--- Fail closed for the P0 core. This makes an incomplete backfill visible before
--- any NOT NULL constraint or environment-aware runtime flag is enabled.
+-- Fail closed for merchant-owned P0 rows. Global/system wallets and ledger
+-- entries that involve only global wallets are intentionally excluded from the
+-- environment-scoped count and remain nullable by design.
 DO $$
 DECLARE
     unresolved TEXT;
@@ -215,8 +241,24 @@ BEGIN
     SELECT string_agg(table_name || '=' || missing_count::TEXT, ', ' ORDER BY table_name)
     INTO unresolved
     FROM (
-        SELECT 'wallets' AS table_name, COUNT(*) AS missing_count FROM wallets WHERE environment_id IS NULL
-        UNION ALL SELECT 'ledger_entries', COUNT(*) FROM ledger_entries WHERE environment_id IS NULL
+        SELECT 'merchant_owned_wallets' AS table_name, COUNT(*) AS missing_count
+        FROM wallets w
+        JOIN merchants m ON m.user_id = w.user_id
+        WHERE w.environment_id IS NULL
+        UNION ALL SELECT 'merchant_owned_ledger_entries', COUNT(*)
+        FROM ledger_entries le
+        WHERE le.environment_id IS NULL
+          AND (EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.credit_wallet_id)
+            OR EXISTS (SELECT 1 FROM wallets w JOIN merchants m ON m.user_id = w.user_id WHERE w.id = le.debit_wallet_id))
+          AND NOT EXISTS (
+              SELECT 1
+              FROM wallets credit_wallet
+              JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
+              WHERE credit_wallet.id = le.credit_wallet_id
+                AND credit_wallet.environment_id IS NOT NULL
+                AND debit_wallet.environment_id IS NOT NULL
+                AND credit_wallet.environment_id <> debit_wallet.environment_id
+          )
         UNION ALL SELECT 'charges', COUNT(*) FROM charges WHERE environment_id IS NULL
         UNION ALL SELECT 'balances', COUNT(*) FROM balances WHERE environment_id IS NULL
         UNION ALL SELECT 'api_keys', COUNT(*) FROM api_keys WHERE environment_id IS NULL
@@ -228,17 +270,20 @@ BEGIN
         RAISE EXCEPTION 'P0 environment backfill incomplete: %', unresolved;
     END IF;
 
-    IF EXISTS (
-        SELECT 1
-        FROM ledger_entries entry
-        JOIN wallets credit_wallet ON credit_wallet.id = entry.credit_wallet_id
-        JOIN wallets debit_wallet ON debit_wallet.id = entry.debit_wallet_id
-        WHERE credit_wallet.environment_id IS NOT NULL
+    RAISE NOTICE 'Legacy cross-environment ledger rows remain NULL for manual reconciliation: %', (
+        SELECT COUNT(*)
+        FROM ledger_entries le
+        JOIN wallets credit_wallet ON credit_wallet.id = le.credit_wallet_id
+        JOIN wallets debit_wallet ON debit_wallet.id = le.debit_wallet_id
+        WHERE le.environment_id IS NULL
+          AND credit_wallet.environment_id IS NOT NULL
           AND debit_wallet.environment_id IS NOT NULL
           AND credit_wallet.environment_id <> debit_wallet.environment_id
-    ) THEN
-        RAISE EXCEPTION 'P0 environment backfill found ledger entries spanning two environments';
-    END IF;
+    );
+
+    -- Legacy cross-environment ledger entries are deliberately left NULL for
+    -- manual reconciliation. They must not be assigned to either environment.
+    -- New runtime writes must reject this condition before inserting a ledger row.
 END $$;
 
 COMMIT;

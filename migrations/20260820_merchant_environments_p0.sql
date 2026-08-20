@@ -144,7 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_webhooks_merchant_environment
 CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_merchant_environment
     ON webhook_endpoints (merchant_id, environment_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_environment
-    ON webhook_deliveries (environment_id, created_at DESC);
+    ON webhook_deliveries (environment_id, delivered_at DESC);
 
 -- NOT VALID allows the additive migration to complete while legacy NULLs exist;
 -- new non-NULL values are still checked by PostgreSQL. Validate after backfill.
