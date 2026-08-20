@@ -29,7 +29,7 @@ export const DeveloperWorkspace: React.FC = () => {
     const [activity, setActivity] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
-    const section = useMemo(() => sectionFromPath(location), [location]);
+    const section = useMemo(() => sectionFromPath(location.pathname), [location.pathname]);
 
     useEffect(() => {
         if (section === 'api-keys') {
