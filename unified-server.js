@@ -18,6 +18,7 @@ const EscrowService = require('./services/EscrowService');
 const DeveloperGateway = require('./services/DeveloperGateway');
 const {
     attachApiKeyEnvironment,
+    attachJwtEnvironment,
     environmentErrorHandler,
 } = require('./services/environmentContext');
 const CybersourceService = require('./services/CybersourceService');
@@ -432,7 +433,7 @@ const verifyPasswordStrength = (password) => {
     return { isValid: true };
 };
 
-const recordFee = async (client, txnRef, amount, currency, description) => {
+const recordFee = async (client, txnRef, amount, currency, description, environmentId = null) => {
     try {
         // Find System Wallet for this currency
         const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [SYSTEM_USER_ID, currency]);
@@ -447,9 +448,9 @@ const recordFee = async (client, txnRef, amount, currency, description) => {
 
         // Record Fee Ledger Entry
         await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, 'FEE', 'COMPLETED')`,
-            [txnRef + '-FEE', revenueWalletId, amount, currency, description]
+            INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, environment_id)
+            VALUES ($1, $2, $3, $4, $5, 'FEE', 'COMPLETED', $6)`,
+            [txnRef + '-FEE', revenueWalletId, amount, currency, description, environmentId]
         );
     } catch (err) {
         console.error('Failed to record fee:', err);
@@ -518,11 +519,20 @@ const authenticateToken = async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        const userResult = await pool.query('SELECT id, email, full_name, role FROM users WHERE id = $1', [decoded.userId]);
+        const userResult = await pool.query(`SELECT u.id, u.email, u.full_name, u.role, m.id AS merchant_id
+                                             FROM users u
+                                             LEFT JOIN merchants m ON m.user_id = u.id
+                                             WHERE u.id = $1`, [decoded.userId]);
 
         if (userResult.rows.length === 0) return res.status(401).json({ error: 'User not found' });
 
         req.user = userResult.rows[0];
+        if (req.user.merchant_id) {
+            await attachJwtEnvironment(req, pool, {
+                merchantId: req.user.merchant_id,
+                actorUserId: req.user.id,
+            });
+        }
         next();
     } catch (err) {
         return res.status(403).json({ error: 'Invalid or expired token' });
@@ -1093,14 +1103,16 @@ const updateWalletWithdrawalRecord = async (client, reference, fields = {}) => {
     );
 };
 
-const loadWalletForDebit = async (client, { walletId, userId, ignoreWithdrawalPause = false }) => {
+const loadWalletForDebit = async (client, { walletId, userId, environmentId = null, ignoreWithdrawalPause = false }) => {
+    const environmentPredicate = environmentId ? ' AND w.environment_id = $3' : '';
+    const walletParams = environmentId ? [walletId, userId, environmentId] : [walletId, userId];
     const walletRes = await client.query(
         `SELECT w.*, u.status AS user_status
          FROM wallets w
          JOIN users u ON u.id = w.user_id
-         WHERE w.id = $1 AND w.user_id = $2
+         WHERE w.id = $1 AND w.user_id = $2${environmentPredicate}
          FOR UPDATE OF w`,
-        [walletId, userId]
+        walletParams
     );
     if (walletRes.rows.length === 0) throw new Error('Wallet not found');
     const wallet = walletRes.rows[0];
@@ -5078,12 +5090,12 @@ app.post('/wallets', authenticateToken, async (req, res) => {
     if (!currency) return res.status(400).json({ error: 'Currency is required' });
 
     try {
-        const existing = await pool.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [req.user.id, currency]);
+        const existing = await pool.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [req.user.id, currency, req.environmentId]);
         if (existing.rows.length > 0) return res.status(400).json({ error: `You already have a ${currency} wallet` });
 
         const result = await pool.query(
-            'INSERT INTO wallets (user_id, currency, balance, status) VALUES ($1, $2, 0.00, \'ACTIVE\') RETURNING *',
-            [req.user.id, currency]
+            'INSERT INTO wallets (user_id, currency, balance, status, environment_id) VALUES ($1, $2, 0.00, \'ACTIVE\', $3) RETURNING *',
+            [req.user.id, currency, req.environmentId]
         );
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -5107,7 +5119,7 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const walletResult = await client.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE', [walletId, req.user.id]);
+        const walletResult = await client.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2 AND ($3::uuid IS NULL OR environment_id = $3) FOR UPDATE', [walletId, req.user.id, req.environmentId]);
         if (walletResult.rows.length === 0) throw new Error('Wallet not found');
 
         const wallet = walletResult.rows[0];
@@ -5131,19 +5143,19 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
         await client.query(`
             INSERT INTO ledger_entries (
                 transaction_reference, credit_wallet_id, amount, currency, description,
-                transaction_type, status, funding_source_type, funding_source_brand, funding_source_last4
+                transaction_type, status, funding_source_type, funding_source_brand, funding_source_last4, environment_id
             )
-            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED', $6, $7, $8)`,
-            [ref, walletId, amount, wallet.currency, normalizedDescription, normalizedFundingSourceType, normalizedFundingSourceBrand, normalizedFundingSourceLast4]
+            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED', $6, $7, $8, $9)`,
+            [ref, walletId, amount, wallet.currency, normalizedDescription, normalizedFundingSourceType, normalizedFundingSourceBrand, normalizedFundingSourceLast4, req.environmentId]
         );
 
         const updateResult = await client.query(
-            'UPDATE wallets SET balance = balance + $1 WHERE id = $2 RETURNING balance',
-            [amount, walletId]
+            'UPDATE wallets SET balance = balance + $1 WHERE id = $2 AND ($3::uuid IS NULL OR environment_id = $3) RETURNING balance',
+            [amount, walletId, req.environmentId]
         );
 
         // Record Fee
-        await recordFee(client, ref + '-FEE', fee, wallet.currency, 'Card Deposit Fee');
+        await recordFee(client, ref + '-FEE', fee, wallet.currency, 'Card Deposit Fee', req.environmentId);
 
         await client.query('COMMIT');
         res.json({
@@ -5166,9 +5178,10 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
         const isTestMode = req.query.mode === 'test';
+        const requestedEnvironmentId = req.query.mode === 'test' && !req.headers['x-flapapay-environment-id'] ? null : req.environmentId;
         const result = await pool.query(
-            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 ORDER BY currency',
-            [req.user.id, !isTestMode]
+            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 AND ($3::uuid IS NULL OR environment_id = $3) ORDER BY currency',
+            [req.user.id, !isTestMode, requestedEnvironmentId]
         );
         res.json(result.rows);
     } catch (err) {
@@ -5192,7 +5205,7 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
     let fraudPayload = null;
     try {
         await client.query('BEGIN');
-        const sourceWallet = await loadWalletForDebit(client, { walletId: debitWalletId, userId: req.user.id });
+        const sourceWallet = await loadWalletForDebit(client, { walletId: debitWalletId, userId: req.user.id, environmentId: req.environmentId });
         if (sourceWallet.currency !== currency) throw new Error('Currency mismatch');
         if (parseFloat(sourceWallet.balance) < amount) throw new Error('Insufficient funds');
 
@@ -5201,12 +5214,12 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
             const userRes = await client.query('SELECT id FROM users WHERE email = $1', [req.body.recipientEmail]);
             if (userRes.rows.length === 0) throw new Error('Recipient user not found');
             const recipientId = userRes.rows[0].id;
-            const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [recipientId, currency]);
+            const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [recipientId, currency, req.environmentId]);
             if (walletRes.rows.length === 0) throw new Error(`Recipient does not have a ${currency} wallet`);
             targetWalletId = walletRes.rows[0].id;
         }
 
-        const creditRes = await client.query('SELECT balance, currency FROM wallets WHERE id = $1 FOR UPDATE', [targetWalletId]);
+        const creditRes = await client.query('SELECT balance, currency FROM wallets WHERE id = $1 AND ($2::uuid IS NULL OR environment_id = $2) FOR UPDATE', [targetWalletId, req.environmentId]);
         if (creditRes.rows.length === 0) throw new Error('Destination wallet not found');
 
         // Calculate Fee (1% for P2P Transfer)
@@ -5222,9 +5235,9 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
 
         // 1. Ledger: Transfer (Debit Sender, Credit Recipient) - Main Amount
         await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, credit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, $6, 'TRANSFER', 'COMPLETED')`,
-            [ref, debitWalletId, targetWalletId, amount, currency, description]
+            INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, credit_wallet_id, amount, currency, description, transaction_type, status, environment_id)
+            VALUES ($1, $2, $3, $4, $5, $6, 'TRANSFER', 'COMPLETED', $7)`,
+            [ref, debitWalletId, targetWalletId, amount, currency, description, req.environmentId]
         );
 
         // 2. Debit Sender (Total = Amount + Fee)
@@ -5234,7 +5247,7 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
         await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [amount, targetWalletId]);
 
         // 4. Record Fee
-        await recordFee(client, ref + '-FEE', fee, currency, 'Transfer Fee');
+        await recordFee(client, ref + '-FEE', fee, currency, 'Transfer Fee', req.environmentId);
 
         fraudPayload = {
             eventType: 'wallet.transfer.completed',
@@ -5376,7 +5389,7 @@ app.post('/payments/send-from-card', authenticateToken, async (req, res) => {
         if (userRes.rows.length === 0) throw new Error('Recipient user not found');
         const recipientId = userRes.rows[0].id;
 
-        const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [recipientId, currency]);
+        const walletRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [recipientId, currency, req.environmentId]);
         if (walletRes.rows.length === 0) throw new Error(`Recipient does not have a ${currency} wallet`);
         const targetWalletId = walletRes.rows[0].id;
 
@@ -5939,10 +5952,12 @@ app.get('/transactions', authenticateToken, async (req, res) => {
             `le.transaction_type != 'FEE'`,
             `w.livemode = TRUE`,
             `le.livemode = TRUE`,
+            `w.environment_id = $4`,
+            `le.environment_id = $4`,
             `le.created_at >= $2`,
             `le.created_at <= $3`
         ];
-        params.push(start, end);
+        params.push(start, end, req.environmentId);
 
         const trimmedWalletId = String(walletId || '').trim();
         if (trimmedWalletId) {
@@ -6025,6 +6040,8 @@ app.get('/transactions', authenticateToken, async (req, res) => {
              WHERE w.user_id = $1
                AND w.livemode = TRUE
                AND le.livemode = TRUE
+               AND w.environment_id = $4
+               AND le.environment_id = $4
                AND le.transaction_type = 'DEPOSIT'
                AND (
                     le.description ILIKE 'Payment for Invoice%'
@@ -6035,7 +6052,7 @@ app.get('/transactions', authenticateToken, async (req, res) => {
                AND le.created_at <= $3
              ORDER BY le.created_at DESC
              LIMIT 200`,
-            [req.user.id, start, end]
+            [req.user.id, start, end, req.environmentId]
         );
 
         const mergedRows = [
@@ -11301,6 +11318,7 @@ app.post('/v1/transfers/bank-account', authenticateApiKey, async (req, res) => {
         const wallet = await loadWalletForWithdrawal(client, {
             walletId,
             userId: req.merchant.merchant_user_id,
+            environmentId: req.environmentId,
             ignoreWithdrawalPause: true
         });
         walletCurrency = wallet.currency;
@@ -11522,6 +11540,7 @@ app.post('/v1/transfers/mobile-money', authenticateApiKey, async (req, res) => {
         const wallet = await loadWalletForWithdrawal(client, {
             walletId,
             userId: req.merchant.merchant_user_id,
+            environmentId: req.environmentId,
             ignoreWithdrawalPause: true
         });
 
@@ -12464,9 +12483,10 @@ app.get('/v1/settlements/:reference', authenticateApiKey, async (req, res) => {
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
         const isTestMode = req.query.mode === 'test';
+        const requestedEnvironmentId = req.query.mode === 'test' && !req.headers['x-flapapay-environment-id'] ? null : req.environmentId;
         const result = await pool.query(
-            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 ORDER BY currency',
-            [req.user.id, !isTestMode]
+            'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 AND ($3::uuid IS NULL OR environment_id = $3) ORDER BY currency',
+            [req.user.id, !isTestMode, requestedEnvironmentId]
         );
         res.json(result.rows);
     } catch (err) {
@@ -12630,7 +12650,7 @@ app.post('/bill-payments/quote', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'walletId and productId are required' });
         }
 
-        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id });
+        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id, environmentId: req.environmentId });
         if (String(wallet.currency || '').toUpperCase() !== 'ZMW') {
             return res.status(400).json({ error: 'Bill payments currently support ZMW wallets only' });
         }
@@ -12755,7 +12775,7 @@ app.post('/bill-payments', authenticateToken, async (req, res) => {
             throw new Error('walletId, productId, and customerId are required');
         }
 
-        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id });
+        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id, environmentId: req.environmentId });
         if (String(wallet.currency || '').toUpperCase() !== 'ZMW') {
             throw new Error('Bill payments currently support ZMW wallets only');
         }
@@ -13118,6 +13138,7 @@ app.post('/wallets/withdraw', authenticateToken, async (req, res) => {
         const wallet = await loadWalletForWithdrawal(client, {
             walletId,
             userId: req.user.id,
+            environmentId: req.environmentId,
             ignoreWithdrawalPause: true
         });
         walletCurrency = wallet.currency;
@@ -13433,6 +13454,7 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
             const wallet = await loadWalletForWithdrawal(client, {
                 walletId,
                 userId: req.user.id,
+                environmentId: req.environmentId,
                 ignoreWithdrawalPause: true
             });
             const quote = getWithdrawalFeeQuote({
@@ -20654,8 +20676,8 @@ app.get('/merchants/status', authenticateToken, async (req, res) => {
         const m = merchantRes.rows[0];
 
         const balanceRes = await pool.query(
-            "SELECT * FROM balances WHERE merchant_id = $1",
-            [m.id]
+            "SELECT * FROM balances WHERE merchant_id = $1 AND ($2::uuid IS NULL OR environment_id = $2)",
+            [m.id, req.environmentId]
         );
 
         res.json({
@@ -22390,9 +22412,9 @@ app.post('/v1/issuing/cards', authenticateToken, async (req, res) => {
         await client.query('BEGIN');
 
         // 1. Check User Wallet Balance
-        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [req.user.id, currency]);
+        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [req.user.id, currency, req.environmentId]);
         if (walletLookupRes.rows.length === 0) throw new Error(`User does not have a ${currency} wallet.`);
-        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id });
+        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id, environmentId: req.environmentId });
 
         // Deduct initial load + issuance fee (e.g., $0.50 for USD, 12.50 for ZMW)
         const issuanceFee = currency === 'USD' ? 0.50 : 12.50;
@@ -22627,9 +22649,9 @@ app.post('/v1/issuing/cards/:id/fund', authenticateToken, async (req, res) => {
 
         if (card.status !== 'ACTIVE') throw new Error('Cannot fund a blocked card');
 
-        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [req.user.id, card.currency]);
+        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2 AND ($3::uuid IS NULL OR environment_id = $3)', [req.user.id, card.currency, req.environmentId]);
         if (walletLookupRes.rows.length === 0) throw new Error('Wallet not found');
-        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id });
+        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id, environmentId: req.environmentId });
 
         if (Number(wallet.balance) < Number(amount)) throw new Error('Insufficient wallet balance');
 
@@ -24313,7 +24335,7 @@ app.post('/fx/convert', authenticateToken, async (req, res) => {
 
         const toWallet = toWalletRes.rows[0];
 
-        const debitWallet = await loadWalletForDebit(client, { walletId: fromWallet.id, userId: req.user.id });
+        const debitWallet = await loadWalletForDebit(client, { walletId: fromWallet.id, userId: req.user.id, environmentId: req.environmentId });
 
         if (parseFloat(debitWallet.balance) < quote.amount) {
             throw new Error('Insufficient funds in source wallet');

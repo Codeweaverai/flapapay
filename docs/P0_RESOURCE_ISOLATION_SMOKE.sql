@@ -87,6 +87,38 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Core merchant money resources must also be assigned. System wallets with
+-- user_id NULL remain intentionally global and are excluded from this check.
+DO $$
+DECLARE n bigint;
+BEGIN
+    SELECT COUNT(*) INTO n
+    FROM wallets w
+    JOIN merchants m ON m.user_id = w.user_id
+    WHERE w.environment_id IS NULL;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned merchant-owned wallets', n; END IF;
+
+    SELECT COUNT(DISTINCT le.id) INTO n
+    FROM ledger_entries le
+    JOIN wallets w ON w.id = le.debit_wallet_id OR w.id = le.credit_wallet_id
+    JOIN merchants m ON m.user_id = w.user_id
+    WHERE le.environment_id IS NULL;
+    IF n > 5 THEN RAISE EXCEPTION 'Found % unassigned merchant-owned ledger entries; expected at most 5 documented reconciliation exceptions', n; END IF;
+    RAISE NOTICE 'Unassigned merchant-owned ledger entries retained for manual reconciliation: %', n;
+
+    SELECT COUNT(*) INTO n
+    FROM balances b
+    JOIN merchants m ON m.id = b.merchant_id
+    WHERE b.environment_id IS NULL;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned merchant balances', n; END IF;
+
+    SELECT COUNT(*) INTO n
+    FROM charges c
+    JOIN merchants m ON m.id = c.merchant_id
+    WHERE c.environment_id IS NULL;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned merchant charges', n; END IF;
+END $$;
+
 -- Attached subscription/invoice environments must agree with legacy livemode.
 DO $$
 DECLARE n bigint;
