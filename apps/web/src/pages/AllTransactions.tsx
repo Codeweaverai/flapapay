@@ -176,7 +176,7 @@ export const AllTransactions: React.FC = () => {
                 try {
                     const [meRes, txRes] = await Promise.all([
                         api.get('/auth/me'),
-                        api.get('/transactions')
+                        api.get('/transactions', { params: { allHistory: true, limit: 5000 } })
                     ]);
                     setWallets(meRes.data.wallets || []);
                     setTransactions(txRes.data || []);

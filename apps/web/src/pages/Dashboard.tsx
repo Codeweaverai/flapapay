@@ -219,7 +219,7 @@ export const Dashboard: React.FC = () => {
             setWallets(normalizeWallets(res.data?.wallets ?? res.data));
 
             const txRes = await api.get('/transactions', {
-                params: { _t: Date.now() },
+                params: { _t: Date.now(), limit: 20, allHistory: true },
                 headers: {
                     'Cache-Control': 'no-cache',
                     Pragma: 'no-cache',

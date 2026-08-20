@@ -5944,15 +5944,19 @@ app.get('/transactions', authenticateToken, async (req, res) => {
     try {
         await syncPendingLencoWithdrawalsForUser(req.user.id, 10);
         await syncPendingPawaPayPayoutsForUser(req.user.id, 10);
-        const { walletId = '', startDate, endDate, status = 'all', type = 'all', limit = '20' } = req.query;
+        const { walletId = '', startDate, endDate, status = 'all', type = 'all', limit = '20', allHistory = 'false' } = req.query;
         const normalizedStatus = normalizeReportStatus(status);
-        const { start, end } = getReportDateRange(startDate, endDate);
+        const wantsAllHistory = String(allHistory).trim().toLowerCase() === 'true';
+        const { start, end } = wantsAllHistory
+            ? { start: new Date('2000-01-01T00:00:00.000Z'), end: new Date() }
+            : getReportDateRange(startDate, endDate);
+        const selectedLiveMode = req.environmentKind !== 'sandbox';
         const params = [req.user.id];
         const conditions = [
             `w.user_id = $1`,
             `le.transaction_type != 'FEE'`,
-            `w.livemode = TRUE`,
-            `le.livemode = TRUE`,
+            `w.livemode = ${selectedLiveMode ? 'TRUE' : 'FALSE'}`,
+            `le.livemode = ${selectedLiveMode ? 'TRUE' : 'FALSE'}`,
             `w.environment_id = $4`,
             `le.environment_id = $4`,
             `le.created_at >= $2`,
@@ -5976,7 +5980,10 @@ app.get('/transactions', authenticateToken, async (req, res) => {
             conditions.push(`UPPER(le.transaction_type) = $${params.length}`);
         }
 
-        const normalizedLimit = Math.min(Math.max(parseInt(String(limit), 10) || 20, 1), 500);
+        const normalizedLimit = Math.min(
+            Math.max(parseInt(String(limit), 10) || (wantsAllHistory ? 5000 : 20), 1),
+            wantsAllHistory ? 5000 : 500
+        );
         params.push(normalizedLimit);
         const query = `
             SELECT * FROM (
@@ -6039,8 +6046,8 @@ app.get('/transactions', authenticateToken, async (req, res) => {
              JOIN wallets w ON le.credit_wallet_id = w.id
              LEFT JOIN invoice_payments ip ON ip.transaction_reference = le.transaction_reference
              WHERE w.user_id = $1
-               AND w.livemode = TRUE
-               AND le.livemode = TRUE
+               AND w.livemode = ${selectedLiveMode ? 'TRUE' : 'FALSE'}
+               AND le.livemode = ${selectedLiveMode ? 'TRUE' : 'FALSE'}
                AND w.environment_id = $4
                AND le.environment_id = $4
                AND le.transaction_type = 'DEPOSIT'
