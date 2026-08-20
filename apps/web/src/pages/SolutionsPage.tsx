@@ -2,107 +2,278 @@ import React from 'react';
 import { Navbar } from '../components/layout/Navbar';
 import { Footer } from '../components/layout/Footer';
 import { Button } from '../components/ui/Button';
+import { ArrowRight, Banknote, Building2, CreditCard, Layers3, ReceiptText, ShieldCheck, Smartphone, Store, WalletCards } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
-const SolutionCard: React.FC<{ title: string; desc: string; icon: string; industries: string[]; color: string }> = ({ title, desc, icon, industries, color }) => (
-    <div className="group p-10 rounded-[56px] bg-white border border-gray-100 hover:border-orange-500/20 hover:shadow-[0_48px_96px_-24px_rgba(249,115,22,0.1)] hover:-translate-y-4 transition-all duration-700 relative overflow-hidden flex flex-col items-center text-center">
-        <div className={`absolute top-0 right-0 w-64 h-64 ${color} opacity-0 group-hover:opacity-10 rounded-full blur-[100px] -translate-y-1/2 translate-x-1/2 transition-opacity duration-700`}></div>
+const solutionGroups = [
+    {
+        title: 'Checkout and POS',
+        desc: 'Card and mobile money collections for branches, counters, field sales, and in-person payments.',
+        icon: <CreditCard className="h-5 w-5" />,
+        items: ['POS Systems', 'Payment Links', 'Card payments', 'Mobile money'],
+    },
+    {
+        title: 'Marketplaces',
+        desc: 'Merchant onboarding, wallet settlement, and controlled payouts for multi-party platforms.',
+        icon: <Layers3 className="h-5 w-5" />,
+        items: ['Vendor payouts', 'Wallet settlement', 'Merchant onboarding', 'Compliance flows'],
+    },
+    {
+        title: 'Business operations',
+        desc: 'Recurring collections, invoicing, and settlement tools for finance teams.',
+        icon: <Banknote className="h-5 w-5" />,
+        items: ['Subscriptions', 'Invoices', 'Mass payouts', 'Reconciliation'],
+    },
+    {
+        title: 'Retail and services',
+        desc: 'Collections built for fuel stations, restaurants, logistics, service desks, and stores.',
+        icon: <Store className="h-5 w-5" />,
+        items: ['Fuel stations', 'Restaurants', 'Retail stores', 'Service desks'],
+    },
+];
 
-        <div className="w-24 h-24 rounded-[32px] bg-gray-50 flex items-center justify-center text-4xl mb-10 group-hover:bg-orange-500 group-hover:text-white group-hover:scale-110 transition-all duration-500 shadow-sm">
-            {icon}
-        </div>
-        <h3 className="text-3xl font-black text-gray-900 mb-6 tracking-tight">{title}</h3>
-        <p className="text-gray-500 text-xl leading-relaxed mb-10">{desc}</p>
+const workflow = [
+    {
+        title: 'Choose the payment path',
+        desc: 'Use checkout links, POS, invoices, or marketplace flows depending on the customer touchpoint.',
+        icon: <WalletCards className="h-5 w-5" />,
+    },
+    {
+        title: 'Verify and link',
+        desc: 'Email verification and saved payment details keep repeat checkout fast without losing control.',
+        icon: <ShieldCheck className="h-5 w-5" />,
+    },
+    {
+        title: 'Settle and reconcile',
+        desc: 'Track receipts, confirmations, and payouts in a way finance can actually use.',
+        icon: <ReceiptText className="h-5 w-5" />,
+    },
+];
 
-        <div className="mt-auto w-full">
-            <div className="flex flex-wrap justify-center gap-3 mb-12">
-                {industries.map((ind, i) => (
-                    <span key={i} className="px-4 py-1.5 rounded-full bg-gray-50 text-gray-400 text-xs font-black uppercase tracking-widest border border-gray-100 group-hover:bg-gray-100 transition-colors">
-                        {ind}
-                    </span>
-                ))}
-            </div>
-            <Button className="w-full bg-black text-white px-8 py-5 rounded-[24px] font-black text-lg hover:bg-orange-500 transition-all active:scale-95 shadow-xl shadow-black/5">
-                Learn More
-            </Button>
-        </div>
-    </div>
-);
+const highlights = [
+    { label: 'Unified rails', value: 'Cards, mobile money, invoices' },
+    { label: 'Operational control', value: 'Approvals, reconciliation, payout tracking' },
+    { label: 'Fast repeat checkout', value: 'Verified details saved for reuse' },
+];
 
 export const SolutionsPage: React.FC = () => {
+    const navigate = useNavigate();
+
     return (
-        <div className="min-h-screen bg-white">
+        <div
+            className="min-h-screen bg-black font-sans selection:bg-orange-200/30"
+            style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}
+        >
             <Navbar />
 
             <main className="pt-20">
-                {/* Hero Section */}
-                <section className="py-32 bg-black relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-orange-500 rounded-full blur-[250px] opacity-20 -translate-y-1/2 translate-x-1/4"></div>
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8 text-center relative z-10">
-                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-xs font-black text-orange-400 uppercase tracking-widest mb-10">
-                            Our Solutions
+                <section className="relative overflow-hidden border-b border-white/10 py-24 md:py-32">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(249,115,22,0.16),_transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(251,191,36,0.12),_transparent_28%)]" />
+                    <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-orange-400/50 to-transparent" />
+                    <div className="absolute -top-24 right-0 h-80 w-80 rounded-full bg-orange-500/15 blur-3xl" />
+                    <div className="absolute -bottom-24 left-0 h-80 w-80 rounded-full bg-yellow-400/10 blur-3xl" />
+
+                    <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="grid gap-16 lg:grid-cols-2 lg:items-center">
+                            <div className="max-w-2xl">
+                                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-black uppercase tracking-[0.35em] text-orange-300 backdrop-blur">
+                                    Solutions
+                                </div>
+                                <h1 className="mt-8 max-w-2xl text-5xl font-black leading-[1.02] tracking-tight text-white md:text-7xl">
+                                    Real payment solutions for
+                                    <span className="block text-transparent bg-clip-text bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-300">
+                                        real business workflows.
+                                    </span>
+                                </h1>
+                                <p className="mt-6 max-w-xl text-lg leading-relaxed text-gray-300 md:text-xl">
+                                    Built for the way merchants actually collect money: at the counter, in the field, in a marketplace, or from a recurring customer relationship.
+                                </p>
+
+                                <div className="mt-10 flex flex-col gap-4 sm:flex-row">
+                                    <Button
+                                        size="lg"
+                                        onClick={() => navigate('/signup')}
+                                        className="rounded-2xl bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500 px-8 py-5 text-lg font-black text-white shadow-2xl shadow-orange-500/20 transition-all hover:translate-y-[-2px]"
+                                    >
+                                        Talk to sales
+                                    </Button>
+                                    <Button
+                                        size="lg"
+                                        variant="outline"
+                                        onClick={() => navigate('/developers')}
+                                        className="rounded-2xl border-white/20 px-8 py-5 text-lg font-black text-white transition-all hover:bg-white/10"
+                                    >
+                                        View developer docs
+                                    </Button>
+                                </div>
+
+                                <div className="mt-10 grid gap-3 sm:grid-cols-3">
+                                    {highlights.map((item) => (
+                                        <div key={item.label} className="rounded-[24px] border border-white/10 bg-white/5 px-4 py-4 text-white/95 shadow-lg shadow-black/10 backdrop-blur">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">{item.label}</p>
+                                            <p className="mt-2 text-sm font-black text-white">{item.value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="relative">
+                                <div className="rounded-[38px] border border-white/10 bg-white/95 p-4 shadow-[0_50px_120px_-24px_rgba(0,0,0,0.65)]">
+                                    <div className="grid gap-4">
+                                        <div className="rounded-[28px] border border-orange-100 bg-gradient-to-br from-orange-50 to-white p-5">
+                                            <div className="flex items-center justify-between gap-4">
+                                                <div>
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-500">Collections</p>
+                                                    <p className="mt-2 text-lg font-black text-gray-900">Payments that link to verified customers</p>
+                                                </div>
+                                                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-500 text-white shadow-sm">
+                                                    <CreditCard className="h-5 w-5" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="rounded-[28px] border border-yellow-100 bg-gradient-to-br from-yellow-50 to-white p-5">
+                                            <div className="flex items-center justify-between gap-4">
+                                                <div>
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-yellow-600">Saved details</p>
+                                                    <p className="mt-2 text-lg font-black text-gray-900">Faster checkout on repeat visits</p>
+                                                </div>
+                                                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400 text-black shadow-sm">
+                                                    <Smartphone className="h-5 w-5" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="rounded-[28px] border border-gray-100 bg-white p-5">
+                                            <div className="flex items-center justify-between gap-4">
+                                                <div>
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-500">Control</p>
+                                                    <p className="mt-2 text-lg font-black text-gray-900">Receipts, settlement, and reconciliation</p>
+                                                </div>
+                                                <ArrowRight className="h-5 w-5 text-gray-400" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <h1 className="text-6xl md:text-9xl font-black text-white mb-10 tracking-tight leading-[0.8] animate-in fade-in slide-in-from-bottom-10 duration-1000">
-                            Built for <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-yellow-500 italic">Every</span> <br className="hidden md:block" /> Ambition.
-                        </h1>
-                        <p className="text-2xl md:text-3xl text-gray-400 max-w-4xl mx-auto leading-relaxed mb-16 font-medium animate-in fade-in slide-in-from-bottom-10 delay-200 duration-1000">
-                            From solo entrepreneurs to pan-African conglomerates, we provide the financial infrastructure to scale without friction.
-                        </p>
                     </div>
                 </section>
 
-                {/* Solutions Grid */}
-                <section className="py-32 bg-white">
+                <section className="py-20">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
-                            <SolutionCard
-                                title="For Startups"
-                                desc="Launch faster with developer-first APIs, pre-built checkout UI, and global payment rails designed for scale."
-                                icon="🚀"
-                                industries={["Fintech", "SaaS", "Direct Consumer", "EdTech"]}
-                                color="bg-blue-500"
-                            />
-                            <SolutionCard
-                                title="For Marketplaces"
-                                desc="Orchestrate complex split payments, vendor payouts, and platform fees with automated compliance logic."
-                                icon="🛍️"
-                                industries={["Retail", "Shared Economy", "On-Demand", "B2B"]}
-                                color="bg-orange-500"
-                            />
-                            <SolutionCard
-                                title="For Enterprises"
-                                desc="Modernize your financial stack with enterprise-grade security, custom reporting, and direct bank rails."
-                                icon="🏗️"
-                                industries={["Logistics", "Telecom", "Airlines", "Energy"]}
-                                color="bg-indigo-500"
-                            />
-                            <SolutionCard
-                                title="For Developers"
-                                desc="A complete sandbox environment with detailed logs, SDKs in every language, and real-time support."
-                                icon="💻"
-                                industries={["Infrastructure", "Open Banking", "Security", "DevOps"]}
-                                color="bg-emerald-500"
-                            />
+                        <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                            <div className="max-w-2xl">
+                                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">What we solve</p>
+                                <h2 className="mt-3 text-3xl font-black text-white md:text-4xl">One platform. Multiple ways to collect.</h2>
+                            </div>
+                            <p className="max-w-xl text-sm leading-relaxed text-gray-300">
+                                The site should read like a set of practical product choices, not a generic marketing grid.
+                            </p>
+                        </div>
+
+                        <div className="grid gap-6 md:grid-cols-2">
+                            {solutionGroups.map((group) => (
+                                <div key={group.title} className="rounded-[30px] border border-white/10 bg-white/95 p-7 shadow-2xl shadow-black/20">
+                                    <div className="flex items-start justify-between gap-4">
+                                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-orange-500 to-yellow-400 text-black shadow-sm">
+                                            {group.icon}
+                                        </div>
+                                        <span className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Solution</span>
+                                    </div>
+                                    <h3 className="mt-5 text-2xl font-black text-gray-900">{group.title}</h3>
+                                    <p className="mt-3 text-gray-600 leading-relaxed">{group.desc}</p>
+                                    <div className="mt-6 flex flex-wrap gap-2">
+                                        {group.items.map((item) => (
+                                            <span
+                                                key={item}
+                                                className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-gray-500"
+                                            >
+                                                {item}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </section>
 
-                {/* Custom Solution CTA */}
-                <section className="py-32 bg-black relative overflow-hidden">
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_30%,_rgba(249,115,22,0.15),_transparent_50%)]"></div>
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_70%,_rgba(250,204,21,0.15),_transparent_50%)]"></div>
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8 relative z-10">
-                        <div className="bg-white/5 backdrop-blur-3xl border border-white/10 rounded-[80px] p-16 md:p-32 text-center text-white">
-                            <h2 className="text-5xl md:text-8xl font-black mb-10 tracking-tight leading-tight">Need something <span className="text-orange-500">bespoke</span>?</h2>
-                            <p className="text-xl md:text-3xl text-gray-400 mb-16 max-w-3xl mx-auto leading-relaxed">
-                                Our solution architects work directly with large organizations to build custom financial flows and proprietary integrations.
-                            </p>
-                            <div className="flex flex-col sm:flex-row gap-8 justify-center">
-                                <Button size="lg" className="bg-orange-500 text-white px-16 py-7 rounded-3xl font-black shadow-2xl hover:bg-orange-600 transition-all text-2xl active:scale-95">
-                                    Talk to an Architect
-                                </Button>
-                                <Button size="lg" variant="outline" className="px-16 py-7 rounded-3xl font-black border-white/20 text-white hover:bg-white/10 transition-all text-2xl active:scale-95">
-                                    View Use Cases
-                                </Button>
+                <section className="border-y border-white/10 bg-black/40 py-16">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="grid gap-6 lg:grid-cols-3">
+                            {workflow.map((step, index) => (
+                                <div key={step.title} className="rounded-[28px] border border-white/10 bg-white/5 p-7 text-white shadow-2xl shadow-black/10 backdrop-blur">
+                                    <div className="flex items-center justify-between">
+                                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-orange-500 to-yellow-400 text-black shadow-sm">
+                                            {step.icon}
+                                        </div>
+                                        <span className="text-sm font-black text-gray-500">0{index + 1}</span>
+                                    </div>
+                                    <h3 className="mt-5 text-2xl font-black">{step.title}</h3>
+                                    <p className="mt-3 text-sm leading-relaxed text-gray-300">{step.desc}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </section>
+
+                <section className="py-16">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="grid gap-6 md:grid-cols-2">
+                            <div className="rounded-[30px] border border-white/10 bg-white p-6 shadow-2xl shadow-black/20">
+                                <div className="flex items-center gap-3">
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-500/10 text-orange-600">
+                                        <ShieldCheck className="h-5 w-5" />
+                                    </div>
+                                    <h3 className="text-2xl font-black text-gray-900">Trusted operational controls</h3>
+                                </div>
+                                <p className="mt-4 text-gray-600 leading-relaxed">
+                                    The platform is designed to support real operations: saved methods, clear settlement states, payout visibility, and a trail finance teams can trust.
+                                </p>
+                            </div>
+
+                            <div className="rounded-[30px] border border-white/10 bg-white p-6 shadow-2xl shadow-black/20">
+                                <div className="flex items-center gap-3">
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-yellow-400/15 text-yellow-600">
+                                        <Store className="h-5 w-5" />
+                                    </div>
+                                    <h3 className="text-2xl font-black text-gray-900">Built for real merchants</h3>
+                                </div>
+                                <p className="mt-4 text-gray-600 leading-relaxed">
+                                    Fuel stations, restaurants, retail counters, service desks, and marketplaces all need different flows. This page now reflects that reality.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="py-16">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="rounded-[36px] border border-white/10 bg-gradient-to-br from-zinc-950 to-black p-8 shadow-2xl shadow-black/30 md:p-10">
+                            <div className="grid gap-8 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Next step</p>
+                                    <h2 className="mt-3 text-3xl font-black text-white md:text-5xl">Choose the solution that matches your workflow.</h2>
+                                    <p className="mt-4 max-w-2xl text-sm leading-relaxed text-gray-300 md:text-base">
+                                        Start with POS, payment links, marketplaces, or invoices, then expand as your operation grows.
+                                    </p>
+                                </div>
+                                <div className="flex flex-col gap-4">
+                                    <Button
+                                        size="lg"
+                                        onClick={() => navigate('/signup')}
+                                        className="rounded-2xl bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500 px-8 py-5 text-lg font-black text-white shadow-2xl shadow-orange-500/20 transition-all hover:translate-y-[-2px]"
+                                    >
+                                        Get started
+                                    </Button>
+                                    <Button
+                                        size="lg"
+                                        variant="outline"
+                                        onClick={() => navigate('/contact')}
+                                        className="rounded-2xl border-white/20 px-8 py-5 text-lg font-black text-white transition-all hover:bg-white/10"
+                                    >
+                                        Talk to us
+                                    </Button>
+                                </div>
                             </div>
                         </div>
                     </div>

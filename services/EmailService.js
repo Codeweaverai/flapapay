@@ -2,7 +2,7 @@
  * EmailService — centralised email dispatcher for FlapaPay
  *
  * All outbound email goes through this service so that:
- *  - The sender address is always noreply@flapabay.com (Resend verified domain)
+ *  - The sender address uses the Resend-verified mailbox configured in RESEND_FROM
  *  - Template rendering is co-located with the dispatch logic
  *  - Failures are caught and logged without crashing the caller
  *
@@ -24,9 +24,10 @@ const { renderConnectInviteEmail }  = require('../emails/ConnectInviteEmail');
 
 // ── Resend client ────────────────────────────────────────────────────────────
 const resend = new Resend(process.env.RESEND_API_KEY);
+const FALLBACK_FROM = 'FlapaPay <onboarding@resend.dev>';
 const FROM   = process.env.RESEND_FROM
     ? `FlapaPay <${process.env.RESEND_FROM}>`
-    : 'FlapaPay <noreply@flapabay.com>';
+    : FALLBACK_FROM;
 
 // ── Core dispatch ────────────────────────────────────────────────────────────
 
@@ -46,7 +47,22 @@ async function send({ to, subject, html, attachments, replyTo }) {
     if (replyTo) payload.reply_to = replyTo;
 
     try {
-        const result = await resend.emails.send(payload);
+        let result = await resend.emails.send(payload);
+
+        if (
+            result?.error?.name === 'validation_error' &&
+            /domain is not verified/i.test(result.error.message || '') &&
+            payload.from !== FALLBACK_FROM
+        ) {
+            const fallbackPayload = {
+                ...payload,
+                from: FALLBACK_FROM,
+                reply_to: replyTo || process.env.RESEND_FROM || undefined,
+            };
+            console.warn('[EmailService] Retrying email with Resend fallback sender');
+            result = await resend.emails.send(fallbackPayload);
+        }
+
         if (result.error) {
             console.error('[EmailService] Resend error:', result.error);
             throw new Error(result.error.message || 'Email send failed');

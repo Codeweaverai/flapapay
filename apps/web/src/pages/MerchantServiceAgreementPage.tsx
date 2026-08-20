@@ -157,7 +157,7 @@ export const MerchantServiceAgreementPage: React.FC = () => {
                                                 { title: 'Invoicing', desc: 'Generate and send professional invoices to customers' },
                                                 { title: 'Collections', desc: 'Automated recurring billing and subscription management' },
                                                 { title: 'Payouts', desc: 'Send bulk payments to vendors, employees, or customers' },
-                                                { title: 'Escrow Services', desc: 'Secure held payments for marketplace transactions' },
+                                                { title: 'Wallet Settlement', desc: 'Direct wallet credits and ledger-backed settlement for merchant transactions' },
                                                 { title: 'Analytics & Reports', desc: 'Real-time transaction data and financial insights' },
                                             ].map((service, i) => (
                                                 <div key={i} className="p-5 rounded-2xl bg-gray-50 border border-gray-100 hover:border-orange-200 hover:bg-orange-50 transition-all">

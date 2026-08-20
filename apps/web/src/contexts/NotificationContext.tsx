@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from './AuthContext';
 import { api } from '../lib/axios';
+import { API_BASE } from '../lib/runtime';
 
 interface Notification {
     id: string;
@@ -31,12 +32,18 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const [notifications, setNotifications] = useState<Notification[]>([]);
 
     const unreadCount = notifications.filter(n => !n.read).length;
+    const normalizeNotifications = (payload: any) => {
+        if (Array.isArray(payload)) return payload;
+        if (Array.isArray(payload?.notifications)) return payload.notifications;
+        if (Array.isArray(payload?.data)) return payload.data;
+        return [];
+    };
 
     useEffect(() => {
         if (token && user) {
             // Initialize Socket
-            const newSocket = io('http://localhost:3005', {
-                transports: ['websocket'],
+            const newSocket = io(API_BASE, {
+                transports: ['polling'],
                 upgrade: false
             });
             setSocket(newSocket);
@@ -76,7 +83,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             // Transform DB notifications to UI format if needed
             // For now assuming DB structure matches UI or is close enough
             // We might need to map `created_at` to `time` string
-            const mapped = res.data.map((n: any) => ({
+            const mapped = normalizeNotifications(res.data).map((n: any) => ({
                 ...n,
                 read: n.is_read,
                 time: new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

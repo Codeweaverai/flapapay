@@ -362,8 +362,8 @@ export const PayRequest: React.FC = () => {
                             <div className="bg-orange-50 p-6 rounded-2xl border border-orange-100">
                                 <p className="text-orange-800 font-bold mb-4">Sign in to pay with your balance and track this request.</p>
                                 <div className="flex gap-4">
-                                    <Button onClick={() => navigate('/login')} className="flex-1 rounded-xl font-black bg-black text-white">Login</Button>
-                                    <Button variant="ghost" onClick={() => navigate('/signup')} className="flex-1 rounded-xl font-black border-black/10">Sign Up</Button>
+                                    <Button onClick={() => navigate('/signup/individual')} className="flex-1 rounded-xl font-black bg-black text-white">Continue</Button>
+                                    <Button variant="ghost" onClick={() => navigate('/merchant/signup')} className="flex-1 rounded-xl font-black border-black/10">Business Sign Up</Button>
                                 </div>
                             </div>
                             <div className="relative">

@@ -19,7 +19,7 @@ export const Signup: React.FC = () => {
             await api.post('/auth/register', data);
             setSuccess('Registration successful! You can now log in.');
             setTimeout(() => {
-                navigate('/login');
+                navigate('/signup/individual');
             }, 1500);
         } catch (err: any) {
             setError(err.response?.data?.error || 'Registration failed');
@@ -82,7 +82,7 @@ export const Signup: React.FC = () => {
 
                         <div className="text-center text-sm text-[var(--color-text-main)]">
                             Already have an account?{' '}
-                            <a href="/login" className="font-semibold text-[var(--color-primary)] hover:text-[var(--color-primary-dark)]">
+                            <a href="/signup/individual" className="font-semibold text-[var(--color-primary)] hover:text-[var(--color-primary-dark)]">
                                 Sign in
                             </a>
                         </div>

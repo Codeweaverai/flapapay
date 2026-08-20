@@ -83,9 +83,9 @@ async function emitWebhookForMerchant(merchantId, event, payload) {
                 const res = await axios.post(ep.url, JSON.parse(body), {
                     headers: {
                         'Content-Type':       'application/json',
-                        'FlapaPay-Signature': rawSig,
-                        'FlapaPay-Event':     event,
-                        'FlapaPay-Delivery':  deliveryId,
+                        'x-flapapay-signature': rawSig,
+                        'x-flapapay-event':     event,
+                        'x-flapapay-delivery':  deliveryId,
                     },
                     timeout: 10000,
                 });
@@ -152,10 +152,10 @@ async function retryFailedWebhooks() {
             const res = await axios.post(delivery.url, JSON.parse(body), {
                 headers: {
                     'Content-Type':        'application/json',
-                    'FlapaPay-Signature':  rawSig,
-                    'FlapaPay-Event':      delivery.event,
-                    'FlapaPay-Delivery':   delivery.id,
-                    'FlapaPay-Retry-Num':  String(newRetryCount),
+                    'x-flapapay-signature': rawSig,
+                    'x-flapapay-event':     delivery.event,
+                    'x-flapapay-delivery':  delivery.id,
+                    'x-flapapay-retry-num': String(newRetryCount),
                 },
                 timeout: 10000,
             });

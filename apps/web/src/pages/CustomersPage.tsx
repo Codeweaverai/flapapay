@@ -17,7 +17,7 @@ const caseStudies = [
         title: "Unified collections for a multi-country retail giant.",
         metric: "2.5M",
         metricLabel: "Transactions/mo",
-        description: "ShopRite integrated FlapaPay Connect to accept 15+ different mobile money wallets through a single API.",
+        description: "ShopRite integrated FlapaPay collections to accept 15+ different mobile money wallets through a single API.",
         image: "/assets/images/SHOPRITE.jpg"
     }
 ];

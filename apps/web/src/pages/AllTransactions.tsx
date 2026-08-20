@@ -16,6 +16,21 @@ interface Transaction {
     debit_wallet_id?: string;
     fee_amount?: string;
     status?: string;
+    funding_source_type?: string;
+    funding_source_brand?: string;
+    funding_source_last4?: string;
+    deposit_operator?: string;
+    deposit_provider?: string;
+    withdrawal_provider?: string;
+    withdrawal_destination_type?: string;
+    withdrawal_destination_details?: string | {
+        provider?: string;
+        bankName?: string;
+        accountName?: string;
+        accountNumber?: string;
+        phoneNumber?: string;
+        country?: string;
+    };
 }
 
 interface Wallet {
@@ -23,6 +38,125 @@ interface Wallet {
     currency: string;
     balance: string;
 }
+
+type TransactionBrandMeta = {
+    label: string;
+    src?: string;
+    initials?: string;
+    bgClass: string;
+};
+
+const BRAND_ASSET_MAP: Record<string, TransactionBrandMeta> = {
+    mtn: { label: 'MTN MoMo', src: '/assets/images/MTN_Logo.svg', bgClass: 'bg-yellow-50' },
+    airtel: { label: 'Airtel Money', src: '/assets/images/Airtel_Africa_logo.svg', bgClass: 'bg-red-50' },
+    zamtel: { label: 'Zamtel Kwacha', src: '/assets/images/zamtel.png', bgClass: 'bg-green-50' },
+    visa: { label: 'Visa', src: '/assets/images/visa02.svg', bgClass: 'bg-blue-50' },
+    mastercard: { label: 'Mastercard', src: '/assets/images/mastercard.svg', bgClass: 'bg-orange-50' },
+    'standard chartered': { label: 'Standard Chartered', src: '/assets/images/STANCHART.svg', bgClass: 'bg-blue-50' },
+    stanchart: { label: 'Standard Chartered', src: '/assets/images/STANCHART.svg', bgClass: 'bg-blue-50' },
+    'first alliance': { label: 'First Alliance', src: '/assets/images/firstalliance.svg', bgClass: 'bg-sky-50' },
+    firstalliance: { label: 'First Alliance', src: '/assets/images/firstalliance.svg', bgClass: 'bg-sky-50' },
+    'indo zambia': { label: 'Indo Zambia', src: '/assets/images/indozambiabank.png', bgClass: 'bg-cyan-50' },
+    indozambia: { label: 'Indo Zambia', src: '/assets/images/indozambiabank.png', bgClass: 'bg-cyan-50' },
+    'ab bank': { label: 'AB Bank', src: '/assets/images/AB_Bank_Logo-300x58.png', bgClass: 'bg-red-50' },
+    abbank: { label: 'AB Bank', src: '/assets/images/AB_Bank_Logo-300x58.png', bgClass: 'bg-red-50' },
+};
+
+const toBrandKey = (value?: string) => String(value || '').trim().toLowerCase();
+
+const parseWithdrawalDestinationDetails = (value: Transaction['withdrawal_destination_details']) => {
+    if (!value) return {};
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return {};
+    }
+};
+
+const getTransactionBrandMeta = (tx: Transaction): TransactionBrandMeta | null => {
+    const destinationDetails = parseWithdrawalDestinationDetails(tx.withdrawal_destination_details);
+    const withdrawalProvider = toBrandKey(destinationDetails.provider);
+    const withdrawalBankName = String(destinationDetails.bankName || '').trim();
+
+    if (tx.transaction_type === 'WITHDRAWAL' && tx.withdrawal_destination_type === 'mobile_money') {
+        const candidate = [withdrawalProvider, toBrandKey(tx.description)].find(Boolean);
+        if (candidate) {
+            const direct = BRAND_ASSET_MAP[candidate];
+            if (direct) return direct;
+            const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => candidate.includes(key));
+            if (partial) return partial[1];
+        }
+        return { label: 'Mobile Money', initials: 'MM', bgClass: 'bg-emerald-100' };
+    }
+
+    if (tx.transaction_type === 'WITHDRAWAL' && tx.withdrawal_destination_type === 'bank_account') {
+        const bankCandidate = toBrandKey(withdrawalBankName);
+        if (bankCandidate) {
+            const direct = BRAND_ASSET_MAP[bankCandidate];
+            if (direct) return direct;
+            const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => bankCandidate.includes(key));
+            if (partial) return partial[1];
+            return { label: withdrawalBankName, initials: 'BK', bgClass: 'bg-slate-100' };
+        }
+        return { label: 'Bank', initials: 'BK', bgClass: 'bg-slate-100' };
+    }
+
+    const candidates = [
+        tx.deposit_operator,
+        tx.funding_source_brand,
+        tx.deposit_provider,
+        tx.description
+    ].map(toBrandKey).filter(Boolean);
+
+    for (const candidate of candidates) {
+        const direct = BRAND_ASSET_MAP[candidate];
+        if (direct) return direct;
+        const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => candidate.includes(key));
+        if (partial) return partial[1];
+    }
+
+    const fundingType = toBrandKey(tx.funding_source_type);
+    if (fundingType === 'bank') return { label: 'Bank', initials: 'BK', bgClass: 'bg-slate-100' };
+    if (fundingType === 'mobile_money') return { label: 'Mobile Money', initials: 'MM', bgClass: 'bg-emerald-100' };
+    if (fundingType === 'card') return { label: 'Card', initials: 'CD', bgClass: 'bg-blue-100' };
+
+    return null;
+};
+
+const formatTransactionDescription = (tx: Transaction) => {
+    const raw = String(tx.description || '').trim();
+    if (!raw) return 'Transaction processed successfully';
+
+    const cleaned = raw.replace(/via PawaPay/gi, '').replace(/via Lenco/gi, '').trim();
+    const mobileMoneyMatch = cleaned.match(/^Withdrawal to mobile_money \((.+)\)$/i);
+    const bankMatch = cleaned.match(/^Withdrawal to bank_account \((.+)\)$/i);
+
+    const toFriendlyWithdrawal = (jsonPayload: string, destinationLabel: string) => {
+        try {
+            const parsed = JSON.parse(jsonPayload);
+            if (destinationLabel === 'mobile money') {
+                const provider = String(parsed.provider || '').trim();
+                const phoneNumber = String(parsed.phoneNumber || '').trim();
+                const accountName = String(parsed.accountName || '').trim();
+                return ['Withdrawal to mobile money', [provider ? provider.toUpperCase() : '', phoneNumber, accountName].filter(Boolean).join(' • ')].filter(Boolean).join(' • ');
+            }
+
+            const bankName = String(parsed.bankName || '').trim();
+            const accountName = String(parsed.accountName || '').trim();
+            const accountNumber = String(parsed.accountNumber || '').trim();
+            const maskedAccount = accountNumber ? `****${accountNumber.slice(-4)}` : '';
+            return ['Withdrawal to bank account', [bankName, accountName, maskedAccount].filter(Boolean).join(' • ')].filter(Boolean).join(' • ');
+        } catch {
+            return cleaned;
+        }
+    };
+
+    if (mobileMoneyMatch) return toFriendlyWithdrawal(mobileMoneyMatch[1], 'mobile money');
+    if (bankMatch) return toFriendlyWithdrawal(bankMatch[1], 'bank account');
+
+    return cleaned;
+};
 
 export const AllTransactions: React.FC = () => {
     const { token, logout } = useAuth();
@@ -235,6 +369,7 @@ export const AllTransactions: React.FC = () => {
                             <div className="divide-y divide-gray-50">
                                 {filteredTransactions.map((tx) => {
                                     const isCredit = isInflow(tx);
+                                    const brandMeta = getTransactionBrandMeta(tx);
                                     return (
                                         <div
                                             key={tx.id}
@@ -242,17 +377,13 @@ export const AllTransactions: React.FC = () => {
                                             className="p-5 flex items-center justify-between hover:bg-gray-50 transition-all cursor-pointer group"
                                         >
                                             <div className="flex items-center gap-4">
-                                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
-                                                    isCredit ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
-                                                }`}>
-                                                    {isCredit ? (
-                                                        <svg className="w-6 h-6 transform group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
-                                                        </svg>
+                                                <div className={`w-12 h-12 rounded-2xl overflow-hidden border border-gray-100 shadow-sm flex items-center justify-center ${brandMeta?.bgClass || 'bg-gray-50'}`}>
+                                                    {brandMeta?.src ? (
+                                                        <img src={brandMeta.src} alt={brandMeta.label} className="w-full h-full object-contain p-1.5" />
                                                     ) : (
-                                                        <svg className="w-6 h-6 transform group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                                                        </svg>
+                                                        <span className={`text-xs font-black ${isCredit ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                            {brandMeta?.initials || (isCredit ? 'IN' : 'OUT')}
+                                                        </span>
                                                     )}
                                                 </div>
                                                 <div>
@@ -265,9 +396,14 @@ export const AllTransactions: React.FC = () => {
                                                         <span className="text-[10px] font-bold px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full uppercase tracking-wider">
                                                             {tx.transaction_type}
                                                         </span>
+                                                        {brandMeta && (
+                                                            <span className="text-[10px] font-bold px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">
+                                                                {brandMeta.label}
+                                                            </span>
+                                                        )}
                                                     </div>
                                                     <p className="text-sm text-gray-600 font-medium mt-0.5 line-clamp-1">
-                                                        {tx.description || 'Transaction processed successfully'}
+                                                        {formatTransactionDescription(tx)}
                                                     </p>
                                                     <div className="flex items-center gap-2 mt-1">
                                                         <p className="text-[11px] text-gray-400 font-medium">
@@ -336,7 +472,7 @@ export const AllTransactions: React.FC = () => {
                                 <p className={`text-3xl font-bold ${isInflow(selectedTx) ? 'text-emerald-600' : 'text-red-500'}`}>
                                     {isInflow(selectedTx) ? '+' : '-'}{parseFloat(selectedTx.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })} {selectedTx.currency}
                                 </p>
-                                <p className="text-gray-500 text-sm mt-2">{selectedTx.description || 'Transaction'}</p>
+                                <p className="text-gray-500 text-sm mt-2">{formatTransactionDescription(selectedTx)}</p>
                             </div>
 
                             <div className="space-y-4 bg-gray-50 rounded-2xl p-6">

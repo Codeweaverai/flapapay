@@ -210,7 +210,7 @@ export const Login: React.FC = () => {
                             <div className="text-center pt-2">
                                 <p className="text-gray-400 font-bold text-sm">
                                     New to FlapaPay?{' '}
-                                    <a href="/signup" className="text-orange-500 hover:text-orange-600 font-black decoration-2 underline underline-offset-4">
+                                    <a href="/signup/individual" className="text-orange-500 hover:text-orange-600 font-black decoration-2 underline underline-offset-4">
                                         Join for free
                                     </a>
                                 </p>

@@ -1,201 +1,635 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+    ArrowRight,
+    Calculator,
+    ChevronRight,
+    CreditCard,
+    Landmark,
+    ShieldCheck,
+    Smartphone,
+    Sparkles,
+} from 'lucide-react';
 import { Navbar } from '../components/layout/Navbar';
 import { Footer } from '../components/layout/Footer';
 import { Button } from '../components/ui/Button';
 
-const PricingFeature: React.FC<{ title: string; desc: string; icon: string }> = ({ title, desc, icon }) => (
-    <div className="flex gap-6 items-start group">
-        <div className="w-14 h-14 rounded-2xl bg-gray-50 flex items-center justify-center text-2xl shrink-0 group-hover:bg-orange-500 group-hover:text-white transition-all duration-500 shadow-sm">
-            {icon}
-        </div>
-        <div>
-            <h4 className="text-xl font-black text-gray-900 mb-2">{title}</h4>
-            <p className="text-gray-500 leading-relaxed">{desc}</p>
-        </div>
+const collectionFees = [
+    {
+        id: 'local_card',
+        label: 'Local Card',
+        rate: 3.5,
+        displayRate: '3.5%',
+        icon: CreditCard,
+        description: 'Domestic card collections across hosted checkout and payment links.',
+    },
+    {
+        id: 'international_card',
+        label: 'International Card',
+        rate: 3.8,
+        displayRate: '3.8%',
+        icon: Sparkles,
+        description: 'Cross-border card acceptance with the same merchant workflow.',
+    },
+    {
+        id: 'mobile_money',
+        label: 'Mobile Money',
+        rate: 1,
+        displayRate: '1%',
+        icon: Smartphone,
+        description: 'Mobile money collections for day-to-day local payment flows.',
+    },
+] as const;
+
+const mnoLogos = [
+    { name: 'MTN MoMo', src: '/assets/images/MTN_Logo.svg', className: 'h-7 w-auto' },
+    { name: 'Airtel Money', src: '/assets/images/Airtel_Africa_logo.svg', className: 'h-7 w-auto' },
+    { name: 'Zamtel Money', src: '/assets/images/zamtel.png', className: 'h-8 w-auto' },
+] as const;
+
+const cardLogos = [
+    { name: 'Visa', src: '/assets/images/visa02.svg', className: 'h-6 w-auto' },
+    { name: 'Mastercard', src: '/assets/images/mastercard.svg', className: 'h-7 w-auto' },
+] as const;
+
+const payoutPricing = {
+    mobile_money: [
+        { min: 0, max: 1000, label: 'K0 - K1,000', feeRange: 'K8.50 - K12', estimate: 12 },
+        { min: 1000.01, max: 50000, label: 'K1,000.01 - K50,000', feeRange: 'K15 - K25', estimate: 25 },
+        { min: 50000.01, max: 100000000, label: 'K50,000.01 - K100,000,000', feeRange: 'K35', estimate: 35 },
+    ],
+    bank_account: [
+        { min: 0, max: 1000, label: 'K0 - K1,000', feeRange: 'K8.50 - K10', estimate: 10 },
+        { min: 1000.01, max: 50000, label: 'K1,000.01 - K50,000', feeRange: 'K15 - K25', estimate: 25 },
+        { min: 50000.01, max: 100000000, label: 'K50,000.01 - K100,000,000', feeRange: 'K35', estimate: 35 },
+    ],
+} as const;
+
+type CollectionChannel = (typeof collectionFees)[number]['id'];
+type PayoutChannel = keyof typeof payoutPricing;
+type PricingMode = 'collections' | 'payout';
+
+const formatKwacha = (value: number) =>
+    `K${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const getPayoutTier = (channel: PayoutChannel, amount: number) => {
+    const tiers = payoutPricing[channel];
+    return tiers.find((tier) => amount >= tier.min && amount <= tier.max) || tiers[tiers.length - 1];
+};
+
+const SectionEyebrow: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="inline-flex items-center gap-2 rounded-full border border-orange-200 bg-orange-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.35em] text-orange-600">
+        <span className="h-2 w-2 rounded-full bg-orange-500" />
+        {children}
     </div>
 );
 
 export const PricingPage: React.FC = () => {
-    const [activeTab, setActiveTab] = useState<'cards' | 'momo' | 'payouts'>('cards');
+    const navigate = useNavigate();
+    const [pricingMode, setPricingMode] = useState<PricingMode>('collections');
+    const [collectionChannel, setCollectionChannel] = useState<CollectionChannel>('mobile_money');
+    const [payoutChannel, setPayoutChannel] = useState<PayoutChannel>('mobile_money');
+    const [collectionAmount, setCollectionAmount] = useState('2500000');
+    const [payoutAmount, setPayoutAmount] = useState('50000');
+
+    const parsedCollectionAmount = Math.max(0, Number(collectionAmount) || 0);
+    const parsedPayoutAmount = Math.max(0, Number(payoutAmount) || 0);
+
+    const activeCollection = collectionFees.find((item) => item.id === collectionChannel) || collectionFees[0];
+    const collectionFeeAmount = parsedCollectionAmount * (activeCollection.rate / 100);
+
+    const activePayoutTier = getPayoutTier(payoutChannel, parsedPayoutAmount);
 
     return (
-        <div className="min-h-screen bg-white">
+        <div
+            className="min-h-screen bg-black font-sans text-gray-900 selection:bg-orange-200/60"
+            style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}
+        >
             <Navbar />
 
             <main className="pt-20">
-                {/* Hero Section */}
-                <section className="py-32 bg-black relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-orange-500 rounded-full blur-[200px] opacity-20 -translate-y-1/2 translate-x-1/4"></div>
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8 text-center relative z-10">
-                        <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-xs font-black text-orange-400 uppercase tracking-widest mb-10">
-                            Transparent Pricing
-                        </div>
-                        <h1 className="text-5xl md:text-8xl font-black text-white mb-10 tracking-tight leading-[0.9]">
-                            Smart <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 to-yellow-500">Economics</span> for <br className="hidden md:block" /> Global Growth.
-                        </h1>
-                        <p className="text-xl md:text-2xl text-gray-400 max-w-3xl mx-auto leading-relaxed mb-16">
-                            Simple, pay-as-you-go pricing with no hidden fees. Powering businesses of all sizes from startups to enterprises.
-                        </p>
+                <section className="relative overflow-hidden border-b border-white/10 px-6 py-20 lg:px-8 lg:py-28">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(249,115,22,0.16),_transparent_32%),radial-gradient(circle_at_bottom_right,_rgba(251,191,36,0.10),_transparent_28%)]" />
+                    <div className="relative z-10 mx-auto max-w-7xl">
+                        <div className="grid items-end gap-10 lg:grid-cols-[1.05fr_0.95fr]">
+                            <div>
+                                <SectionEyebrow>Pricing</SectionEyebrow>
+                                <h1 className="mt-8 max-w-4xl text-5xl font-black leading-[0.95] tracking-[-0.04em] text-white md:text-7xl">
+                                    Transparent and
+                                    <span className="block text-orange-600">straightforward pricing.</span>
+                                </h1>
+                                <p className="mt-6 max-w-2xl text-lg leading-relaxed text-gray-300 md:text-xl">
+                                    No hidden fees. No guesswork. FlapaPay merchants can see collections and payout pricing in one place, with calculators that show the charge before money moves.
+                                </p>
 
-                        {/* Pricing Selector Tabs */}
-                        <div className="max-w-2xl mx-auto bg-gray-900/50 backdrop-blur-xl p-2 rounded-[32px] shadow-2xl mb-16 flex gap-2 border border-white/10">
-                            {[
-                                { id: 'cards', label: 'Card Payments', icon: '💳' },
-                                { id: 'momo', label: 'Mobile Money', icon: '📲' },
-                                { id: 'payouts', label: 'Payouts', icon: '💸' }
-                            ].map(tab => (
-                                <button
-                                    key={tab.id}
-                                    onClick={() => setActiveTab(tab.id as any)}
-                                    className={`flex-1 flex items-center justify-center gap-3 py-5 rounded-[24px] font-black text-lg transition-all duration-500 ${activeTab === tab.id
-                                        ? 'bg-orange-500 text-white shadow-xl shadow-orange-500/20'
-                                        : 'text-gray-400 hover:text-white hover:bg-white/5'
-                                        }`}
-                                >
-                                    <span>{tab.icon}</span>
-                                    <span>{tab.label}</span>
-                                </button>
-                            ))}
+                                <div className="mt-10 flex flex-wrap gap-4">
+                                    <Button
+                                        size="lg"
+                                        onClick={() => navigate('/merchant/signup')}
+                                        className="rounded-full bg-gray-950 px-8 py-4 text-base font-black text-white shadow-xl shadow-orange-900/10 transition-all hover:-translate-y-0.5 hover:bg-orange-600"
+                                    >
+                                        Get started
+                                    </Button>
+                                    <Button
+                                        size="lg"
+                                        variant="outline"
+                                        onClick={() => navigate('/developers')}
+                                        className="rounded-full border-2 border-white/15 bg-white/8 px-8 py-4 text-base font-black text-white backdrop-blur transition-all hover:border-orange-300 hover:bg-white/12"
+                                    >
+                                        View developer docs
+                                    </Button>
+                                </div>
+
+                                <div className="mt-10 flex flex-wrap items-center gap-6 text-white/90">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Accepted Card Payments</p>
+                                        <div className="mt-3 flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                            {cardLogos.map((logo) => (
+                                                <div key={logo.name} className="flex h-12 items-center rounded-2xl bg-white px-4 shadow-sm">
+                                                    <img src={logo.src} alt={logo.name} className={logo.className} />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Supported Mobile Networks</p>
+                                        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-[28px] border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
+                                            {mnoLogos.map((logo) => (
+                                                <div key={logo.name} className="flex h-12 items-center rounded-2xl bg-white px-4 shadow-sm">
+                                                    <img src={logo.src} alt={logo.name} className={logo.className} />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="relative">
+                                <div className="absolute -left-6 top-8 h-40 w-40 rounded-full bg-orange-300/35 blur-3xl" />
+                                <div className="absolute -right-8 bottom-2 h-40 w-40 rounded-full bg-amber-400/25 blur-3xl" />
+
+                                <div className="relative overflow-hidden rounded-[38px] border border-white/10 bg-white/92 p-6 shadow-[0_30px_90px_rgba(146,64,14,0.24)] backdrop-blur">
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <div className="rounded-[28px] border border-orange-100 bg-gradient-to-br from-[#fff6ea] to-white p-5">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-500">Accepted Card Payments</p>
+                                            <div className="mt-4 flex items-center gap-3">
+                                                {cardLogos.map((logo) => (
+                                                    <div key={logo.name} className="flex h-14 items-center rounded-2xl border border-gray-100 bg-white px-4 shadow-sm">
+                                                        <img src={logo.src} alt={logo.name} className={logo.className} />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-[28px] border border-orange-100 bg-gradient-to-br from-[#fff6ea] to-white p-5">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-500">Mobile Money Operators</p>
+                                            <div className="mt-4 flex flex-wrap items-center gap-3">
+                                                {mnoLogos.map((logo) => (
+                                                    <div key={logo.name} className="flex h-14 items-center rounded-2xl border border-gray-100 bg-white px-4 shadow-sm">
+                                                        <img src={logo.src} alt={logo.name} className={logo.className} />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-5 rounded-[30px] border border-gray-100 bg-[#1f140a] p-6 text-white">
+                                        <div className="flex flex-wrap items-center justify-between gap-4">
+                                            <div>
+                                                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Payout snapshot</p>
+                                                <h2 className="mt-3 text-2xl font-black">Tiered payout fees for mobile money and bank account.</h2>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const target = document.getElementById('payout-breakdown');
+                                                    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                                }}
+                                                className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-5 py-3 text-sm font-black text-white transition-all hover:bg-white/15"
+                                            >
+                                                See full breakdown
+                                                <ChevronRight className="h-4 w-4" />
+                                            </button>
+                                        </div>
+                                        <div className="mt-6 grid gap-3 md:grid-cols-2">
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                                                <p className="text-xs font-black uppercase tracking-[0.2em] text-orange-200">Mobile Money</p>
+                                                <p className="mt-2 text-sm text-gray-300">K8.50 - K12, K15 - K25, then K35 for larger payout sizes.</p>
+                                            </div>
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                                                <p className="text-xs font-black uppercase tracking-[0.2em] text-orange-200">Bank Account</p>
+                                                <p className="mt-2 text-sm text-gray-300">K8.50 - K10, K15 - K25, then K35 across high-value transfers.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </section>
 
-                {/* Pricing Main Display */}
-                <section className="py-32 bg-white">
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
-                            <div className="animate-in fade-in slide-in-from-left-10 duration-700">
-                                {activeTab === 'cards' && (
-                                    <div className="space-y-12">
-                                        <h2 className="text-4xl md:text-5xl font-black text-gray-900 mb-6">Global Card Acceptance</h2>
-                                        <div className="flex items-baseline gap-4 mb-10">
-                                            <span className="text-7xl font-black text-orange-500">2.9%</span>
-                                            <span className="text-3xl font-bold text-gray-400">+ $0.30 per transaction</span>
-                                        </div>
-                                        <div className="space-y-8">
-                                            <PricingFeature icon="🌍" title="Local & International" desc="Accept Visa, Mastercard, and American Express from customers anywhere in the world." />
-                                            <PricingFeature icon="⚡" title="Instant Settlement" desc="Funds are settled to your FlapaPay wallet immediately after transaction confirmation." />
-                                            <PricingFeature icon="🛡️" title="Fraud Protection" desc="Built-in 3D Secure 2.0 and automated fraud detection at no extra cost." />
-                                        </div>
-                                    </div>
-                                )}
-                                {activeTab === 'momo' && (
-                                    <div className="space-y-12">
-                                        <h2 className="text-4xl md:text-5xl font-black text-gray-900 mb-6">Mobile Money Collections</h2>
-                                        <div className="flex items-baseline gap-4 mb-10">
-                                            <span className="text-7xl font-black text-orange-500">1.8%</span>
-                                            <span className="text-3xl font-bold text-gray-400">per transaction</span>
-                                        </div>
-                                        <div className="space-y-8">
-                                            <PricingFeature icon="📱" title="MTN, Airtel, Zamtel" desc="Deep integration with all major African MNOs for seamless collections." />
-                                            <PricingFeature icon="📶" title="Offline Capabilities" desc="Support for USSD based collections for users with limited internet connectivity." />
-                                            <PricingFeature icon="🔄" title="Real-time Reconciliation" desc="Automatic status updates and ledger management for every mobile wallet transaction." />
-                                        </div>
-                                    </div>
-                                )}
-                                {activeTab === 'payouts' && (
-                                    <div className="space-y-12">
-                                        <h2 className="text-4xl md:text-5xl font-black text-gray-900 mb-6">Mass Payout Infrastructure</h2>
-                                        <div className="flex items-baseline gap-4 mb-10">
-                                            <span className="text-7xl font-black text-orange-500">$0.10</span>
-                                            <span className="text-3xl font-bold text-gray-400">fixed per payout</span>
-                                        </div>
-                                        <div className="space-y-8">
-                                            <PricingFeature icon="🚀" title="Bulk Disbursement" desc="Send funds to thousands of vendors or employees with a single API call." />
-                                            <PricingFeature icon="🏛️" title="Direct-to-Bank" desc="Proprietary routing to clear funds to any bank account in Zambia & beyond." />
-                                            <PricingFeature icon="💼" title="Treasury Management" desc="Advanced roles and approval workflows for large-scale financial operations." />
-                                        </div>
-                                    </div>
-                                )}
+                <section className="relative px-6 pb-8 pt-4 lg:px-8">
+                    <div className="absolute inset-x-0 top-0 h-48 bg-[radial-gradient(circle_at_center,_rgba(249,115,22,0.12),_transparent_55%)]" />
+                    <div className="relative z-10 mx-auto max-w-7xl">
+                        <div className="rounded-[38px] border border-white/10 bg-white/6 p-6 text-white shadow-[0_30px_90px_rgba(146,64,14,0.18)] backdrop-blur md:p-8">
+                            <div className="flex flex-wrap items-end justify-between gap-4">
+                                <div>
+                                    <SectionEyebrow>Collections</SectionEyebrow>
+                                    <h2 className="mt-5 text-4xl font-black tracking-[-0.04em] text-white">Card and mobile money rates in one pricing band.</h2>
+                                </div>
+                                <p className="max-w-xl text-sm leading-relaxed text-gray-200">
+                                    These are the base collection rates for domestic cards, international cards, and mobile money payments across FlapaPay checkout and payment links.
+                                </p>
                             </div>
 
-                            <div className="bg-gray-900 rounded-[64px] p-16 text-white relative overflow-hidden animate-in fade-in slide-in-from-right-10 duration-700">
-                                <div className="absolute top-0 right-0 w-64 h-64 bg-orange-500 opacity-10 blur-[100px]"></div>
-                                <h3 className="text-3xl font-black mb-10">Everything included:</h3>
-                                <ul className="space-y-6">
+                            <div className="mt-8 grid gap-4 md:grid-cols-3">
+                                {collectionFees.map((item) => {
+                                    const Icon = item.icon;
+                                    return (
+                                        <div key={item.id} className="rounded-[28px] border border-white/10 bg-white/8 p-6">
+                                            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-orange-500 to-yellow-400 text-black">
+                                                <Icon className="h-5 w-5" />
+                                            </div>
+                                            <p className="mt-5 text-sm font-black uppercase tracking-[0.18em] text-orange-200">{item.label}</p>
+                                            <p className="mt-3 text-5xl font-black tracking-[-0.05em] text-white">{item.displayRate}</p>
+                                            <p className="mt-4 text-sm leading-relaxed text-gray-200">{item.description}</p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="relative px-6 py-10 lg:px-8">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(251,191,36,0.08),_transparent_35%)]" />
+                    <div className="relative z-10 mx-auto max-w-7xl">
+                        <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+                            <div className="rounded-[34px] border border-[#eadccd] bg-white/85 p-7 shadow-[0_20px_70px_rgba(120,53,15,0.08)] backdrop-blur">
+                                <SectionEyebrow>Collections</SectionEyebrow>
+                                <h2 className="mt-6 text-3xl font-black tracking-[-0.04em] text-gray-950">Simple rates for funds coming in.</h2>
+                                <div className="mt-8 space-y-4">
+                                    {collectionFees.map((item) => {
+                                        const Icon = item.icon;
+                                        return (
+                                            <div key={item.id} className="flex items-center justify-between gap-4 rounded-[26px] border border-gray-100 bg-[#fcfaf7] p-5">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-100 text-orange-600">
+                                                        <Icon className="h-5 w-5" />
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-lg font-black text-gray-900">{item.label}</p>
+                                                        <p className="text-sm text-gray-500">{item.description}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <p className="text-3xl font-black tracking-[-0.04em] text-gray-950">{item.displayRate}</p>
+                                                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-gray-400">Per successful collection</p>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div id="payout-breakdown" className="rounded-[34px] border border-[#eadccd] bg-[#fffaf2] p-7 shadow-[0_20px_70px_rgba(120,53,15,0.08)]">
+                                <SectionEyebrow>Payout</SectionEyebrow>
+                                <h2 className="mt-6 text-3xl font-black tracking-[-0.04em] text-gray-950">Tiered pricing for funds going out.</h2>
+
+                                <div className="mt-8 grid gap-5 md:grid-cols-2">
+                                    <div className="rounded-[28px] border border-gray-200 bg-white p-5">
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gray-950 text-white">
+                                                <Smartphone className="h-5 w-5" />
+                                            </div>
+                                            <div>
+                                                <p className="text-lg font-black text-gray-950">Mobile Money</p>
+                                                <p className="text-sm text-gray-500">Flat fee by transaction band</p>
+                                            </div>
+                                        </div>
+                                        <div className="mt-5 space-y-3">
+                                            {payoutPricing.mobile_money.map((tier) => (
+                                                <div key={tier.label} className="rounded-[22px] border border-gray-100 bg-[#fcfaf7] p-4">
+                                                    <div className="flex items-baseline justify-between gap-4">
+                                                        <p className="text-xl font-black text-gray-950">{tier.feeRange}</p>
+                                                        <p className="text-xs font-black uppercase tracking-[0.2em] text-gray-400">Fee</p>
+                                                    </div>
+                                                    <p className="mt-2 text-sm text-gray-500">{tier.label}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-[28px] border border-gray-200 bg-white p-5">
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gray-950 text-white">
+                                                <Landmark className="h-5 w-5" />
+                                            </div>
+                                            <div>
+                                                <p className="text-lg font-black text-gray-950">Bank Account</p>
+                                                <p className="text-sm text-gray-500">Flat fee by transaction band</p>
+                                            </div>
+                                        </div>
+                                        <div className="mt-5 space-y-3">
+                                            {payoutPricing.bank_account.map((tier) => (
+                                                <div key={tier.label} className="rounded-[22px] border border-gray-100 bg-[#fcfaf7] p-4">
+                                                    <div className="flex items-baseline justify-between gap-4">
+                                                        <p className="text-xl font-black text-gray-950">{tier.feeRange}</p>
+                                                        <p className="text-xs font-black uppercase tracking-[0.2em] text-gray-400">Fee</p>
+                                                    </div>
+                                                    <p className="mt-2 text-sm text-gray-500">{tier.label}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="relative px-6 py-20 lg:px-8">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,_rgba(249,115,22,0.08),_transparent_32%),radial-gradient(circle_at_top_right,_rgba(251,191,36,0.06),_transparent_28%)]" />
+                    <div className="relative z-10 mx-auto max-w-7xl">
+                        <div className="rounded-[38px] border border-[#eadccd] bg-white/90 p-6 shadow-[0_25px_90px_rgba(120,53,15,0.10)] backdrop-blur md:p-8">
+                            <div className="flex flex-wrap items-center justify-between gap-5">
+                                <div>
+                                    <SectionEyebrow>Pricing Calculators</SectionEyebrow>
+                                    <h2 className="mt-6 text-4xl font-black tracking-[-0.04em] text-gray-950">Check the fee before you move money.</h2>
+                                    <p className="mt-4 max-w-2xl text-base leading-relaxed text-gray-600">
+                                        Use the collections and payout calculators to estimate charges instantly. Larger monthly volume can be priced separately.
+                                    </p>
+                                </div>
+
+                                <div className="flex rounded-full border border-gray-200 bg-[#f7f3ec] p-1.5">
                                     {[
-                                        "Consolidated dashboard for all methods",
-                                        "Automated financial reporting & exports",
-                                        "Developer-first REST APIs & SDKs",
-                                        "Free 24/7 technical support",
-                                        "Regular security updates & compliance",
-                                        "No recurring monthly or annual fees"
-                                    ].map((feat, i) => (
-                                        <li key={i} className="flex items-center gap-4 text-gray-300 text-lg">
-                                            <div className="w-6 h-6 rounded-full bg-orange-500 flex items-center justify-center shrink-0">
-                                                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
-                                                </svg>
-                                            </div>
-                                            {feat}
-                                        </li>
+                                        { id: 'collections', label: 'Collections' },
+                                        { id: 'payout', label: 'Payout' },
+                                    ].map((item) => (
+                                        <button
+                                            key={item.id}
+                                            onClick={() => setPricingMode(item.id as PricingMode)}
+                                            className={`rounded-full px-5 py-3 text-sm font-black transition-all ${
+                                                pricingMode === item.id
+                                                    ? 'bg-gray-950 text-white shadow-lg'
+                                                    : 'text-gray-500 hover:text-gray-900'
+                                            }`}
+                                        >
+                                            {item.label}
+                                        </button>
                                     ))}
-                                </ul>
-                                <div className="mt-16 pt-16 border-t border-white/10">
-                                    <h4 className="text-2xl font-black mb-4">Enterprise Scaling?</h4>
-                                    <p className="text-gray-400 mb-10 leading-relaxed text-lg">
-                                        Businesses with high transaction volume or unique business models can get custom volume-based pricing.
-                                    </p>
-                                    <Button className="bg-white text-black px-10 py-5 rounded-2xl font-black w-full text-xl hover:bg-orange-500 hover:text-white transition-all">
-                                        Contact Sales
-                                    </Button>
+                                </div>
+                            </div>
+
+                            <div className="mt-8 grid gap-6 lg:grid-cols-[0.82fr_1.18fr]">
+                                <div className="rounded-[30px] bg-[#1f140a] p-6 text-white">
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-orange-500 text-white">
+                                            <Calculator className="h-5 w-5" />
+                                        </div>
+                                        <div>
+                                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-200">Fee summary</p>
+                                            <h3 className="mt-2 text-2xl font-black">
+                                                {pricingMode === 'collections' ? 'Collection Fees Calculator' : 'Payout Fees Calculator'}
+                                            </h3>
+                                        </div>
+                                    </div>
+
+                                    {pricingMode === 'collections' ? (
+                                        <div className="mt-8 space-y-5">
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">Selected channel</p>
+                                                <p className="mt-2 text-2xl font-black">{activeCollection.label}</p>
+                                            </div>
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">I want to collect</p>
+                                                <p className="mt-2 text-3xl font-black">{formatKwacha(parsedCollectionAmount)}</p>
+                                            </div>
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">Estimated fee</p>
+                                                <p className="mt-2 text-3xl font-black">{formatKwacha(collectionFeeAmount)}</p>
+                                                <p className="mt-2 text-sm text-gray-300">Fee rate: {activeCollection.displayRate}</p>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="mt-8 space-y-5">
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">Selected channel</p>
+                                                <p className="mt-2 text-2xl font-black">{payoutChannel === 'mobile_money' ? 'Mobile Money' : 'Bank Account'}</p>
+                                            </div>
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">I want to send</p>
+                                                <p className="mt-2 text-3xl font-black">{formatKwacha(parsedPayoutAmount)}</p>
+                                            </div>
+                                            <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-200">Flat fee</p>
+                                                <p className="mt-2 text-3xl font-black">{formatKwacha(activePayoutTier.estimate)}</p>
+                                                <p className="mt-2 text-sm text-gray-300">Applicable band: {activePayoutTier.feeRange}</p>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="rounded-[30px] border border-gray-100 bg-[#fcfaf7] p-6">
+                                    {pricingMode === 'collections' ? (
+                                        <>
+                                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-600">Collections</p>
+                                            <h3 className="mt-4 text-3xl font-black tracking-[-0.04em] text-gray-950">Enter amount and select payment channel.</h3>
+                                            <p className="mt-3 text-gray-600">
+                                                See how much you will be charged for processing card or mobile money collections.
+                                            </p>
+
+                                            <div className="mt-8">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">Select Payment Channel</p>
+                                                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                                    {collectionFees.map((item) => {
+                                                        const Icon = item.icon;
+                                                        const active = collectionChannel === item.id;
+                                                        return (
+                                                            <button
+                                                                key={item.id}
+                                                                onClick={() => setCollectionChannel(item.id)}
+                                                                className={`rounded-[24px] border p-4 text-left transition-all ${
+                                                                    active
+                                                                        ? 'border-orange-300 bg-white shadow-lg shadow-orange-100'
+                                                                        : 'border-gray-200 bg-[#f5efe6] hover:border-orange-200 hover:bg-white'
+                                                                }`}
+                                                            >
+                                                                <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${active ? 'bg-gray-950 text-white' : 'bg-white text-gray-700'}`}>
+                                                                    <Icon className="h-5 w-5" />
+                                                                </div>
+                                                                <p className="mt-4 text-base font-black text-gray-950">{item.label}</p>
+                                                                <p className="mt-1 text-sm text-gray-500">{item.displayRate}</p>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-8 grid gap-4 md:grid-cols-[1fr_0.9fr]">
+                                                <div className="rounded-[24px] border border-gray-200 bg-white p-5">
+                                                    <label className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">I want to collect</label>
+                                                    <div className="mt-3 flex items-center rounded-[20px] border border-gray-200 bg-[#fcfaf7] px-5 py-4">
+                                                        <span className="text-2xl font-black text-orange-600">K</span>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={collectionAmount}
+                                                            onChange={(e) => setCollectionAmount(e.target.value)}
+                                                            className="ml-3 w-full bg-transparent text-3xl font-black tracking-[-0.04em] text-gray-950 outline-none"
+                                                            placeholder="0.00"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <div className="rounded-[24px] border border-gray-200 bg-white p-5">
+                                                    <p className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">Fees</p>
+                                                    <p className="mt-3 text-4xl font-black tracking-[-0.04em] text-gray-950">{activeCollection.displayRate}</p>
+                                                    <p className="mt-2 text-sm text-gray-500">Estimated fee</p>
+                                                    <p className="mt-1 text-2xl font-black text-orange-600">{formatKwacha(collectionFeeAmount)}</p>
+                                                </div>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-600">Payout</p>
+                                            <h3 className="mt-4 text-3xl font-black tracking-[-0.04em] text-gray-950">Estimate payout charges by transfer rail.</h3>
+                                            <p className="mt-3 text-gray-600">
+                                                Select a payout channel and transaction amount to see the applicable fee band and estimated flat charge.
+                                            </p>
+
+                                            <div className="mt-8">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">Select Payment Channel</p>
+                                                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                                    {[
+                                                        { id: 'mobile_money', label: 'Mobile Money', icon: Smartphone },
+                                                        { id: 'bank_account', label: 'Bank Account', icon: Landmark },
+                                                    ].map((item) => {
+                                                        const Icon = item.icon;
+                                                        const active = payoutChannel === item.id;
+                                                        return (
+                                                            <button
+                                                                key={item.id}
+                                                                onClick={() => setPayoutChannel(item.id as PayoutChannel)}
+                                                                className={`rounded-[24px] border p-4 text-left transition-all ${
+                                                                    active
+                                                                        ? 'border-orange-300 bg-white shadow-lg shadow-orange-100'
+                                                                        : 'border-gray-200 bg-[#f5efe6] hover:border-orange-200 hover:bg-white'
+                                                                }`}
+                                                            >
+                                                                <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${active ? 'bg-gray-950 text-white' : 'bg-white text-gray-700'}`}>
+                                                                    <Icon className="h-5 w-5" />
+                                                                </div>
+                                                                <p className="mt-4 text-base font-black text-gray-950">{item.label}</p>
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-8 grid gap-4 md:grid-cols-[1fr_0.9fr]">
+                                                <div className="rounded-[24px] border border-gray-200 bg-white p-5">
+                                                    <label className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">I want to send</label>
+                                                    <div className="mt-3 flex items-center rounded-[20px] border border-gray-200 bg-[#fcfaf7] px-5 py-4">
+                                                        <span className="text-2xl font-black text-orange-600">K</span>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            value={payoutAmount}
+                                                            onChange={(e) => setPayoutAmount(e.target.value)}
+                                                            className="ml-3 w-full bg-transparent text-3xl font-black tracking-[-0.04em] text-gray-950 outline-none"
+                                                            placeholder="0.00"
+                                                        />
+                                                    </div>
+                                                </div>
+                                                <div className="rounded-[24px] border border-gray-200 bg-white p-5">
+                                                    <p className="text-xs font-black uppercase tracking-[0.22em] text-gray-400">Flat Fee</p>
+                                                    <p className="mt-3 text-4xl font-black tracking-[-0.04em] text-gray-950">{formatKwacha(activePayoutTier.estimate)}</p>
+                                                    <p className="mt-2 text-sm text-gray-500">Fee range</p>
+                                                    <p className="mt-1 text-xl font-black text-orange-600">{activePayoutTier.feeRange}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-6 rounded-[24px] border border-dashed border-orange-200 bg-orange-50/70 p-5">
+                                                <p className="text-xs font-black uppercase tracking-[0.22em] text-orange-600">Applicable payout tier</p>
+                                                <p className="mt-2 text-lg font-black text-gray-950">{activePayoutTier.label}</p>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                {/* Virtual Cards Add-on */}
-                <section className="py-32 bg-gray-50">
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="bg-gradient-to-br from-orange-500 to-yellow-500 rounded-[80px] p-16 md:p-24 shadow-2xl shadow-orange-500/20 relative overflow-hidden group">
-                            <div className="absolute inset-0 bg-black/10 opacity-0 group-hover:opacity-100 transition-opacity duration-700"></div>
-                            <div className="relative z-10 flex flex-col lg:flex-row items-center gap-16">
-                                <div className="flex-1 text-center lg:text-left">
-                                    <h2 className="text-4xl md:text-6xl font-black text-white mb-8 tracking-tight">Virtual Card Issuing</h2>
-                                    <p className="text-white/80 text-xl md:text-2xl mb-12 leading-relaxed">
-                                        Issue instant, secure virtual Mastercards to your customers.
-                                        Only <span className="text-white font-black underline underline-offset-8">$0.50 per card</span> created.
-                                    </p>
-                                    <Button className="bg-black text-white px-12 py-6 rounded-3xl font-black shadow-2xl active:scale-95 transition-all text-xl">
-                                        Explore Card API
-                                    </Button>
-                                </div>
-                                <div className="w-full lg:w-1/2 flex justify-center">
-                                    <div className="w-96 h-64 bg-black rounded-[24px] border border-gray-800 p-8 shadow-2xl shadow-black/50 overflow-hidden relative group-hover:scale-105 transition-transform duration-700 flex flex-col justify-between">
-                                        {/* Subtle internal gradient */}
-                                        <div className="absolute inset-0 bg-gradient-to-br from-gray-800/20 to-transparent"></div>
-
-                                        <div className="relative z-10 flex justify-between items-start">
-                                            <div className="text-white font-black text-xl flex items-center gap-3">
-                                                <img
-                                                    src="/assets/images/flapapaylogoicon.png"
-                                                    alt="FlapaPay"
-                                                    className="w-10 h-10 object-contain drop-shadow-md"
-                                                />
-                                                <span className="tracking-tight">FlapaPay</span>
-                                            </div>
-                                            {/* Mastercard Logo CSS rendering */}
-                                            <div className="flex">
-                                                <div className="w-10 h-10 bg-red-500 rounded-full mix-blend-screen opacity-90 -mr-4"></div>
-                                                <div className="w-10 h-10 bg-yellow-500 rounded-full mix-blend-screen opacity-90"></div>
-                                            </div>
+                <section className="relative px-6 pb-20 lg:px-8">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_rgba(249,115,22,0.06),_transparent_42%)]" />
+                    <div className="relative z-10 mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+                        <div className="rounded-[34px] border border-[#eadccd] bg-white/85 p-7 shadow-[0_20px_70px_rgba(120,53,15,0.08)] backdrop-blur">
+                            <SectionEyebrow>Included</SectionEyebrow>
+                            <h2 className="mt-6 text-3xl font-black tracking-[-0.04em] text-gray-950">What sits around the fee.</h2>
+                            <div className="mt-8 space-y-4">
+                                {[
+                                    'Checkout sessions, payment links, and public payment pages',
+                                    'Wallet settlement and ledger visibility inside Merchant Hub',
+                                    'Transaction receipts, reporting, and operational histories',
+                                    'Mobile money and card support in one merchant stack',
+                                ].map((item) => (
+                                    <div key={item} className="flex items-start gap-4 rounded-[24px] border border-gray-100 bg-[#fcfaf7] p-5">
+                                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-orange-100 text-orange-600">
+                                            <ShieldCheck className="h-5 w-5" />
                                         </div>
-                                        <div className="relative z-10 text-white font-mono text-2xl tracking-[0.2em] mb-6 drop-shadow-md">
-                                            5412 **** **** 4242
-                                        </div>
-                                        <div className="relative z-10 flex justify-between items-end">
-                                            <div>
-                                                <div className="text-gray-400 text-[10px] font-black uppercase tracking-widest mb-1">Card Holder</div>
-                                                <div className="text-white font-bold tracking-wider">MR JOHN DOE</div>
-                                            </div>
-                                            <div>
-                                                <div className="text-gray-400 text-[10px] font-black uppercase tracking-widest text-right mb-1">Valid Thru</div>
-                                                <div className="text-white font-bold tracking-wider text-right">12/28</div>
-                                            </div>
-                                        </div>
+                                        <p className="text-sm leading-relaxed text-gray-600">{item}</p>
                                     </div>
-                                </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="rounded-[34px] border border-gray-950 bg-gray-950 p-7 text-white shadow-[0_25px_90px_rgba(17,24,39,0.28)]">
+                            <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Volume pricing</p>
+                            <h2 className="mt-5 text-4xl font-black tracking-[-0.04em]">Need a custom commercial structure?</h2>
+                            <p className="mt-4 max-w-xl text-base leading-relaxed text-gray-300">
+                                High-volume merchants, platforms, institutions, and payout-heavy operations can request tailored pricing aligned to monthly throughput and settlement behavior.
+                            </p>
+
+                            <div className="mt-8 rounded-[28px] border border-white/10 bg-white/5 p-5">
+                                <p className="text-sm font-bold text-gray-300">
+                                    Process large monthly volume or need a different commercial shape? Speak with sales for enterprise pricing and payout terms.
+                                </p>
+                                <p className="mt-3 text-sm font-bold text-orange-300">
+                                    sales@flapapay.com
+                                </p>
+                            </div>
+
+                            <div className="mt-8 flex flex-wrap gap-4">
+                                <Button
+                                    size="lg"
+                                    onClick={() => navigate('/merchant/signup')}
+                                    className="rounded-full bg-gradient-to-r from-orange-500 via-orange-600 to-amber-400 px-8 py-4 text-base font-black text-white shadow-2xl shadow-orange-500/20 transition-all hover:-translate-y-0.5"
+                                >
+                                    Open an account
+                                    <ArrowRight className="ml-2 h-4 w-4" />
+                                </Button>
+                                <Button
+                                    size="lg"
+                                    variant="outline"
+                                    onClick={() => navigate('/about')}
+                                    className="rounded-full border-2 border-white/15 bg-transparent px-8 py-4 text-base font-black text-white transition-all hover:bg-white/5"
+                                >
+                                    Learn more
+                                </Button>
+                            </div>
+
+                            <div className="mt-10 grid gap-4 md:grid-cols-3">
+                                {[
+                                    { label: 'Collections', value: '3 channels' },
+                                    { label: 'Payout rails', value: '2 rails' },
+                                    { label: 'Fee model', value: 'Transparent' },
+                                ].map((item) => (
+                                    <div key={item.label} className="rounded-[24px] border border-white/10 bg-white/5 p-4">
+                                        <p className="text-xs font-black uppercase tracking-[0.2em] text-gray-400">{item.label}</p>
+                                        <p className="mt-2 text-2xl font-black text-white">{item.value}</p>
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     </div>

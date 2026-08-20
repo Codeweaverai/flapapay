@@ -9,18 +9,26 @@ import { Footer } from '../components/layout/Footer';
 type SidebarSection =
   | 'quickstart' | 'authentication' | 'create-session'
   | 'retrieve-session' | 'list-sessions' | 'expire-session'
-  | 'subscription-mode' | 'marketplace-split'
+  | 'subscription-mode' | 'direct-settlement'
   | 'products' | 'prices' | 'webhook-confirm' | 'errors';
 
 type Lang = 'curl' | 'node' | 'python' | 'php';
 
 const LANG_LABELS: Record<Lang, string> = { curl: 'cURL', node: 'Node.js', python: 'Python', php: 'PHP' };
+const PUBLIC_API_BASE = 'https://api.flapapay.com';
+const EXAMPLE_APP_BASE = 'https://yourapp.com';
+const normalizeDeveloperExample = (input: string) => input
+  .replaceAll('http://localhost:3005', PUBLIC_API_BASE)
+  .replaceAll('http://localhost:5173', EXAMPLE_APP_BASE)
+  .replaceAll('localhost:3005', 'api.flapapay.com')
+  .replaceAll('localhost:5173', 'yourapp.com');
 
 // ─── Code Block ──────────────────────────────────────────────────────────────
 
 const CodeBlock: React.FC<{ code: string; lang?: string; id?: string }> = ({ code, lang, id }) => {
   const [copied, setCopied] = useState(false);
-  const copy = () => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const normalizedCode = normalizeDeveloperExample(code);
+  const copy = () => { navigator.clipboard.writeText(normalizedCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
   return (
     <div className="rounded-2xl overflow-hidden border border-gray-800 shadow-lg">
       <div className="flex items-center justify-between px-5 py-3 bg-gray-900 border-b border-gray-800">
@@ -34,7 +42,7 @@ const CodeBlock: React.FC<{ code: string; lang?: string; id?: string }> = ({ cod
           {copied ? '✓ Copied' : 'Copy'}
         </button>
       </div>
-      <pre className="p-5 bg-black text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code>{code}</code></pre>
+      <pre className="p-5 bg-black text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed"><code>{normalizedCode}</code></pre>
     </div>
   );
 };
@@ -51,11 +59,12 @@ const MultiLang: React.FC<{
   const [active, setActive] = useState<Lang>(langs[0]);
   const [copied, setCopied] = useState<'req' | 'res' | null>(null);
   const copy = (text: string, side: 'req' | 'res') => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(normalizeDeveloperExample(text));
     setCopied(side);
     setTimeout(() => setCopied(null), 2000);
   };
-  const code = samples[active] ?? '';
+  const code = normalizeDeveloperExample(samples[active] ?? '');
+  const normalizedResponse = normalizeDeveloperExample(response);
 
   return (
     <div className="rounded-2xl border border-gray-800 overflow-hidden shadow-xl">
@@ -82,7 +91,7 @@ const MultiLang: React.FC<{
             <span className="text-[10px] font-black text-gray-600 uppercase tracking-widest">Response</span>
             <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${status < 400 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>{status} {status < 400 ? 'OK' : 'Error'}</span>
           </div>
-          <pre className="font-mono text-[13px] text-gray-400 overflow-x-auto leading-relaxed"><code>{response}</code></pre>
+          <pre className="font-mono text-[13px] text-gray-400 overflow-x-auto leading-relaxed"><code>{normalizedResponse}</code></pre>
         </div>
       </div>
     </div>
@@ -160,7 +169,7 @@ const SIDEBAR: { label: string; id: SidebarSection; method?: string }[] = [
   { label: 'List Sessions',         id: 'list-sessions',      method: 'GET' },
   { label: 'Expire Session',        id: 'expire-session',     method: 'POST' },
   { label: 'Subscription Mode',     id: 'subscription-mode',  method: 'POST' },
-  { label: 'Marketplace Split',     id: 'marketplace-split',  method: 'POST' },
+  { label: 'Direct Settlement',     id: 'direct-settlement',  method: 'POST' },
   { label: 'Products',              id: 'products',           method: 'POST' },
   { label: 'Prices',                id: 'prices',             method: 'POST' },
   { label: 'Webhook Confirmation',  id: 'webhook-confirm' },
@@ -190,15 +199,15 @@ const Playground: React.FC = () => {
     const body = {
       amount: parseInt(amount),
       currency: currency.toLowerCase(),
-      success_url: 'http://localhost:5173/developers?checkout=success',
-      cancel_url:  'http://localhost:5173/developers?checkout=cancel',
+      success_url: `${EXAMPLE_APP_BASE}/developers?checkout=success`,
+      cancel_url:  `${EXAMPLE_APP_BASE}/developers?checkout=cancel`,
       payment_method_types: ['card', 'mobile_money'],
       customer_email: email,
       mode,
     };
     setRequest({ method: 'POST', url: '/v1/checkout/sessions', headers: { Authorization: `Bearer ${activeKey.slice(0, 16)}...` }, body });
     try {
-      const res = await axios.post('http://localhost:3005/v1/checkout/sessions', body, {
+      const res = await axios.post(`${PUBLIC_API_BASE}/v1/checkout/sessions`, body, {
         headers: { Authorization: `Bearer ${activeKey}` },
       });
       setStatus(res.status);
@@ -206,7 +215,7 @@ const Playground: React.FC = () => {
       if (res.data?.url) setSessionUrl(res.data.url);
     } catch (err: any) {
       setStatus(err.response?.status ?? 500);
-      setResponse(err.response?.data ?? { error: 'Network error — is the server running on port 3005?' });
+      setResponse(err.response?.data ?? { error: 'Network error — unable to reach the FlapaPay API domain.' });
     } finally {
       setLoading(false);
     }
@@ -319,7 +328,7 @@ const Playground: React.FC = () => {
                 ? JSON.stringify(response, null, 2)
                 : request
                   ? '// Waiting for response...'
-                  : `// Fill in the fields and click Execute\n// to make a live API call against\n// http://localhost:3005\n\n// Responses appear here in real time.`}
+                  : `// Fill in the fields and click Execute\n// to make a live API call against\n// ${PUBLIC_API_BASE}\n\n// Responses appear here in real time.`}
             </pre>
           </div>
 
@@ -389,7 +398,7 @@ export const DevelopersPage: React.FC = () => {
                 className="px-5 py-2.5 rounded-xl bg-orange-500 text-white text-sm font-bold hover:bg-orange-600 transition-all shadow-lg shadow-orange-500/20">
                 Try Playground
               </a>
-              <a href="http://localhost:3005/v1/checkout/sessions" target="_blank" rel="noopener noreferrer"
+              <a href={`${PUBLIC_API_BASE}/v1/checkout/sessions`} target="_blank" rel="noopener noreferrer"
                 className="px-5 py-2.5 rounded-xl bg-gray-900 border border-gray-700 text-gray-300 text-sm font-bold hover:border-orange-500/50 hover:text-white transition-all">
                 Base URL ↗
               </a>
@@ -421,14 +430,14 @@ export const DevelopersPage: React.FC = () => {
 
             <div className="mt-8 p-4 rounded-2xl bg-gray-950 border border-gray-800">
               <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2">Base URL</p>
-              <code className="text-[11px] font-mono text-orange-400 block mb-1">http://localhost:3005</code>
+              <code className="text-[11px] font-mono text-orange-400 block mb-1">{PUBLIC_API_BASE}</code>
               <code className="text-[10px] font-mono text-gray-600">prod: api.flapapay.com</code>
             </div>
 
             <div className="mt-4 p-4 rounded-2xl bg-gray-950 border border-gray-800">
               <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2">Other APIs</p>
               <Link to="/documentation" className="text-xs font-bold text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-1">
-                Connect, Escrow, Webhooks →
+                Webhooks and full API docs →
               </Link>
             </div>
           </div>
@@ -442,6 +451,9 @@ export const DevelopersPage: React.FC = () => {
             <section>
               <SH tag="Guide" title="Quick Start" subtitle="Go from zero to a working checkout in under 5 minutes." />
               <div className="space-y-8">
+                <Callout type="info">
+                  FlapaPay also exposes merchant infrastructure APIs for <strong>Banks</strong>, <strong>Resolve Account</strong>, <strong>Transfers</strong>, <strong>Collections</strong>, and <strong>Settlements</strong>. Use your Merchant Hub API keys and see the full resource reference on the main Documentation page.
+                </Callout>
                 {[
                   {
                     n: '01', title: 'Get your API key',
@@ -894,64 +906,60 @@ res.redirect(session.url);`,
             </section>
           )}
 
-          {/* ── MARKETPLACE SPLIT ───────────────────────── */}
-          {activeSection === 'marketplace-split' && (
+          {/* ── DIRECT SETTLEMENT ───────────────────────── */}
+          {activeSection === 'direct-settlement' && (
             <section>
-              <SH tag="Checkout Sessions" title="Marketplace / Split Payment" method="POST" path="/v1/checkout/sessions"
-                subtitle="Route funds to a connected sub-merchant and retain a platform fee. The buyer pays a single total — the split happens automatically server-side." />
+              <SH tag="Checkout Sessions" title="Direct Wallet Settlement" method="POST" path="/v1/checkout/sessions"
+                subtitle="Successful checkout sessions now settle directly into the merchant wallet and ledger for simpler reconciliation." />
               <div className="space-y-6">
                 <Callout type="info">
-                  The sub-merchant account must be created first via <code className="text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded text-xs">POST /v1/connect/accounts</code>. See the <Link to="/documentation" className="text-blue-400 underline">Connect docs</Link> for the full marketplace setup guide.
+                  Connect split-routing and Escrow settlement are deprecated in Merchant Hub. Checkout remains the hosted payment entry point.
                 </Callout>
                 <ParamTable params={[
-                  { name: 'transfer_data.destination', type: 'string', required: true, desc: 'Connected account ID (acct_xxx) that receives the funds.' },
-                  { name: 'transfer_data.amount', type: 'integer', desc: 'Exact amount (minor units) to route to the seller. Defaults to total minus application_fee_amount.' },
-                  { name: 'application_fee_amount', type: 'integer', desc: 'Platform fee in smallest currency unit retained by your account.' },
+                  { name: 'wallet_id', type: 'string', desc: 'Optional destination wallet if you want to settle into a specific merchant wallet record.' },
+                  { name: 'metadata', type: 'object', desc: 'Attach internal order, invoice, or customer references for reconciliation.' },
+                  { name: 'success_url', type: 'string', required: true, desc: 'Customer redirect after successful payment.' },
                 ]} />
-                <MultiLang id="split" samples={{
-                  curl: `# Customer pays ZK 1,000. Seller gets ZK 950. Platform keeps ZK 50 (5%).
+                <MultiLang id="direct-settlement" samples={{
+                  curl: `# Customer pays ZK 1,000. FlapaPay credits the merchant wallet after successful payment.
 curl -X POST http://localhost:3005/v1/checkout/sessions \\
   -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "mode": "payment",
     "line_items": [{ "price": "price_product_xxx", "quantity": 1 }],
-    "transfer_data": { "destination": "acct_abc123" },
-    "application_fee_amount": 5000,
     "success_url": "https://yourapp.com/order/success",
-    "cancel_url": "https://yourapp.com/cart"
+    "cancel_url": "https://yourapp.com/cart",
+    "metadata": { "order_id": "ord_123" }
   }'`,
                   node: `const session = await flapa.checkout.sessions.create({
   mode: 'payment',
   line_items: [{ price: 'price_product_xxx', quantity: 1 }],
-  transfer_data: { destination: 'acct_abc123' },
-  application_fee_amount: 5000,   // ZK 50 — your platform fee
   success_url: 'https://yourapp.com/order/success',
   cancel_url: 'https://yourapp.com/cart',
+  metadata: { order_id: 'ord_123' },
 });`,
                   python: `session = flapapay.checkout.sessions.create(
     mode="payment",
     line_items=[{"price": "price_product_xxx", "quantity": 1}],
-    transfer_data={"destination": "acct_abc123"},
-    application_fee_amount=5000,
     success_url="https://yourapp.com/order/success",
     cancel_url="https://yourapp.com/cart",
+    metadata={"order_id": "ord_123"},
 )`,
                   php: `$session = $flapa->checkout->sessions->create([
   'mode' => 'payment',
   'line_items' => [['price' => 'price_product_xxx', 'quantity' => 1]],
-  'transfer_data' => ['destination' => 'acct_abc123'],
-  'application_fee_amount' => 5000,
   'success_url' => 'https://yourapp.com/order/success',
   'cancel_url' => 'https://yourapp.com/cart',
+  'metadata' => ['order_id' => 'ord_123'],
 ]);`,
                 }} response={`{
-  "id": "cs_live_mkt_xxx",
-  "url": "https://checkout.flapapay.com/pay/cs_live_mkt_xxx",
-  "transfer_data": { "destination": "acct_abc123" },
-  "application_fee_amount": 5000,
+  "id": "cs_live_pay_xxx",
+  "url": "https://checkout.flapapay.com/pay/cs_live_pay_xxx",
   "amount_total": 100000,
   "status": "open"
+
+// After successful confirmation, FlapaPay records the charge and credits the merchant wallet + ledger.
 }`} />
               </div>
             </section>

@@ -18,7 +18,7 @@ export const Navbar: React.FC = () => {
 
     const handleLogout = () => {
         logout();
-        navigate('/login');
+        navigate('/signup/individual');
     };
 
     return (
@@ -68,10 +68,10 @@ export const Navbar: React.FC = () => {
                             </div>
                         ) : (
                             <>
-                                <Link to="/login" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">
+                                <Link to="/signup/individual" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">
                                     Sign in
                                 </Link>
-                                <Link to="/signup">
+                                <Link to="/signup/individual">
                                     <Button size="sm" className="rounded-full px-5 shadow-sm bg-orange-500 hover:bg-orange-600 text-white border-none">Sign Up</Button>
                                 </Link>
                             </>

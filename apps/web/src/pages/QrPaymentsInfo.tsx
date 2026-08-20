@@ -3,6 +3,50 @@ import { useNavigate } from 'react-router-dom';
 import { Navbar } from '../components/layout/Navbar';
 import { Footer } from '../components/layout/Footer';
 import { Button } from '../components/ui/Button';
+import { ArrowRight, BadgeCheck, CreditCard, QrCode, ScanLine, ShieldCheck, Store, Smartphone, TimerReset } from 'lucide-react';
+
+const qrHighlights = [
+    {
+        title: 'Merchant-linked checkout',
+        desc: 'Each scan opens a payment page tied to the merchant account and collection flow.',
+        icon: ScanLine,
+    },
+    {
+        title: 'Card and mobile money',
+        desc: 'Customers can pay by card or mobile money from the same QR-triggered page.',
+        icon: Store,
+    },
+    {
+        title: 'Instant confirmation',
+        desc: 'The cashier sees payment status quickly, so receipts and order release stay in sync.',
+        icon: TimerReset,
+    },
+];
+
+const qrWorkflow = [
+    {
+        step: '01',
+        title: 'Display the code',
+        desc: 'Print it, pin it at the till, or place it in your checkout screen.',
+    },
+    {
+        step: '02',
+        title: 'Customer scans',
+        desc: 'The customer opens their phone camera or wallet app and scans the merchant code.',
+    },
+    {
+        step: '03',
+        title: 'Payment confirms',
+        desc: 'FlapaPay confirms the payment and your cashier can continue the transaction.',
+    },
+];
+
+const qrUseCases = [
+    'Fuel stations',
+    'Restaurants and cafes',
+    'Retail counters',
+    'Field collections',
+];
 
 export const QrPaymentsInfo: React.FC = () => {
     const navigate = useNavigate();
@@ -11,158 +55,198 @@ export const QrPaymentsInfo: React.FC = () => {
         <div className="min-h-screen bg-white">
             <Navbar />
             <main className="pt-20">
-                {/* Hero Section */}
-                <section className="py-24 bg-black overflow-hidden relative">
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8 relative z-10">
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-                            <div className="animate-fade-in-up">
-                                <div className="inline-flex items-center rounded-full px-4 py-1 text-sm font-black text-orange-400 bg-orange-500/10 border border-orange-500/20 mb-6 uppercase tracking-widest">
-                                    Instant Payments
-                                </div>
-                                <h1 className="text-5xl md:text-6xl font-black text-white mb-8 leading-tight">
-                                    Paid in a <span className="text-orange-500">Flash</span> with QR Codes.
-                                </h1>
-                                <p className="text-xl text-gray-400 mb-10 leading-relaxed">
-                                    Scan, Pay, Go. FlapaPay QR codes make point-of-sale and peer-to-peer payments faster and more secure than ever.
-                                </p>
-                                <div className="flex flex-wrap gap-4">
-                                    <Button size="lg" onClick={() => navigate('/signup')} className="bg-white text-black px-8 py-4 rounded-2xl font-black shadow-xl hover:bg-gray-200 transition-all">
-                                        Get Started
-                                    </Button>
-                                    <Button size="lg" variant="outline" onClick={() => navigate('/developers')} className="px-8 py-4 rounded-2xl font-black border-2 border-white/20 text-white hover:bg-white/10 transition-all">
-                                        View Integration Guide
-                                    </Button>
-                                </div>
+                <section
+                    className="relative overflow-hidden bg-black py-24 text-white"
+                    style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}
+                >
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(249,115,22,0.18),_transparent_28%),radial-gradient(circle_at_bottom_left,_rgba(34,197,94,0.10),_transparent_24%)]" />
+                    <div className="relative mx-auto grid max-w-7xl gap-12 px-6 lg:grid-cols-[1.02fr_0.98fr] lg:items-center lg:px-8">
+                        <div>
+                            <div className="inline-flex items-center gap-2 rounded-full border border-orange-500/20 bg-orange-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">
+                                QR Payments
                             </div>
+                            <h1 className="mt-8 max-w-3xl text-5xl font-black leading-[1.02] tracking-tight md:text-7xl">
+                                QR scans that
+                                <span className="block bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-300 bg-clip-text text-transparent">
+                                    open a merchant payment page.
+                                </span>
+                            </h1>
+                            <p className="mt-6 max-w-2xl text-lg leading-relaxed text-gray-300 md:text-xl">
+                                Use one visible code to generate a payment page linked to the merchant for collections. Customers can pay by card or mobile money from that page.
+                            </p>
 
-                            <div className="relative animate-fade-in">
-                                <div className="bg-white rounded-[40px] shadow-2xl p-10 border border-gray-100 transform rotate-2 relative z-10">
-                                    <div className="flex flex-col items-center">
-                                        <div className="mb-8 p-6 bg-orange-50 rounded-[3rem] border-4 border-white shadow-inner">
-                                            <div className="w-48 h-48 bg-white p-4 rounded-2xl flex items-center justify-center">
-                                                {/* Mock QR Representation */}
-                                                <div className="w-full h-full bg-black/5 rounded-lg flex items-center justify-center relative overflow-hidden">
-                                                    <div className="absolute inset-0 grid grid-cols-4 grid-rows-4 p-2 gap-1">
-                                                        {[...Array(16)].map((_, i) => (
-                                                            <div key={i} className={`rounded-sm ${Math.random() > 0.4 ? 'bg-black' : 'bg-transparent'}`} />
-                                                        ))}
-                                                    </div>
-                                                    <div className="w-10 h-10 bg-white rounded-lg z-10 flex items-center justify-center shadow-lg border border-gray-100">
-                                                        <span className="text-orange-500 text-lg font-black">FP</span>
-                                                    </div>
+                            <div className="mt-10 flex flex-wrap gap-4">
+                                <Button
+                                    size="lg"
+                                    onClick={() => navigate('/merchant/signup')}
+                                    className="rounded-2xl bg-white px-8 py-4 font-black text-black shadow-xl transition-all hover:bg-gray-100"
+                                >
+                                    Get started
+                                </Button>
+                                <Button
+                                    size="lg"
+                                    variant="outline"
+                                    onClick={() => navigate('/developers')}
+                                    className="rounded-2xl border-2 border-white/20 px-8 py-4 font-black text-white transition-all hover:bg-white/10"
+                                >
+                                    Integration guide
+                                </Button>
+                            </div>
+                        </div>
+
+                        <div className="rounded-[36px] border border-white/10 bg-white/95 p-4 shadow-[0_40px_120px_-25px_rgba(0,0,0,0.65)]">
+                            <div className="rounded-[28px] border border-gray-100 bg-white p-6 text-gray-900">
+                                <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-500">Merchant QR</p>
+                                        <h2 className="mt-2 text-2xl font-black">Scan to open checkout</h2>
+                                        <p className="mt-1 text-sm font-medium text-gray-500">Card and mobile-money collections in one flow</p>
+                                    </div>
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-black text-white shadow-sm">
+                                        <QrCode className="h-6 w-6" />
+                                    </div>
+                                </div>
+
+                                <div className="mt-6 rounded-[28px] border border-gray-100 bg-gray-50 p-6">
+                                    <div className="mx-auto max-w-[22rem] rounded-[32px] border border-gray-200 bg-white p-5 shadow-sm">
+                                        <img src="/assets/images/qr-payments-merchant.png" alt="Merchant QR code" className="mx-auto h-56 w-56 rounded-[24px] object-contain" />
+                                        <div className="mt-5 grid grid-cols-5 gap-2">
+                                            {[
+                                                { name: 'Visa', src: '/assets/images/visa02.svg', className: 'h-6 w-auto' },
+                                                { name: 'Mastercard', src: '/assets/images/MASTERCARD02.svg', className: 'h-7 w-auto' },
+                                                { name: 'Airtel', src: '/assets/images/Airtel_Africa_logo.svg', className: 'h-5 w-auto' },
+                                                { name: 'MTN', src: '/assets/images/MTN_Logo.svg', className: 'h-5 w-auto' },
+                                                { name: 'Zamtel', src: '/assets/images/zamtel.png', className: 'h-6 w-auto' },
+                                            ].map((item) => (
+                                                <div key={item.name} className="flex h-10 items-center justify-center rounded-xl border border-gray-100 bg-gray-50">
+                                                    <img src={item.src} alt={item.name} className={`${item.className} object-contain`} />
                                                 </div>
-                                            </div>
-                                        </div>
-                                        <div className="text-center">
-                                            <p className="text-xs font-black text-orange-600 uppercase tracking-[0.3em] mb-2 uppercase">Scan to Pay</p>
-                                            <h2 className="text-2xl font-black text-gray-900">Mobile Checkout</h2>
-                                            <p className="text-gray-500 font-medium text-sm mt-1">Instant Settlement • Zero Friction</p>
+                                            ))}
                                         </div>
                                     </div>
                                 </div>
-                                {/* Decorative elements */}
-                                <div className="absolute -top-10 -right-10 w-64 h-64 bg-orange-400/10 rounded-full blur-3xl z-0"></div>
-                                <div className="absolute -bottom-10 -left-10 w-64 h-64 bg-emerald-400/10 rounded-full blur-3xl z-0"></div>
+
+                                <div className="mt-6 flex items-center justify-between rounded-[20px] bg-gray-50 px-4 py-4">
+                                    <span className="text-sm font-bold text-gray-500">Payment page</span>
+                                    <span className="text-sm font-black text-gray-900">Card · Mobile Money · Merchant linked</span>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </section>
 
-                {/* Steps Section */}
-                <section className="py-24 bg-white">
+                <section className="bg-white py-20">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="text-center mb-20 leading-relaxed max-w-2xl mx-auto">
-                            <h2 className="text-4xl font-black text-gray-900 mb-6">How it <span className="text-orange-500">Works</span>.</h2>
-                            <p className="text-gray-500 text-lg font-bold">Simple, secure, and lightning fast. Just like it should be.</p>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
-                            {[
-                                {
-                                    title: 'Generate Your Code',
-                                    desc: 'Find your unique payment QR code in your dashboard or settings. Personalize it with your business name.',
-                                    icon: '✨',
-                                    step: '01'
-                                },
-                                {
-                                    title: 'Present & Scan',
-                                    desc: 'Show your code on your smartphone, print it for your shop, or add it to your website checkouts.',
-                                    icon: '📷',
-                                    step: '02'
-                                },
-                                {
-                                    title: 'Instant Confirmation',
-                                    desc: 'Funds are transferred instantly between wallets. Both parties receive real-time notifications.',
-                                    icon: '⚡',
-                                    step: '03'
-                                }
-                            ].map((item, i) => (
-                                <div key={i} className="group p-10 rounded-[32px] bg-gray-50/50 border border-gray-100 hover:bg-white hover:shadow-2xl hover:-translate-y-2 transition-all duration-300 relative overflow-hidden">
-                                    <div className="absolute top-6 right-8 text-7xl font-black text-black/5 group-hover:text-orange-500/5 transition-colors">{item.step}</div>
-                                    <div className="text-5xl mb-8 group-hover:scale-110 transition-transform duration-300">{item.icon}</div>
-                                    <h3 className="text-xl font-black text-gray-900 mb-4">{item.title}</h3>
-                                    <p className="text-gray-600 font-medium leading-relaxed">{item.desc}</p>
-                                </div>
-                            ))}
+                        <div className="grid gap-6 md:grid-cols-3">
+                            {qrHighlights.map((item) => {
+                                const Icon = item.icon;
+                                return (
+                                    <div key={item.title} className="rounded-[28px] border border-gray-100 bg-gray-50/80 p-7 shadow-sm transition-shadow hover:shadow-lg">
+                                        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-black text-white">
+                                            <Icon className="h-5 w-5" />
+                                        </div>
+                                        <h3 className="mt-5 text-xl font-black text-gray-900">{item.title}</h3>
+                                        <p className="mt-3 text-sm leading-relaxed text-gray-600">{item.desc}</p>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 </section>
 
-                {/* Features Section */}
-                <section className="py-24 bg-gray-50">
+                <section className="bg-zinc-950 py-20 text-white">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-                            <div className="grid grid-cols-2 gap-6">
-                                <div className="p-6 bg-white rounded-3xl shadow-sm border border-gray-100">
-                                    <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-600 mb-4 font-black">✓</div>
-                                    <h4 className="font-black text-gray-900 mb-2">Secure</h4>
-                                    <p className="text-xs text-gray-500 font-medium">Encrypted data resolution protects privacy.</p>
-                                </div>
-                                <div className="p-6 bg-white rounded-3xl shadow-sm border border-gray-100 translate-y-6">
-                                    <div className="w-12 h-12 bg-orange-50 rounded-2xl flex items-center justify-center text-orange-600 mb-4 font-black">⚡</div>
-                                    <h4 className="font-black text-gray-900 mb-2">Fast</h4>
-                                    <p className="text-xs text-gray-500 font-medium">Milliseconds to scan and confirm.</p>
-                                </div>
-                                <div className="p-6 bg-white rounded-3xl shadow-sm border border-gray-100">
-                                    <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 mb-4 font-black">🌍</div>
-                                    <h4 className="font-black text-gray-900 mb-2">Inclusive</h4>
-                                    <p className="text-xs text-gray-500 font-medium">Works for anyone with a smartphone.</p>
-                                </div>
-                                <div className="p-6 bg-white rounded-3xl shadow-sm border border-gray-100 translate-y-6">
-                                    <div className="w-12 h-12 bg-purple-50 rounded-2xl flex items-center justify-center text-purple-600 mb-4 font-black">📈</div>
-                                    <h4 className="font-black text-gray-900 mb-2">Scalable</h4>
-                                    <p className="text-xs text-gray-500 font-medium">Handles unlimited scans simultaneously.</p>
-                                </div>
-                            </div>
-                            <div className="animate-fade-in-right">
-                                <h2 className="text-4xl font-black text-gray-900 mb-6 leading-tight">Payments that move at the <span className="text-orange-500">speed of business</span>.</h2>
-                                <p className="text-lg text-gray-600 mb-8 leading-relaxed font-medium">
-                                    Say goodbye to long bank account numbers and routing codes. With FlapaPay QR, receiving payment is as simple as taking a photo.
+                        <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-300">Workflow</p>
+                                <h2 className="mt-4 text-4xl font-black tracking-tight md:text-5xl">A payment flow that stays close to the counter.</h2>
+                                <p className="mt-5 max-w-xl text-base leading-relaxed text-gray-300">
+                                    QR payments are best when the code opens a branded payment page that the merchant controls.
                                 </p>
-                                <ul className="space-y-4">
-                                    {['Zero setup cost for QR payments', 'Downloadable high-resolution QR codes', 'Real-time transaction confirmation', 'Works offline for physical merchants'].map((text, i) => (
-                                        <li key={i} className="flex items-center gap-3 font-black text-gray-900 text-sm">
-                                            <span className="w-6 h-6 bg-orange-500 rounded-full flex items-center justify-center text-white text-[10px]">✓</span>
-                                            {text}
-                                        </li>
-                                    ))}
-                                </ul>
+                                <div className="mt-8 rounded-[28px] border border-white/10 bg-white/5 p-6">
+                                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-gray-400">Best for</p>
+                                    <ul className="mt-4 space-y-3">
+                                        {qrUseCases.map((item) => (
+                                            <li key={item} className="flex items-center gap-3 text-sm font-bold text-white/90">
+                                                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-orange-500 text-black">
+                                                    <BadgeCheck className="h-4 w-4" />
+                                                </span>
+                                                {item}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <div className="grid gap-4">
+                                {qrWorkflow.map((item) => (
+                                    <div key={item.step} className="rounded-[28px] border border-white/10 bg-white/5 p-6 backdrop-blur">
+                                        <div className="flex items-start gap-5">
+                                            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-orange-500 to-amber-400 text-lg font-black text-black">
+                                                {item.step}
+                                            </div>
+                                            <div>
+                                                <h3 className="text-xl font-black">{item.title}</h3>
+                                                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-gray-300">{item.desc}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     </div>
                 </section>
 
-                {/* Call to Action */}
-                <section className="py-24 bg-black text-white overflow-hidden relative">
-                    <div className="mx-auto max-w-7xl px-6 lg:px-8 relative z-10">
-                        <div className="bg-gradient-to-br from-orange-500 to-amber-600 rounded-[48px] p-12 md:p-24 text-center">
-                            <h2 className="text-4xl md:text-5xl font-black mb-8 leading-tight">Ready to start receiving <br />instant QR payments?</h2>
-                            <p className="text-orange-100 text-xl mb-12 max-w-xl mx-auto font-medium">Join the fast-growing network of businesses using FlapaPay QR across the continent.</p>
-                            <div className="flex flex-wrap justify-center gap-6">
-                                <Button size="lg" onClick={() => navigate('/signup')} className="bg-white text-orange-600 px-10 py-5 rounded-2xl font-black shadow-xl hover:scale-105 transition-all text-lg">
-                                    Get Started Free
+                <section className="bg-white py-20">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.35em] text-orange-500">What it supports</p>
+                                <h2 className="mt-4 text-4xl font-black tracking-tight text-gray-900 md:text-5xl">Built for everyday point-of-sale collections.</h2>
+                                <p className="mt-5 max-w-2xl text-lg leading-relaxed text-gray-600">
+                                    QR payments work well when you need a visible checkout touchpoint that does not slow the cashier down.
+                                </p>
+                            </div>
+
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                {[
+                                    'Card collections',
+                                    'Mobile money collections',
+                                    'Merchant payment pages',
+                                    'Restaurant and retail counters',
+                                ].map((item) => (
+                                    <div key={item} className="rounded-[24px] border border-gray-100 bg-gray-50 p-5 text-sm font-black text-gray-800 shadow-sm">
+                                        {item}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="bg-black py-20 text-white">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="rounded-[40px] border border-white/10 bg-gradient-to-br from-orange-500 to-amber-600 px-8 py-14 text-center md:px-16 md:py-20">
+                            <h2 className="text-4xl font-black tracking-tight md:text-5xl">Offer QR checkout without changing your till.</h2>
+                            <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-orange-50">
+                                Use one visible code to receive payment across the counter, at the table, or on a receipt stand.
+                            </p>
+                            <div className="mt-10 flex flex-wrap justify-center gap-4">
+                                <Button
+                                    size="lg"
+                                    onClick={() => navigate('/merchant/signup')}
+                                    className="rounded-2xl bg-white px-8 py-4 font-black text-black shadow-xl transition-all hover:bg-gray-100"
+                                >
+                                    Get started
+                                    <ArrowRight className="ml-2 h-4 w-4" />
                                 </Button>
-                                <Button size="lg" variant="outline" onClick={() => navigate('/about')} className="text-white border-2 border-white/20 hover:bg-white/10 px-10 py-5 rounded-2xl font-black transition-all text-lg">
-                                    Our Mission
+                                <Button
+                                    size="lg"
+                                    variant="outline"
+                                    onClick={() => navigate('/pos-systems')}
+                                    className="rounded-2xl border-2 border-white/20 px-8 py-4 font-black text-white transition-all hover:bg-white/10"
+                                >
+                                    POS systems
                                 </Button>
                             </div>
                         </div>

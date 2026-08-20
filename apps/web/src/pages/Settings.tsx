@@ -18,6 +18,14 @@ interface PaymentMethod {
     };
 }
 
+interface ConfiguredPaymentLink {
+    id: string;
+    title: string;
+    amount: string;
+    currency: string;
+    active?: boolean;
+}
+
 const BANK_LOGOS: Record<string, string> = {
     'zanaco': 'https://cdn.brandfetch.io/id8rWWhZ0S/w/768/h/226/theme/light/logo.png?c=1bxid64Mup7aczewSAYMX&t=1765290669363',
     'stanbic': 'https://cdn.brandfetch.io/idtBHsdHkP/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1764691523293',
@@ -75,6 +83,9 @@ export const Settings = () => {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showQrModal, setShowQrModal] = useState(false);
     const qrRef = useRef<SVGSVGElement>(null);
+    const [merchantQrLink, setMerchantQrLink] = useState<ConfiguredPaymentLink | null>(null);
+    const [merchantQrLoading, setMerchantQrLoading] = useState(false);
+    const [merchantQrError, setMerchantQrError] = useState('');
 
     // Lenco Bank States
     const [banks, setBanks] = useState<any[]>([]);
@@ -102,8 +113,34 @@ export const Settings = () => {
             fetchCards();
             fetchLinkedAccounts();
             fetchBanks();
+            ensureMerchantQrLink();
         }
     }, [token]);
+
+    const ensureMerchantQrLink = async () => {
+        try {
+            setMerchantQrLoading(true);
+            setMerchantQrError('');
+
+            const linksRes = await api.get('/payment-links');
+            const configuredLinks = ((linksRes.data || []) as ConfiguredPaymentLink[])
+                .filter((link) => link.active !== false && Number.parseFloat(link.amount || '0') > 0)
+                .sort((a, b) => Number.parseFloat(b.amount || '0') - Number.parseFloat(a.amount || '0'));
+
+            if (configuredLinks[0]?.id) {
+                setMerchantQrLink(configuredLinks[0]);
+                return;
+            }
+
+            setMerchantQrLink(null);
+            setMerchantQrError('Create a payment link under /pay-links first, then reopen this QR generator.');
+        } catch (err) {
+            console.error('Failed to prepare merchant QR link', err);
+            setMerchantQrError('Could not load your configured payment links right now.');
+        } finally {
+            setMerchantQrLoading(false);
+        }
+    };
 
     const fetchCards = async () => {
         setLoading(true);
@@ -215,6 +252,11 @@ export const Settings = () => {
     const filteredBanks = useMemo(() => {
         return banks.filter(b => b.name.toLowerCase().includes(bankSearch.toLowerCase()));
     }, [banks, bankSearch]);
+
+    const merchantQrLinkId = merchantQrLink?.id || '';
+    const merchantQrUrl = merchantQrLinkId && typeof window !== 'undefined'
+        ? `${window.location.origin}/qr-payments/${merchantQrLinkId}`
+        : '';
 
     const handleDownloadQr = () => {
         const svg = qrRef.current;
@@ -765,7 +807,7 @@ export const Settings = () => {
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-fade-in">
                     <div className="bg-white rounded-[40px] w-full max-w-sm shadow-2xl overflow-hidden p-10 items-center flex flex-col text-center animate-slide-up">
                         <div className="flex justify-between w-full mb-8">
-                            <h3 className="text-xl font-bold text-gray-900">Payment QR Code</h3>
+                            <h3 className="text-xl font-bold text-gray-900">Merchant Collections QR</h3>
                             <button onClick={() => setShowQrModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400 hover:text-black">
                                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
@@ -773,20 +815,30 @@ export const Settings = () => {
 
                         <div className="p-10 bg-orange-50 rounded-[4rem] border-8 border-white shadow-inner mb-6 relative group">
                             <div id="qr-print-area" className="bg-white p-6 rounded-[3rem]">
-                                <QRCodeSVG
-                                    ref={qrRef}
-                                    value={`flapapay://pay?recipientId=${user?.id}`}
-                                    size={180}
-                                    level="H"
-                                    includeMargin={false}
-                                />
+                                {merchantQrLoading ? (
+                                    <div className="h-[180px] w-[180px] flex items-center justify-center text-gray-400 font-black text-sm">Preparing QR...</div>
+                                ) : merchantQrUrl ? (
+                                    <QRCodeSVG
+                                        ref={qrRef}
+                                        value={merchantQrUrl}
+                                        size={180}
+                                        level="H"
+                                        includeMargin={false}
+                                    />
+                                ) : (
+                                    <div className="h-[180px] w-[180px] flex items-center justify-center text-gray-400 font-black text-sm">QR unavailable</div>
+                                )}
                             </div>
                         </div>
 
                         <div className="mb-8">
-                            <h4 className="text-xs font-black text-orange-600 uppercase tracking-[0.3em] mb-2 text-center">PAY ME BY SCANNING MY QR CODE</h4>
+                            <h4 className="text-xs font-black text-orange-600 uppercase tracking-[0.3em] mb-2 text-center">SCAN TO OPEN MERCHANT CHECKOUT</h4>
                             <h4 className="text-2xl font-black text-gray-900 leading-tight">{user?.fullName}</h4>
                             <p className="text-gray-500 font-medium text-sm mt-1">{user?.email}</p>
+                            <p className="mt-3 text-[11px] font-black uppercase tracking-[0.3em] text-gray-400">
+                                Destination: {merchantQrUrl ? `/qr-payments/${merchantQrLinkId}` : 'Preparing merchant checkout link'}
+                            </p>
+                            {merchantQrError && <p className="mt-3 text-sm font-bold text-red-600">{merchantQrError}</p>}
                         </div>
 
                         <div className="grid grid-cols-2 gap-4 w-full pt-6 border-t border-gray-50">

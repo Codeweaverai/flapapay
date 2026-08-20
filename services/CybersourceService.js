@@ -1,6 +1,7 @@
 require('dotenv').config();
 const cs = require('cybersource-rest-client');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 // ─── SDK Configuration ────────────────────────────────────────────────────────
 const configObject = {
@@ -21,6 +22,17 @@ function ref(prefix = 'FLAPA') {
   return `${prefix}-${Date.now()}-${uuidv4().split('-')[0].toUpperCase()}`;
 }
 
+function sanitizeReferenceCode(value, maxLength = 30) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '')
+    .slice(0, maxLength);
+}
+
+function tokenFingerprint(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 16);
+}
+
 function wrap(fn) {
   return new Promise((resolve, reject) => {
     try {
@@ -31,7 +43,6 @@ function wrap(fn) {
             const diag = {
               status:   error?.status || error?.response?.status,
               url:      error?.response?.req?.url,
-              reqBody:  error?.response?.config?.data || error?.response?.req?._data,
               respText: error?.response?.text,
               msg:      error?.message,
             };
@@ -41,7 +52,11 @@ function wrap(fn) {
 
           const body = error?.response?.text || error?.response?.body || error?.message;
           const msg  = typeof body === 'object' ? JSON.stringify(body) : String(body || error);
-          return reject(new Error(msg));
+          const wrapped = new Error(msg);
+          wrapped.csStatus = error?.status || error?.response?.status;
+          wrapped.csUrl = error?.response?.req?.url;
+          wrapped.csBody = body;
+          return reject(wrapped);
         }
         resolve(data);
       });
@@ -58,45 +73,58 @@ const payments = {
 
   // Authorize only — holds funds without charging (used for escrow, pre-auth)
   // Set capture:true for a direct sale (auth + capture in one call)
-  async authorize({ amount, currency, customerId, transientToken, capture = false, metadata = {} }) {
+  async authorize({ amount, currency, customerId, instrumentId, transientToken, capture = false, metadata = {}, billTo = null }) {
     const client = makeClient(cs.PaymentsApi);
-    const req    = new cs.CreatePaymentRequest();
-
-    const clientRef  = new cs.Ptsv2paymentsClientReferenceInformation();
-    clientRef.code   = metadata.ref || ref('AUTH');
-    req.clientReferenceInformation = clientRef;
-
-    const orderInfo     = new cs.Ptsv2paymentsOrderInformation();
-    const amountDetails = new cs.Ptsv2paymentsOrderInformationAmountDetails();
-    amountDetails.totalAmount = String(parseFloat(amount).toFixed(2));
-    amountDetails.currency    = currency.toUpperCase();
-    orderInfo.amountDetails   = amountDetails;
-    req.orderInformation      = orderInfo;
-
-    const paymentInfo = new cs.Ptsv2paymentsPaymentInformation();
-    if (customerId) {
-      const customer      = new cs.Ptsv2paymentsPaymentInformationCustomer();
-      customer.customerId = customerId;
-      paymentInfo.customer = customer;
-    } else if (transientToken) {
-      const tokenizedCard              = new cs.Ptsv2paymentsPaymentInformationTokenizedCard();
-      tokenizedCard.transientToken     = transientToken;
-      paymentInfo.tokenizedCard        = tokenizedCard;
-    } else {
-      throw new Error('[CyberSource] authorize: provide customerId or transientToken');
+    if (!instrumentId && !customerId && !transientToken) {
+      throw new Error('[CyberSource] authorize: provide instrumentId, customerId, or transientToken');
     }
-    req.paymentInformation = paymentInfo;
 
-    const processingInfo  = new cs.Ptsv2paymentsProcessingInformation();
-    processingInfo.capture = capture;
-    req.processingInformation = processingInfo;
+    const reqBody = {
+      clientReferenceInformation: {
+        code: metadata.ref || ref('AUTH'),
+      },
+      orderInformation: {
+        amountDetails: {
+          totalAmount: String(parseFloat(amount).toFixed(2)),
+          currency: currency.toUpperCase(),
+        },
+      },
+      processingInformation: {
+        capture,
+      },
+    };
 
-    const data = await wrap(cb => client.createPayment(req, cb));
+    if (billTo) {
+      reqBody.orderInformation.billTo = billTo;
+    }
+
+    if (instrumentId) {
+      reqBody.paymentInformation = {
+        paymentInstrument: {
+          id: instrumentId,
+        },
+      };
+    } else if (customerId) {
+      reqBody.paymentInformation = {
+        customer: {
+          customerId,
+        },
+      };
+    } else {
+      // Flex Microform v2 returns a JWT transient token. CyberSource expects
+      // that JWT under tokenInformation.transientTokenJwt for payment auth/sale.
+      reqBody.tokenInformation = {
+        transientTokenJwt: transientToken,
+      };
+    }
+
+    const data = await wrap(cb => client.createPayment(reqBody, cb));
     console.log(`[CyberSource] Auth ${amount} ${currency} → ${data.id} (${data.status})`);
     return {
       id:       data.id,
       status:   data.status,                                   // AUTHORIZED | DECLINED
       authCode: data.processorInformation?.approvalCode,
+      transactionId: data.processorInformation?.transactionId,
       last4:    data.paymentAccountInformation?.card?.suffix,
       network:  data.paymentAccountInformation?.card?.type,
       raw:      data,
@@ -187,11 +215,11 @@ const tokens = {
     const req    = new cs.PostCustomerRequest();
 
     const clientRef = new cs.Tmsv2tokenizeTokenInformationCustomerClientReferenceInformation();
-    clientRef.code  = `FLAPA-USER-${userId}`;
+    clientRef.code  = sanitizeReferenceCode(`FLAPAUSER${String(userId).replace(/-/g, '')}`, 26) || ref('CUS').slice(0, 26);
     req.clientReferenceInformation = clientRef;
 
     const buyerInfo              = new cs.Tmsv2tokenizeTokenInformationCustomerBuyerInformation();
-    buyerInfo.merchantCustomerID = String(userId);
+    buyerInfo.merchantCustomerID = sanitizeReferenceCode(userId, 50) || String(userId).slice(0, 50);
     buyerInfo.email              = email;
     req.buyerInformation = buyerInfo;
 
@@ -201,88 +229,238 @@ const tokens = {
   },
 
   // Link a card via Flex Microform v2 transient token JWT.
-  // Uses a $0 auth + TOKEN_CREATE on Payments API as a plain JS object
-  // (bypasses SDK model field filtering so transientToken is preserved).
-  // The $0 auth is voided immediately after token IDs are extracted.
-  async linkCard({ customerId, transientToken, billingAddress = {}, userEmail = '' }) {
+  // Uses /pts/v2/payments with TOKEN_CREATE + customer token, then falls back to
+  // creating a customer payment instrument from instrumentIdentifier when needed.
+  async linkCard({
+    customerId,
+    transientToken,
+    billingAddress = {},
+    userEmail = '',
+    expirationMonth: requestedExpirationMonth,
+    expirationYear: requestedExpirationYear,
+    setDefault = false,
+  }) {
+    const inferCardTypeFromMasked = (maskedValue = '') => {
+      const first = String(maskedValue || '').trim()[0];
+      if (first === '4') return '001'; // VISA
+      if (first === '5') return '002'; // MASTERCARD
+      if (first === '3') return '003'; // AMEX
+      if (first === '6') return '004'; // DISCOVER
+      return undefined;
+    };
+
     // ── 1. Decode Flex JWT payload → extract card details ──────────────────
-    let last4, brand, expirationMonth, expirationYear;
+    let last4, brand, expirationMonth, expirationYear, cardTypeCode, maskedValue, transientJti;
     try {
       const parts = transientToken.split('.');
       if (parts.length < 2) throw new Error('Not a JWT');
       let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
       b64 += '='.repeat((4 - (b64.length % 4)) % 4);
       const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+      transientJti    = payload?.jti;
       const card = payload?.content?.paymentInformation?.card;
-      last4           = card?.number?.maskedValue?.slice(-4);
-      expirationMonth = card?.expirationMonth?.value;
-      expirationYear  = card?.expirationYear?.value;
+      const detectedCardTypes = Array.isArray(card?.number?.detectedCardTypes)
+        ? card.number.detectedCardTypes
+        : [];
+      maskedValue     = card?.number?.maskedValue;
+      last4           = maskedValue?.slice(-4);
+      expirationMonth = card?.expirationMonth?.value || requestedExpirationMonth;
+      expirationYear  = card?.expirationYear?.value || requestedExpirationYear;
       const typeMap   = { '001': 'VISA', '002': 'MASTERCARD', '003': 'AMEX', '004': 'DISCOVER', '007': 'JCB' };
-      brand           = typeMap[card?.type?.value] || card?.type?.value;
+      const rawType   = String(card?.type?.value || card?.type || detectedCardTypes[0] || '').toUpperCase();
+      const brandToCode = {
+        VISA: '001',
+        MASTERCARD: '002',
+        AMEX: '003',
+        DISCOVER: '004',
+        JCB: '007',
+      };
+      cardTypeCode = /^\d{3}$/.test(rawType)
+        ? rawType
+        : (brandToCode[rawType] || inferCardTypeFromMasked(maskedValue));
+      brand        = typeMap[cardTypeCode] || rawType || undefined;
       require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
-        `[JWT-decoded] last4=${last4} brand=${brand} exp=${expirationMonth}/${expirationYear}\n`);
+        `[JWT-decoded] last4=${last4} brand=${brand} exp=${expirationMonth}/${expirationYear} cardType=${cardTypeCode || 'NA'} detected=${detectedCardTypes.join(',') || 'NA'} jti=${transientJti || 'NA'}\n`);
     } catch (e) {
       require('fs').appendFileSync('C:\\FlapaPay\\debug.log', `[JWT-decode-err] ${e.message}\n`);
       throw new Error('Invalid Flex token: ' + e.message);
     }
 
-    // ── 2. $0 auth with TOKEN_CREATE ──────────────────────────────────────
-    // tokenInformation.transientTokenJwt is the correct SDK field for the
-    // Flex Microform v2 JWT.  paymentInformation.customer causes CyberSource
-    // to look up an existing card number — omit it here; we link the returned
-    // instrumentId to the customer ourselves via DB after the call.
-    const client  = makeClient(cs.PaymentsApi);
-    const reqBody = {
-      clientReferenceInformation: { code: ref('SAVE') },
-      processingInformation: {
-        capture:          false,
-        actionList:       ['TOKEN_CREATE'],
-        actionTokenTypes: ['paymentInstrument', 'instrumentIdentifier'],
-      },
-      orderInformation: {
-        amountDetails: { totalAmount: '0.00', currency: 'USD' },
-        billTo: {
-          firstName:          billingAddress.firstName || 'Card',
-          lastName:           billingAddress.lastName  || 'Owner',
-          address1:           billingAddress.address1  || '1 Main St',
-          locality:           billingAddress.city      || 'San Francisco',
-          administrativeArea: billingAddress.state     || 'CA',
-          postalCode:         billingAddress.postalCode|| '94105',
-          country:            billingAddress.country   || 'US',
-          email:              userEmail || billingAddress.email || 'noreply@flapapay.com',
-          phoneNumber:        billingAddress.phone     || '5555555555',
-        },
-      },
-      // Flex Microform v2 JWT goes in tokenInformation.transientTokenJwt —
-      // this is the designated SDK field; fluidData and tokenizedCard are wrong.
-      tokenInformation: { transientTokenJwt: transientToken },
-    };
-
-    require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
-      `[linkCard-req] customerId=${customerId} tokenLen=${transientToken.length}\n`);
-    require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
-      `[linkCard-tokenInfo] transientTokenJwt prefix=${transientToken.slice(0, 60)}\n`);
-
-    const data = await wrap(cb => client.createPayment(reqBody, cb));
-
-    require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
-      `[linkCard-auth-resp] status=${data.status} id=${data.id} tokenInfo=${JSON.stringify(data.tokenInformation || {})}\n`);
-
-    const instrId = data.tokenInformation?.paymentInstrument?.id;
-    const identId = data.tokenInformation?.instrumentIdentifier?.id;
-
-    // Void the $0 auth immediately — we only needed it to tokenize
-    if (data.id && data.status === 'AUTHORIZED') {
+    // Optional enrichment: retrieve non-sensitive payment details from transient token.
+    if (!cardTypeCode || !expirationMonth || !expirationYear) {
       try {
-        const voidClient = makeClient(cs.VoidApi);
-        await wrap(cb => voidClient.voidPayment(new cs.VoidPaymentRequest(), data.id, cb));
-        require('fs').appendFileSync('C:\\FlapaPay\\debug.log', `[linkCard-void-ok] paymentId=${data.id}\n`);
+        const ttClient = makeClient(cs.TransientTokenDataV2Api);
+        const details = await wrap(cb => ttClient.getTransactionForTransientToken(transientToken, cb));
+        const read = (obj, path) => path.reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+        const typeFromDetails =
+          read(details, ['paymentInformation', 'card', 'type']) ||
+          read(details, ['content', 'paymentInformation', 'card', 'type', 'value']) ||
+          read(details, ['card', 'type']);
+        const monthFromDetails =
+          read(details, ['paymentInformation', 'card', 'expirationMonth']) ||
+          read(details, ['content', 'paymentInformation', 'card', 'expirationMonth', 'value']) ||
+          read(details, ['card', 'expirationMonth']);
+        const yearFromDetails =
+          read(details, ['paymentInformation', 'card', 'expirationYear']) ||
+          read(details, ['content', 'paymentInformation', 'card', 'expirationYear', 'value']) ||
+          read(details, ['card', 'expirationYear']);
+        const rawType = String(typeFromDetails || '').toUpperCase();
+        if (!cardTypeCode) {
+          if (/^\d{3}$/.test(rawType)) cardTypeCode = rawType;
+          else if (rawType === 'VISA') cardTypeCode = '001';
+          else if (rawType === 'MASTERCARD') cardTypeCode = '002';
+          else if (rawType === 'AMEX' || rawType === 'AMERICAN EXPRESS') cardTypeCode = '003';
+          else if (rawType === 'DISCOVER') cardTypeCode = '004';
+          else if (rawType === 'JCB') cardTypeCode = '007';
+        }
+        if (!expirationMonth && monthFromDetails) expirationMonth = String(monthFromDetails).padStart(2, '0');
+        if (!expirationYear && yearFromDetails) expirationYear = String(yearFromDetails);
+        require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+          `[token-details] cardType=${cardTypeCode || 'NA'} exp=${expirationMonth || 'NA'}/${expirationYear || 'NA'}\n`);
       } catch (e) {
-        require('fs').appendFileSync('C:\\FlapaPay\\debug.log', `[linkCard-void-err] ${e.message}\n`);
+        require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+          `[token-details-err] ${e.message}\n`);
       }
     }
 
-    if (!instrId) throw new Error('No paymentInstrument id in auth response: ' + JSON.stringify(data.tokenInformation));
+    // ── 2. Create instrumentIdentifier via /pts/v2/payments + TOKEN_CREATE ─
+    const paymentClient = makeClient(cs.PaymentsApi);
+    const billTo = {
+      firstName:          billingAddress.firstName || 'Card',
+      lastName:           billingAddress.lastName  || 'Owner',
+      address1:           billingAddress.address1  || '1 Main St',
+      locality:           billingAddress.city      || 'San Francisco',
+      administrativeArea: billingAddress.state     || 'CA',
+      postalCode:         billingAddress.postalCode|| '94105',
+      country:            billingAddress.country   || 'US',
+      email:              userEmail || billingAddress.email || 'noreply@flapapay.com',
+      phoneNumber:        billingAddress.phone     || '5555555555',
+    };
+
+    const shipTo = {
+      firstName:          billingAddress.firstName || 'Card',
+      lastName:           billingAddress.lastName  || 'Owner',
+      address1:           billingAddress.address1  || '1 Main St',
+      locality:           billingAddress.city      || 'San Francisco',
+      administrativeArea: billingAddress.state     || 'CA',
+      postalCode:         billingAddress.postalCode|| '94105',
+      country:            billingAddress.country   || 'US',
+    };
+
+    // Use zero-amount validation by default so card linking does not place a temporary hold.
+    const tokenizeAmount = String(process.env.CYBERSOURCE_TOKENIZE_AUTH_AMOUNT || '0.00');
+    const tokenizeCurrency = String(process.env.CYBERSOURCE_TOKENIZE_AUTH_CURRENCY || 'USD').toUpperCase();
+
+    const tokenFp = tokenFingerprint(transientToken);
+    const tokenCreateReq = {
+      clientReferenceInformation: {
+        code: ref('TOKEN'),
+      },
+      processingInformation: {
+        capture: false,
+        commerceIndicator: 'internet',
+        actionList:       ['TOKEN_CREATE'],
+        // For linking into an existing customer token, request a payment instrument token.
+        actionTokenTypes: ['paymentInstrument'],
+      },
+      paymentInformation: {
+        customer: {
+          id: customerId,
+        },
+      },
+      orderInformation: {
+        amountDetails: {
+          totalAmount: tokenizeAmount,
+          currency: tokenizeCurrency,
+        },
+        billTo,
+        shipTo,
+      },
+      tokenInformation: {
+        transientTokenJwt: transientToken,
+        paymentInstrument: {
+          default: !!setDefault,
+        },
+      },
+    };
+
+    if (cardTypeCode || expirationMonth || expirationYear) {
+      tokenCreateReq.paymentInformation.card = {
+        ...(cardTypeCode ? { type: cardTypeCode } : {}),
+        ...(expirationMonth ? { expirationMonth } : {}),
+        ...(expirationYear ? { expirationYear } : {}),
+      };
+    }
+
+    require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+      `[linkCard-req] customerId=${customerId} tokenLen=${transientToken.length} tokenFp=${tokenFp} jti=${transientJti || 'NA'} flow=payments_token_create amount=${tokenizeAmount} ${tokenizeCurrency} actionTokenTypes=paymentInstrument\n`);
+
+    const tokenCreateData = await wrap(cb => paymentClient.createPayment(tokenCreateReq, cb));
+    const tokenCreateStatus = String(tokenCreateData?.status || '').toUpperCase();
+    require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+      `[linkCard-token-create] paymentId=${tokenCreateData?.id || 'NA'} status=${tokenCreateStatus || 'NA'}\n`);
+
+    if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(tokenCreateStatus)) {
+      throw new Error('Token create authorization not approved: ' + (tokenCreateData?.status || 'UNKNOWN'));
+    }
+
+    let identId =
+      tokenCreateData?.tokenInformation?.instrumentIdentifier?.id ||
+      tokenCreateData?.paymentInformation?.instrumentIdentifier?.id ||
+      tokenCreateData?.paymentInformation?.paymentInstrument?.instrumentIdentifier?.id;
+    let instrId =
+      tokenCreateData?.tokenInformation?.paymentInstrument?.id ||
+      tokenCreateData?.paymentInformation?.paymentInstrument?.id ||
+      tokenCreateData?.paymentInformation?.customer?.paymentInstrument?.id;
+
+    if (!cardTypeCode) {
+      const responseCardType = tokenCreateData?.paymentAccountInformation?.card?.type;
+      if (responseCardType) cardTypeCode = String(responseCardType).toUpperCase();
+    }
+    if (!last4) {
+      const responseSuffix = tokenCreateData?.paymentAccountInformation?.card?.suffix;
+      if (responseSuffix) last4 = String(responseSuffix);
+    }
+
+    // Release hold from the token-create authorization attempt.
+    if (tokenCreateData?.id && parseFloat(tokenizeAmount) > 0) {
+      try {
+        await payments.reverse(tokenCreateData.id, tokenizeAmount, tokenizeCurrency);
+        require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+          `[linkCard-token-create-reversed] paymentId=${tokenCreateData.id}\n`);
+      } catch (reversalErr) {
+        require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+          `[linkCard-token-create-reversal-err] paymentId=${tokenCreateData.id} err=${reversalErr.message}\n`);
+      }
+    }
+
+    // If validated-payment tokenization didn't directly return a customer PI, attach via TMS API.
+    if (!instrId && identId) {
+      const cpiClient = makeClient(cs.CustomerPaymentInstrumentApi);
+      const createPiReq = {
+        instrumentIdentifier: { id: identId },
+        billTo,
+        card: {
+          type: cardTypeCode || '001',
+          ...(expirationMonth ? { expirationMonth } : {}),
+          ...(expirationYear ? { expirationYear } : {}),
+        },
+      };
+      const piData = await wrap(cb => cpiClient.postCustomerPaymentInstrument(customerId, createPiReq, {}, cb));
+      instrId = piData?.id;
+      identId = identId || piData?.instrumentIdentifier?.id;
+      require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
+        `[linkCard-create-pi] instrumentId=${instrId || 'NA'} identifierId=${identId || 'NA'} cardType=${createPiReq.card.type}\n`);
+    }
+
+    if (!instrId) {
+      throw new Error('No paymentInstrument id in tokenization response: ' + JSON.stringify({
+        paymentId: tokenCreateData?.id || null,
+        status: tokenCreateData?.status || null,
+        paymentInformation: tokenCreateData?.paymentInformation || null,
+        tokenInformation: tokenCreateData?.tokenInformation || null,
+      }));
+    }
 
     require('fs').appendFileSync('C:\\FlapaPay\\debug.log',
       `[linkCard-ok] instrumentId=${instrId} identifierId=${identId}\n`);
@@ -483,6 +661,9 @@ const payouts = {
 // 7. WEBHOOK HANDLER — Express middleware for POST /webhooks/cybersource
 // =============================================================================
 const webhooks = {
+  eventType(event = {}) {
+    return event.eventType || event.type || event?.notificationInformation?.eventType || 'unknown';
+  },
 
   handler(req, res, next) {
     const crypto = require('crypto');

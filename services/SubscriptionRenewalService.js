@@ -1,18 +1,18 @@
 /**
  * SubscriptionRenewalService
  * ─────────────────────────────────────────────────────────────────────────────
- * Stripe-level recurring billing engine for FlapaPay subscriptions.
+ * FlapaPay subscription lifecycle engine.
  *
  * Responsibilities:
- *  1. processRenewals()       — charge subscriptions whose billing period has ended
- *  2. processDunning()        — retry failed invoices on schedule (Day 0, 3, 7)
+ *  1. processRenewals()       — legacy non-CyberSource renewal processing
+ *  2. processDunning()        — legacy non-CyberSource retry processing
  *  3. finalizeTrials()        — convert trialing → active at trial_end
- *  4. checkPendingDeposits()  — settle PawaPay STK-push deposits that are in-flight
+ *  4. checkPendingDeposits()  — legacy PawaPay settlement processing
  *
  * Payment model:
- *   - Test mode  → auto-succeed, credit merchant ZMW wallet (simulated)
- *   - Live mode  → PawaPay STK push to customer's mobile money number;
- *                  async settlement via checkPendingDeposits() cron
+ *   - CyberSource subscriptions are executed by CyberSource Recurring Billing
+ *     and should not be charged by this worker.
+ *   - This worker only remains for legacy non-CyberSource subscriptions.
  *
  * Idempotency:
  *   - Unique constraint on (subscription_id, period_start) in sub_invoice
@@ -277,7 +277,7 @@ async function getEmailContext(client, sub, merchantId) {
 async function processRenewals() {
     const dueRows = await pool.query(`
         SELECT
-            s.id, s.customer_id, s.price_id, s.merchant_id,
+            s.id, s.customer_id, s.price_id, s.merchant_id, s.payment_rail,
             s.current_period_start, s.current_period_end, s.livemode,
             s.cancel_at, s.pause_at,
             p.amount, p.currency, p.interval, p.billing_interval, p.interval_count,
@@ -286,6 +286,7 @@ async function processRenewals() {
         JOIN prices p ON s.price_id = p.id
         JOIN customers c ON s.customer_id = c.id
         WHERE s.status = 'active'
+          AND COALESCE(s.payment_rail, 'cybersource') <> 'cybersource'
           AND s.current_period_end <= NOW() + INTERVAL '1 minute'
           AND (s.cancel_at IS NULL OR s.cancel_at > NOW())
           AND (s.pause_at  IS NULL OR s.pause_at  > NOW())
@@ -468,13 +469,14 @@ async function processDunning() {
         SELECT
             d.id AS dunning_id, d.invoice_id, d.subscription_id, d.merchant_id, d.attempt_number,
             i.amount, i.currency,
-            s.customer_id, s.price_id, s.livemode,
+            s.customer_id, s.price_id, s.livemode, s.payment_rail,
             c.email AS customer_email
         FROM dunning_attempts d
         JOIN sub_invoice   i ON d.invoice_id      = i.id
         JOIN subscriptions s ON d.subscription_id = s.id
         JOIN customers     c ON s.customer_id     = c.id
         WHERE d.status       = 'pending'
+          AND COALESCE(s.payment_rail, 'cybersource') <> 'cybersource'
           AND d.next_retry_at <= NOW()
           AND i.status IN ('open', 'failed')
           AND s.status       = 'past_due'
@@ -652,6 +654,14 @@ async function checkTrialEndingSoon() {
 // 5. Check Pending PawaPay Deposits — settle in-flight STK push payments
 // ─────────────────────────────────────────────────────────────────────────────
 async function checkPendingDeposits() {
+    const legacySubscriptions = await pool.query(`
+        SELECT 1
+        FROM subscriptions
+        WHERE COALESCE(payment_rail, 'cybersource') <> 'cybersource'
+        LIMIT 1
+    `);
+    if (!legacySubscriptions.rows.length) return;
+
     // Only run if PawaPay is configured
     if (!process.env.PAWAPAY_TOKEN) return;
 

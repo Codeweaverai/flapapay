@@ -19,9 +19,10 @@
 const { Resend } = require('resend');
 
 const resend   = new Resend(process.env.RESEND_API_KEY);
+const FALLBACK_FROM = 'FlapaPay <onboarding@resend.dev>';
 const FROM     = process.env.RESEND_FROM
     ? `FlapaPay <${process.env.RESEND_FROM}>`
-    : 'FlapaPay <noreply@flapabay.com>';
+    : FALLBACK_FROM;
 
 // ── Shared HTML chrome ────────────────────────────────────────────────────────
 function wrap(content) {
@@ -68,7 +69,24 @@ function currencySymbol(currency) {
 async function send(to, subject, html) {
     if (!process.env.RESEND_API_KEY) return; // silent no-op without key
     try {
-        await resend.emails.send({ from: FROM, to, subject, html });
+        let result = await resend.emails.send({ from: FROM, to, subject, html });
+        if (
+            result?.error?.name === 'validation_error' &&
+            /domain is not verified/i.test(result.error.message || '') &&
+            FROM !== FALLBACK_FROM
+        ) {
+            console.warn('[SubscriptionEmail] Retrying with Resend fallback sender');
+            result = await resend.emails.send({
+                from: FALLBACK_FROM,
+                to,
+                subject,
+                html,
+                reply_to: process.env.RESEND_FROM || undefined,
+            });
+        }
+        if (result?.error) {
+            throw new Error(result.error.message || 'Email send failed');
+        }
     } catch (err) {
         console.error(`[SubscriptionEmail] Failed to send "${subject}" to ${to}:`, err.message);
     }

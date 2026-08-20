@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import ReactCountryFlag from 'react-country-flag';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../lib/axios';
 import { Button } from '../../components/ui/Button';
@@ -15,7 +16,7 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
     const [step, setStep] = useState(1);
 
     // Form State
-    const [country, setCountry] = useState('Zambia');
+    const country = 'Zambia';
     const [accountType, setAccountType] = useState<AccountType>('business');
     const [businessName, setBusinessName] = useState('');
     const [firstName, setFirstName] = useState('');
@@ -30,7 +31,6 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
     // API state
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [verifySuccess, setVerifySuccess] = useState(false);
     const [registrationTypes, setRegistrationTypes] = useState<RegistrationType[]>([]);
 
     // Fetch Zambia-specific registration types when on step 2
@@ -49,20 +49,6 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                 });
         }
     }, [step, country]);
-
-    const handleVerifyEmail = async () => {
-        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            setError('Please enter a valid email address first.');
-            return;
-        }
-        setError('');
-        try {
-            await api.post('/merchants/verify-email', { email });
-            setVerifySuccess(true);
-        } catch (err: any) {
-            setError(err.response?.data?.error || 'Could not send verification email.');
-        }
-    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -110,12 +96,16 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
 
     if (mode === 'login') {
         return (
-            <div className="min-h-screen bg-[#F8F9FB] flex flex-col">
+            <div
+                className="min-h-screen bg-black text-white flex flex-col selection:bg-orange-200/30"
+                style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}
+            >
                 <Navbar />
                 <main className="flex-1 flex items-center justify-center p-6 pt-32">
-                    <div className="w-full max-w-[480px] bg-white rounded-[40px] p-10 shadow-2xl shadow-gray-200/50 border border-gray-100">
+                    <div className="relative w-full max-w-[480px] overflow-hidden rounded-[40px] bg-white p-10 shadow-2xl shadow-black/30 border border-white/10">
+                        <div className="absolute -top-24 -right-24 h-48 w-48 rounded-full bg-gradient-to-br from-orange-400/20 to-yellow-300/10 blur-3xl" />
                         <div className="mb-10 text-center">
-                            <div className="inline-flex items-center justify-center w-16 h-16 rounded-3xl bg-orange-500 text-white text-2xl mb-6 shadow-lg shadow-orange-500/30">
+                            <div className="inline-flex items-center justify-center w-16 h-16 rounded-3xl bg-gradient-to-br from-orange-500 to-yellow-400 text-white text-2xl mb-6 shadow-lg shadow-orange-500/30">
                                 🔑
                             </div>
                             <h1 className="text-3xl font-black text-gray-900 mb-2">Merchant Login</h1>
@@ -170,11 +160,16 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
     }
 
     return (
-        <div className="min-h-screen bg-[#F8F9FB] flex flex-col">
+        <div
+            className="min-h-screen bg-black text-white flex flex-col selection:bg-orange-200/30"
+            style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}
+        >
             <Navbar />
 
             <main className="flex-1 flex items-center justify-center p-6 pt-32 pb-20">
-                <div className="w-full max-w-[600px] bg-white rounded-[40px] p-8 md:p-12 shadow-2xl shadow-gray-200/50 border border-gray-100 transition-all duration-500">
+                <div className="relative w-full max-w-[600px] overflow-hidden bg-white rounded-[40px] p-8 md:p-12 shadow-2xl shadow-black/30 border border-white/10 transition-all duration-500">
+                    <div className="absolute -top-28 -right-24 h-56 w-56 rounded-full bg-gradient-to-br from-orange-400/15 via-yellow-300/10 to-transparent blur-3xl pointer-events-none" />
+                    <div className="absolute -bottom-28 -left-24 h-56 w-56 rounded-full bg-gradient-to-tr from-amber-200/10 via-orange-300/10 to-transparent blur-3xl pointer-events-none" />
 
                     {step === 1 ? (
                         <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -188,24 +183,24 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                     <label className="text-sm font-black text-gray-700 uppercase tracking-widest flex justify-between">
                                         <span>Country</span>
                                     </label>
-                                    <div className="relative group">
-                                        <select
-                                            value={country}
-                                            onChange={(e) => setCountry(e.target.value)}
-                                            className="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-orange-500/10 appearance-none font-bold outline-none cursor-pointer"
-                                        >
-                                            <option value="Zambia">Zambia 🇿🇲</option>
-                                            <option value="Nigeria">Nigeria 🇳🇬</option>
-                                            <option value="Kenya">Kenya 🇰🇪</option>
-                                            <option value="South Africa">South Africa 🇿🇦</option>
-                                            <option value="Ghana">Ghana 🇬🇭</option>
-                                        </select>
-                                        <div className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 group-focus-within:text-orange-500 transition-colors">
-                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                                    <div className="rounded-2xl border border-orange-100 bg-gradient-to-r from-orange-50 to-yellow-50 px-5 py-4 shadow-sm">
+                                        <div className="flex items-center justify-between gap-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white shadow-sm border border-orange-100">
+                                                    <ReactCountryFlag countryCode="ZM" svg style={{ width: '1.35em', height: '1.35em' }} />
+                                                </div>
+                                                <div>
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.25em] text-orange-500">Enabled country</p>
+                                                    <p className="text-sm font-black text-gray-900">Zambia</p>
+                                                </div>
+                                            </div>
+                                            <div className="rounded-full bg-green-600 px-3 py-1 text-[10px] font-black uppercase tracking-[0.25em] text-white shadow-sm">
+                                                Active
+                                            </div>
                                         </div>
                                     </div>
-                                    <p className="text-sm text-gray-400 font-medium">
-                                        Can't find your country? <a href="#" className="text-orange-500 hover:underline">click here.</a>
+                                    <p className="text-sm text-gray-500 font-medium">
+                                        Merchant signup is currently available for Zambia only.
                                     </p>
                                 </div>
 
@@ -249,13 +244,13 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                     </div>
                                 </div>
 
-                                <Button size="lg" className="w-full bg-black text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-black/10 hover:translate-y-[-2px] transition-all">
+                                <Button size="lg" className="w-full bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-orange-500/20 hover:translate-y-[-2px] transition-all">
                                     Next: Basic Info
                                 </Button>
 
                                 <div className="text-center pt-4">
                                     <p className="text-gray-500 font-bold">
-                                        Already have an account? <Link to="/merchant/login" className="text-orange-500 hover:text-orange-600 transition-colors">Login here</Link>
+                                        Already have an account? <Link to="/merchant/signup" className="text-orange-500 hover:text-orange-600 transition-colors">Continue here</Link>
                                     </p>
                                 </div>
                             </form>
@@ -272,7 +267,7 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
 
                             <div className="mb-10">
                                 <h1 className="text-3xl font-black text-gray-900 mb-2">Let's get to know you</h1>
-                                <p className="text-gray-500 font-medium">Tell us more about yourself and your business.</p>
+                                <p className="text-gray-500 font-medium">Create your merchant account now. You will complete the existing onboarding and compliance flow after signup.</p>
                             </div>
 
                             <form onSubmit={handleSubmit} className="space-y-6">
@@ -317,19 +312,15 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
 
                                 <div className="space-y-2">
                                     <label className="text-sm font-black text-gray-700 uppercase tracking-widest ml-1">Email address</label>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="email"
-                                            className="flex-1 px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all outline-none font-bold"
-                                            placeholder="name@email.com"
-                                            value={email}
-                                            onChange={(e) => setEmail(e.target.value)}
-                                            required
-                                        />
-                                        <button type="button" onClick={handleVerifyEmail} className="px-6 rounded-2xl bg-orange-50 text-orange-600 font-black text-sm hover:bg-orange-100 transition-colors uppercase tracking-widest whitespace-nowrap">
-                                            {verifySuccess ? '✓ Sent' : 'Verify'}
-                                        </button>
-                                    </div>
+                                    <input
+                                        type="email"
+                                        className="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all outline-none font-bold"
+                                        placeholder="name@email.com"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                    />
+                                    <p className="text-xs text-gray-400 font-medium ml-1">Use the email you want tied to your merchant dashboard and onboarding updates.</p>
                                 </div>
 
                                 <div className="space-y-4 pt-2">
@@ -353,15 +344,15 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                 </div>
 
                                 <div className="space-y-2">
-                                    <label className="text-sm font-black text-gray-700 uppercase tracking-widest ml-1">Select business registration type</label>
+                                    <label className="text-sm font-black text-gray-900 uppercase tracking-widest ml-1">Select business registration type</label>
                                     <div className="relative">
                                         <select
-                                            className="w-full px-6 py-4 rounded-2xl border border-gray-100 bg-gray-50 focus:bg-white focus:ring-4 focus:ring-orange-500/10 appearance-none font-bold outline-none cursor-pointer"
+                                            className="w-full px-6 py-4 rounded-2xl border border-gray-200 bg-white focus:bg-white focus:ring-4 focus:ring-orange-500/15 focus:border-orange-500 appearance-none font-bold text-gray-900 outline-none cursor-pointer shadow-sm shadow-gray-100"
                                             value={registrationType}
                                             onChange={(e) => setRegistrationType(e.target.value)}
                                             required
                                         >
-                                            <option value="">-- select an option</option>
+                                            <option value="">Select a registration type</option>
                                             {registrationTypes.length > 0
                                                 ? registrationTypes.map(rt => (
                                                     <option key={rt.value} value={rt.value}>{rt.label}</option>
@@ -378,10 +369,13 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                                 )
                                             }
                                         </select>
-                                        <div className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 transition-colors">
+                                        <div className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500 transition-colors">
                                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                                         </div>
                                     </div>
+                                    <p className="text-xs text-gray-500 font-medium ml-1">
+                                        Pick the registration type that matches your Zambian business structure.
+                                    </p>
                                 </div>
 
                                 <div className="space-y-2">
@@ -409,8 +403,20 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                             <div className="w-6 h-6 rounded-lg border-2 border-gray-200 peer-checked:border-orange-500 peer-checked:bg-orange-500 transition-all"></div>
                                             <svg className="w-4 h-4 absolute top-1 left-1 text-white opacity-0 peer-checked:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
                                         </div>
-                                        <span className="text-sm text-gray-500 font-medium leading-relaxed">
-                                            I acknowledge that I have read, understood, and agree to be bound by FlapaPay's Merchant Services Agreement (MSA), Terms and Conditions and Privacy Notice.
+                                        <span className="text-sm text-gray-600 font-medium leading-relaxed">
+                                            I acknowledge that I have read, understood, and agree to be bound by FlapaPay's{' '}
+                                            <Link to="/merchant-service-agreement" className="font-bold text-gray-900 underline decoration-orange-400 decoration-2 underline-offset-4 hover:text-orange-600 transition-colors">
+                                                Merchant Services Agreement (MSA)
+                                            </Link>
+                                            ,{' '}
+                                            <Link to="/terms" className="font-bold text-gray-900 underline decoration-orange-400 decoration-2 underline-offset-4 hover:text-orange-600 transition-colors">
+                                                Terms and Conditions
+                                            </Link>
+                                            {' '}and{' '}
+                                            <Link to="/privacy" className="font-bold text-gray-900 underline decoration-orange-400 decoration-2 underline-offset-4 hover:text-orange-600 transition-colors">
+                                                Privacy Notice
+                                            </Link>
+                                            .
                                         </span>
                                     </label>
 
@@ -436,7 +442,7 @@ export const MerchantAuth: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) =
                                         {error}
                                     </div>
                                 )}
-                                <Button size="lg" disabled={loading} className="w-full bg-black text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-black/10 hover:translate-y-[-2px] transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+                                <Button size="lg" disabled={loading} className="w-full bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-orange-500/20 hover:translate-y-[-2px] transition-all disabled:opacity-60 disabled:cursor-not-allowed">
                                     {loading ? 'Creating Account...' : 'Create My Account'}
                                 </Button>
                             </form>

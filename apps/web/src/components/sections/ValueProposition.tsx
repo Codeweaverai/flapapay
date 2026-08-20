@@ -60,14 +60,14 @@ export const ValueProposition: React.FC = () => {
                 <div className="max-w-3xl mb-24">
                     <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-50 border border-gray-100 text-xs font-black text-gray-400 uppercase tracking-[0.2em] mb-8">
                         <span className="w-2 h-2 rounded-full bg-orange-500"></span>
-                        The Better Way
+                        Why FlapaPay
                     </div>
                     <h2 className="text-5xl md:text-7xl font-black text-gray-900 mb-8 tracking-tighter leading-[0.9]">
-                        FlapaPay is not a bank. <br />
-                        <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500">We are better!</span>
+                        Built for African businesses that need <br />
+                        <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-500 via-orange-600 to-yellow-500">faster, smarter money movement.</span>
                     </h2>
                     <p className="text-xl text-gray-500 font-medium leading-relaxed max-w-2xl">
-                        Built for Startups, SMEs and Freelancers. Scale your business across the continent with a modern financial stack designed for modern Africa.
+                        FlapaPay helps businesses collect payments, send payouts, manage customer billing, and move money across channels from one modern platform. We focus on speed, operational control, and practical financial tools that help African companies scale with less friction.
                     </p>
                 </div>
 

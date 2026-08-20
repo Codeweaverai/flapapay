@@ -59,8 +59,8 @@ export const ClaimFundsPage: React.FC = () => {
                     </div>
                     <h1 className="text-2xl font-black text-gray-900 mb-3">Already Claimed</h1>
                     <p className="text-gray-400 font-bold text-sm">These funds have already been collected by the recipient.</p>
-                    <button onClick={() => navigate('/login')} className="mt-8 w-full py-4 bg-gray-900 text-white rounded-2xl font-black text-sm hover:bg-orange-500 transition-all">
-                        Sign In to FlapaPay
+                    <button onClick={() => navigate('/signup/individual')} className="mt-8 w-full py-4 bg-gray-900 text-white rounded-2xl font-black text-sm hover:bg-orange-500 transition-all">
+                        Continue to Individual Signup
                     </button>
                 </div>
             </ClaimShell>

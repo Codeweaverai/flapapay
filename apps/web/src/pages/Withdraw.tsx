@@ -11,6 +11,8 @@ interface Wallet {
     id: string;
     currency: string;
     balance: string;
+    pending_withdrawal_amount?: string;
+    pending_withdrawal_count?: number;
 }
 
 interface LinkedBank {
@@ -22,40 +24,289 @@ interface LinkedBank {
     country: string;
 }
 
-const BANK_LOGOS: Record<string, string> = {
-    'zanaco': 'https://cdn.brandfetch.io/id8rWWhZ0S/w/768/h/226/theme/light/logo.png?c=1bxid64Mup7aczewSAYMX&t=1765290669363',
-    'stanbic': 'https://cdn.brandfetch.io/idtBHsdHkP/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1764691523293',
-    'absa': 'https://cdn.brandfetch.io/idIIZJY7QN/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1667792595017',
-    'access': 'https://cdn.brandfetch.io/idPXJmyni4/w/400/h/400/theme/light/icon.png?c=1bxid64Mup7aczewSAYMX&t=1667560957752',
-    'boc': 'https://cdn.brandfetch.io/ida3fnJjf9/w/1105/h/1105/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1677603041423',
-    'citi': 'https://cdn.brandfetch.io/idr8xpMOko/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1761814355509',
-    'ecobank': 'https://upload.wikimedia.org/wikipedia/commons/3/3e/Ecobank_Logo_EN.png',
-    'firstcapital': 'https://cdn.brandfetch.io/idaj4d7B1e/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1771529890408',
-    'fnb': 'https://cdn.brandfetch.io/idMm5AKGl0/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1668184013589',
-    'stanchart': 'https://cdn.brandfetch.io/idasTAHEfB/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1766383628158',
-    'uba': 'https://cdn.brandfetch.io/idbEJ2XWew/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1718352485394',
-    'zicb': 'https://cdn.brandfetch.io/idUnVed1lu/w/447/h/159/theme/dark/logo.png?c=1bxid64Mup7aczewSAYMX&t=1767416627446',
-    'natsave': 'https://cdn.brandfetch.io/id2RUtvBPh/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1763982236282',
-    'bayport': 'https://cdn.brandfetch.io/idXmYQId4y/w/250/h/56/theme/dark/logo.png?c=1bxid64Mup7aczewSAYMX&t=1752223453132'
+interface WithdrawalRecord {
+    id: string;
+    provider: string;
+    destination_type: string;
+    destination_details: {
+        accountName?: string;
+        accountNumber?: string;
+        bankId?: string;
+        bankName?: string;
+        country?: string;
+        phoneNumber?: string;
+        provider?: string;
+        operator?: string;
+    };
+    amount: string;
+    fee_amount?: string;
+    total_debited?: string;
+    currency: string;
+    reference: string;
+    provider_transfer_id?: string | null;
+    provider_reference?: string | null;
+    provider_status?: string | null;
+    local_status: string;
+    failure_reason?: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+interface WithdrawalQuote {
+    amount: number;
+    currency: string;
+    destination_type: string;
+    fee_amount: number;
+    total_debited: number;
+    fee_policy: string;
+    fee_label: string;
+}
+
+const BANK_WITHDRAWAL_FEE_BANDS = [
+    { minExclusive: 0, maxInclusive: 150, fee: 2.5 },
+    { minExclusive: 150, maxInclusive: 300, fee: 3.5 },
+    { minExclusive: 300, maxInclusive: 500, fee: 5.0 },
+    { minExclusive: 500, maxInclusive: 1000, fee: 10.0 },
+    { minExclusive: 1000, maxInclusive: 3000, fee: 20.0 },
+    { minExclusive: 3000, maxInclusive: 5000, fee: 37.5 },
+    { minExclusive: 5000, maxInclusive: 10000, fee: 75.0 },
+    { minExclusive: 10000, maxInclusive: Number.POSITIVE_INFINITY, fee: 100.0 }
+];
+
+const getLocalWithdrawalQuote = (
+    amountValue: number,
+    destinationType: 'mobile_money' | 'bank_account',
+    currency?: string
+) => {
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+        return null;
+    }
+
+    if (destinationType === 'bank_account' && (currency === 'ZMW' || currency === 'USD')) {
+        const band = BANK_WITHDRAWAL_FEE_BANDS.find(
+            (item) => amountValue > item.minExclusive && amountValue <= item.maxInclusive
+        );
+        const feeAmount = band?.fee || 0;
+        return {
+            fee_amount: feeAmount,
+            total_debited: amountValue + feeAmount
+        };
+    }
+
+    if (destinationType === 'mobile_money' && currency === 'ZMW') {
+        const feeAmount = Math.round(amountValue * 0.01 * 100) / 100;
+        return {
+            fee_amount: feeAmount,
+            total_debited: amountValue + feeAmount
+        };
+    }
+
+    return {
+        fee_amount: 0,
+        total_debited: amountValue
+    };
+};
+
+const normalizeZambiaMobileNumber = (value: string) => {
+    const cleanPhone = String(value || '').replace(/\D/g, '');
+    const localPhone = cleanPhone.startsWith('260')
+        ? cleanPhone.slice(3)
+        : cleanPhone.replace(/^0+/, '');
+
+    const fullPhone = cleanPhone.startsWith('260')
+        ? cleanPhone
+        : `260${cleanPhone.replace(/^0+/, '')}`;
+
+    return { cleanPhone, localPhone, fullPhone };
+};
+
+const BANK_BRANDS = [
+    {
+        logo: 'https://www.zanaco.co.zm/wp-content/uploads/2025/05/cropped-Zanaco-cog_Copper-270x270.jpg',
+        aliases: ['zanaco', 'zambia national commercial bank']
+    },
+    {
+        logo: '/assets/images/stanbic-zambia.png',
+        aliases: ['stanbic']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idIIZJY7QN/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1667792595017',
+        aliases: ['absa']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idPXJmyni4/w/400/h/400/theme/light/icon.png?c=1bxid64Mup7aczewSAYMX&t=1667560957752',
+        aliases: ['access']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/ida3fnJjf9/w/1105/h/1105/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1677603041423',
+        aliases: ['bank of china', 'china']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idr8xpMOko/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1761814355509',
+        aliases: ['citi', 'citibank']
+    },
+    {
+        logo: 'https://upload.wikimedia.org/wikipedia/commons/3/3e/Ecobank_Logo_EN.png',
+        aliases: ['ecobank', 'eco']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idaj4d7B1e/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1771529890408',
+        aliases: ['first capital']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idMm5AKGl0/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1668184013589',
+        aliases: ['fnb', 'first national bank']
+    },
+    {
+        logo: '/assets/images/STANCHART.svg',
+        aliases: ['standard chartered', 'stanchart', 'scb', 'chartered']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idbEJ2XWew/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1718352485394',
+        aliases: ['uba', 'united bank']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/idUnVed1lu/w/447/h/159/theme/dark/logo.png?c=1bxid64Mup7aczewSAYMX&t=1767416627446',
+        aliases: ['zicb']
+    },
+    {
+        logo: 'https://cdn.brandfetch.io/id2RUtvBPh/w/400/h/400/theme/dark/icon.jpeg?c=1bxid64Mup7aczewSAYMX&t=1763982236282',
+        aliases: ['natsave', 'national savings']
+    },
+    {
+        logo: '/assets/images/AB_Bank_Logo-300x58.png',
+        aliases: ['ab bank', 'abank']
+    },
+    {
+        logo: '/assets/images/firstalliance.svg',
+        aliases: ['first alliance']
+    },
+    {
+        logo: '/assets/images/indozambiabank.png',
+        aliases: ['indo zambia', 'indozambia']
+    },
+    {
+        logo: '/assets/images/zm-invest-logo-400x400.webp',
+        aliases: ['bayport']
+    }
+];
+
+const BANK_ID_TO_NAME: Record<string, string> = {
+    '002': 'Absa Bank',
+    '003': 'Access Bank',
+    '005': 'Access Bank',
+    '008': 'Ecobank',
+    '014': 'FNB',
+    '016': 'Stanbic Bank',
+    '017': 'Standard Chartered Bank',
+    '023': 'Zanaco'
+};
+
+const normalizeBankName = (value: string) =>
+    value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+
+const getBankLogoImageClass = (bankName?: string) => {
+    const normalized = normalizeBankName(String(bankName || ''));
+    if (normalized.includes('stanbic')) {
+        return 'w-full h-full object-contain scale-[1.12]';
+    }
+    if (normalized.includes('standard chartered') || normalized.includes('stanchart')) {
+        return 'w-[90%] h-[90%] object-contain';
+    }
+    if (normalized.includes('ab bank')) {
+        return 'w-[112%] h-[112%] object-contain';
+    }
+    return 'max-w-full max-h-full object-contain';
 };
 
 const getBankLogo = (bankName: string) => {
-    const name = bankName.toLowerCase();
-    if (name.includes('zanaco')) return BANK_LOGOS.zanaco;
-    if (name.includes('stanbic')) return BANK_LOGOS.stanbic;
-    if (name.includes('absa')) return BANK_LOGOS.absa;
-    if (name.includes('access')) return BANK_LOGOS.access;
-    if (name.includes('china')) return BANK_LOGOS.boc;
-    if (name.includes('citi')) return BANK_LOGOS.citi;
-    if (name.includes('eco')) return BANK_LOGOS.ecobank;
-    if (name.includes('first capital')) return BANK_LOGOS.firstcapital;
-    if (name.includes('fnb') || name.includes('first national bank')) return BANK_LOGOS.fnb;
-    if (name.includes('chartered') || name.includes('scb')) return BANK_LOGOS.stanchart;
-    if (name.includes('uba') || name.includes('united bank')) return BANK_LOGOS.uba;
-    if (name.includes('zicb')) return BANK_LOGOS.zicb;
-    if (name.includes('natsave')) return BANK_LOGOS.natsave;
-    if (name.includes('bayport')) return BANK_LOGOS.bayport;
-    return null;
+    const normalized = normalizeBankName(bankName);
+    const match = BANK_BRANDS.find(brand =>
+        brand.aliases.some(alias => normalized.includes(normalizeBankName(alias)))
+    );
+    return match?.logo || null;
+};
+
+const BankLogo = ({
+    bankName,
+    className = 'w-12 h-12 rounded-lg p-2'
+}: {
+    bankName: string;
+    className?: string;
+}) => {
+    const [failed, setFailed] = useState(false);
+    const logo = failed ? null : getBankLogo(bankName);
+    const normalized = normalizeBankName(bankName);
+    const isStandardChartered = normalized.includes('standard chartered') || normalized.includes('stanchart') || normalized.includes('scb');
+    const isWideWordmark =
+        isStandardChartered ||
+        normalized.includes('bank of china');
+    const initials = bankName
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(part => part[0]?.toUpperCase())
+        .join('') || 'B';
+
+    return (
+        <div className={`${className} relative bg-white flex items-center justify-center overflow-hidden font-black text-lg text-gray-400`}>
+            {logo ? (
+                <img
+                    src={logo}
+                    alt={bankName}
+                    className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 max-w-none ${
+                        isStandardChartered
+                            ? 'w-[92%] h-[92%]'
+                            : isWideWordmark
+                                ? 'w-[135%] h-[135%]'
+                                : getBankLogoImageClass(bankName)
+                    }`}
+                    onError={() => setFailed(true)}
+                />
+            ) : (
+                <span>{initials}</span>
+            )}
+        </div>
+    );
+};
+
+const MOBILE_MONEY_PROVIDERS = {
+    MTN_MOMO_ZMB: { name: 'MTN', logo: '/assets/images/MTN_Logo.svg' },
+    MTN: { name: 'MTN', logo: '/assets/images/MTN_Logo.svg' },
+    AIRTEL_OAPI_ZMB: { name: 'Airtel', logo: '/assets/images/Airtel_Africa_logo.svg' },
+    AIRTEL: { name: 'Airtel', logo: '/assets/images/Airtel_Africa_logo.svg' },
+    ZAMTEL_ZMB: { name: 'Zamtel', logo: '/assets/images/zamtel.png' },
+    ZAMTEL: { name: 'Zamtel', logo: '/assets/images/zamtel.png' }
+} as const;
+
+const MobileMoneyLogo = ({
+    provider,
+    className = 'w-11 h-11 rounded-xl p-2.5'
+}: {
+    provider?: string;
+    className?: string;
+}) => {
+    const providerKey = String(provider || '').trim().toUpperCase() as keyof typeof MOBILE_MONEY_PROVIDERS;
+    const brand = MOBILE_MONEY_PROVIDERS[providerKey];
+
+    if (!brand) {
+        return (
+            <div className={`${className} shrink-0 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center`}>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+            </div>
+        );
+    }
+
+    return (
+        <div className={`${className} relative bg-white shrink-0 rounded-xl border border-gray-100 flex items-center justify-center overflow-hidden`}>
+            <img src={brand.logo} alt={brand.name} className="max-w-full max-h-full object-contain" />
+        </div>
+    );
 };
 
 export const Withdraw: React.FC = () => {
@@ -69,10 +320,40 @@ export const Withdraw: React.FC = () => {
     const [provider, setProvider] = useState<string>('MTN_MOMO_ZMB');
     const [selectedBankId, setSelectedBankId] = useState<string>('');
     const [withdrawMethod, setWithdrawMethod] = useState<'mobile_money' | 'bank_account'>('mobile_money');
+    const [recentWithdrawals, setRecentWithdrawals] = useState<WithdrawalRecord[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    const [isHistoryLoading, setIsHistoryLoading] = useState(false);
     const [error, setError] = useState('');
     const [showSuccessModal, setShowSuccessModal] = useState(false);
+    const [showStatusModal, setShowStatusModal] = useState(false);
+    const [lastWithdrawal, setLastWithdrawal] = useState<{
+        reference: string;
+        amount: number;
+        feeAmount: number;
+        totalDebited: number;
+        currency: string;
+        status: string;
+        providerStatus?: string;
+    } | null>(null);
     const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+    const [quote, setQuote] = useState<WithdrawalQuote | null>(null);
+    const [resolvedAccountName, setResolvedAccountName] = useState<string>('');
+    const [isResolvingAccount, setIsResolvingAccount] = useState(false);
+    const [resolveError, setResolveError] = useState<string>('');
+    const [pollingReference, setPollingReference] = useState<string>('');
+    const [pollingMessage, setPollingMessage] = useState<string>('Payment request sent. Checking withdrawal status...');
+
+    const loadWithdrawalHistory = async () => {
+        setIsHistoryLoading(true);
+        try {
+            const res = await api.get('/v1/wallet-withdrawals?limit=5');
+            setRecentWithdrawals(res.data || []);
+        } catch (err) {
+            console.error('Failed to load withdrawal history', err);
+        } finally {
+            setIsHistoryLoading(false);
+        }
+    };
 
     useEffect(() => {
         if (token) {
@@ -96,12 +377,48 @@ export const Withdraw: React.FC = () => {
                     setSelectedBankId(res.data[0].id);
                 }
             });
+
+            loadWithdrawalHistory();
         }
     }, [token]);
 
-    const wallet = useMemo(() => wallets.find(w => w.id === selectedWallet), [wallets, selectedWallet]);
+    useEffect(() => {
+        const requestedAmount = Number(amount);
+        if (!token || !selectedWallet || !Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+            setQuote(null);
+            return;
+        }
 
-    // Auto-switch to ZMW when mobile money is selected
+        let cancelled = false;
+        api.post('/wallets/withdraw/quote', {
+            walletId: selectedWallet,
+            amount: requestedAmount,
+            destinationType: withdrawMethod
+        }).then((res) => {
+            if (!cancelled) {
+                setQuote(res.data);
+            }
+        }).catch(() => {
+            if (!cancelled) {
+                setQuote(null);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [token, selectedWallet, amount, withdrawMethod]);
+
+    const wallet = useMemo(() => wallets.find(w => w.id === selectedWallet), [wallets, selectedWallet]);
+    const pendingReserved = Number(wallet?.pending_withdrawal_amount || 0);
+    const localQuote = useMemo(
+        () => getLocalWithdrawalQuote(Number(amount), withdrawMethod, wallet?.currency),
+        [amount, withdrawMethod, wallet?.currency]
+    );
+    const feeAmount = quote?.fee_amount ?? localQuote?.fee_amount ?? 0;
+    const totalDebited = quote?.total_debited ?? localQuote?.total_debited ?? (Number(amount) > 0 ? Number(amount) : 0);
+
+    // Auto-switch to a supported wallet when the selected rail has currency limits
     useEffect(() => {
         if (withdrawMethod === 'mobile_money' && wallet && wallet.currency !== 'ZMW') {
             const zmwWallet = wallets.find(w => w.currency === 'ZMW');
@@ -109,7 +426,118 @@ export const Withdraw: React.FC = () => {
                 setSelectedWallet(zmwWallet.id);
             }
         }
+
+        if (withdrawMethod === 'bank_account' && wallet && !['ZMW', 'USD'].includes(wallet.currency)) {
+            const supportedWallet = wallets.find(w => ['ZMW', 'USD'].includes(w.currency));
+            if (supportedWallet) {
+                setSelectedWallet(supportedWallet.id);
+            }
+        }
     }, [withdrawMethod, wallet, wallets]);
+
+    useEffect(() => {
+        if (withdrawMethod !== 'mobile_money') {
+            setResolvedAccountName('');
+            setResolveError('');
+            setIsResolvingAccount(false);
+            return;
+        }
+
+        const { localPhone, fullPhone } = normalizeZambiaMobileNumber(mobileNumber);
+        if (localPhone.length < 9) {
+            setResolvedAccountName('');
+            setResolveError('');
+            setIsResolvingAccount(false);
+            return;
+        }
+
+        let cancelled = false;
+        const timer = window.setTimeout(async () => {
+            setIsResolvingAccount(true);
+            try {
+                const res = await api.post('/lenco/mobile-money/resolve', {
+                    phoneNumber: fullPhone,
+                    operator: provider,
+                    country: 'zm'
+                });
+                if (cancelled) return;
+                setResolvedAccountName(String(res.data?.accountName || '').trim());
+                setResolveError('');
+            } catch (err: any) {
+                if (cancelled) return;
+                setResolvedAccountName('');
+                setResolveError(err?.response?.data?.error || 'Unable to resolve account name');
+            } finally {
+                if (!cancelled) {
+                    setIsResolvingAccount(false);
+                }
+            }
+        }, 450);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [mobileNumber, provider, withdrawMethod]);
+
+    useEffect(() => {
+        if (!pollingReference) return;
+
+        let cancelled = false;
+        const interval = window.setInterval(async () => {
+            try {
+                const res = await api.get(`/v1/wallet-withdrawals/${pollingReference}/status`);
+                if (cancelled) return;
+
+                const data = res.data || {};
+                const localStatus = String(data.local_status || data.localStatus || data.status || '').trim().toUpperCase();
+                const providerStatus = String(data.provider_status || data.providerStatus || '').trim().toUpperCase();
+                setLastWithdrawal({
+                    reference: data.reference || pollingReference,
+                    amount: Number(data.amount || amount || 0),
+                    feeAmount: Number(data.fee_amount || 0),
+                    totalDebited: Number(data.total_debited || Number(data.amount || 0) + Number(data.fee_amount || 0)),
+                    currency: data.currency || wallet?.currency || 'ZMW',
+                    status: localStatus || 'PENDING',
+                    providerStatus: providerStatus || data.provider_status || 'PENDING'
+                });
+
+                if (localStatus === 'COMPLETED') {
+                    window.clearInterval(interval);
+                    setPollingReference('');
+                    setShowStatusModal(false);
+                    setShowSuccessModal(true);
+                    loadWithdrawalHistory();
+                    setTimeout(() => navigate('/dashboard'), 3000);
+                    return;
+                }
+
+                if (localStatus === 'FAILED') {
+                    window.clearInterval(interval);
+                    setPollingReference('');
+                    setShowStatusModal(false);
+                    setError(data.failure_reason || data.failureReason || 'Withdrawal failed');
+                    loadWithdrawalHistory();
+                    return;
+                }
+
+                setPollingMessage(
+                    providerStatus
+                        ? `Payment request sent. Checking withdrawal status... (${providerStatus.toLowerCase()})`
+                        : 'Payment request sent. Checking withdrawal status...'
+                );
+            } catch (err) {
+                if (!cancelled) {
+                    setPollingMessage('Payment request sent. Checking withdrawal status...');
+                }
+            }
+        }, 4000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [pollingReference, amount, navigate, wallet?.currency]);
 
     const handleWithdraw = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -122,6 +550,14 @@ export const Withdraw: React.FC = () => {
         if (withdrawMethod === 'bank_account' && !selectedBankId) {
             setError('Please select a bank account');
             return;
+        }
+
+        if (withdrawMethod === 'mobile_money') {
+            const { localPhone } = normalizeZambiaMobileNumber(mobileNumber);
+            if (localPhone.length < 9) {
+                setError('Please enter a valid Zambia mobile number');
+                return;
+            }
         }
 
         if (withdrawMethod === 'mobile_money' && !mobileNumber) {
@@ -138,36 +574,59 @@ export const Withdraw: React.FC = () => {
 
         if (withdrawMethod === 'mobile_money') {
             try {
-                let formattedNumber = mobileNumber.replace(/\D/g, '');
-                if (formattedNumber.startsWith('09') || formattedNumber.startsWith('07')) {
-                    formattedNumber = '26' + formattedNumber;
-                } else if (formattedNumber.startsWith('9') || formattedNumber.startsWith('7')) {
-                    formattedNumber = '260' + formattedNumber;
+                const { localPhone, fullPhone } = normalizeZambiaMobileNumber(mobileNumber);
+                if (localPhone.length < 9) {
+                    setError('Please enter a valid Zambia mobile number');
+                    setIsLoading(false);
+                    return;
                 }
 
-                const res = await api.post('/pawapay/payout', {
-                    amount: parseFloat(amount),
-                    phoneNumber: formattedNumber,
-                    provider: provider,
-                    currency: wallet?.currency || 'ZMW',
+                const res = await api.post('/wallets/withdraw', {
                     walletId: selectedWallet,
-                    customerMessage: 'FlapaPay Withdrawal',
+                    amount: parseFloat(amount),
+                    destinationType: 'mobile_money',
+                    destinationDetails: {
+                        phoneNumber: fullPhone,
+                        provider,
+                        country: 'zm',
+                        accountName: resolvedAccountName || undefined
+                    },
                     pin
                 });
 
-                if (res.data.status === 'ACCEPTED' || res.data.status === 'ENQUEUED' || res.data.status === 'COMPLETED') {
-                    // Skip polling and immediately open the "Completed" modal
-                    setShowSuccessModal(true);
-                    setIsLoading(false);
-                    setTimeout(() => navigate('/dashboard'), 3000);
-
+                if (res.data.success) {
+                    const reference = res.data.reference || '';
+                    const status = String(res.data.status || 'pending').trim().toUpperCase();
+                    setLastWithdrawal({
+                        reference,
+                        amount: parseFloat(amount),
+                        feeAmount: Number(res.data.fee_amount || feeAmount || 0),
+                        totalDebited: Number(res.data.total_debited || totalDebited || parseFloat(amount)),
+                        currency: wallet?.currency || 'ZMW',
+                        status,
+                        providerStatus: res.data.provider_status || status
+                    });
+                    loadWithdrawalHistory();
+                    if (status === 'COMPLETED' || status === 'SUCCESSFUL') {
+                        setShowStatusModal(false);
+                        setShowSuccessModal(true);
+                        setTimeout(() => navigate('/dashboard'), 3000);
+                    } else {
+                        setPollingMessage('Payment request sent. Checking withdrawal status...');
+                        setShowSuccessModal(false);
+                        setShowStatusModal(true);
+                        setPollingReference(reference);
+                    }
                 } else {
-                    setError(`Withdrawal failed: ${res.data.status} `);
-                    setIsLoading(false);
+                    setError('Failed to initiate mobile money withdrawal');
                 }
             } catch (err: any) {
-                setIsLoading(false);
-                throw err;
+                const message =
+                    err?.response?.data?.error ||
+                    err?.response?.data?.details?.message ||
+                    err?.message ||
+                    'Failed to initiate mobile money withdrawal';
+                setError(message);
             }
         } else {
             // Bank Account Withdrawal
@@ -193,15 +652,31 @@ export const Withdraw: React.FC = () => {
                 });
 
                 if (res.data.success) {
+                    setLastWithdrawal({
+                        reference: res.data.reference,
+                        amount: parseFloat(amount),
+                        feeAmount: Number(res.data.fee_amount || feeAmount || 0),
+                        totalDebited: Number(res.data.total_debited || totalDebited || parseFloat(amount)),
+                        currency: wallet?.currency || 'ZMW',
+                        status: String(res.data.status || 'PENDING').toUpperCase(),
+                        providerStatus: res.data.provider_status
+                    });
                     setShowSuccessModal(true);
+                    loadWithdrawalHistory();
                     setTimeout(() => navigate('/dashboard'), 3000);
                 }
             } catch (err: any) {
-                throw err;
+                const message =
+                    err?.response?.data?.error ||
+                    err?.response?.data?.details?.message ||
+                    err?.message ||
+                    'Failed to process bank withdrawal';
+                setError(message);
             } finally {
                 setIsLoading(false);
             }
         }
+        setIsLoading(false);
     };
 
     const providers = [
@@ -209,6 +684,83 @@ export const Withdraw: React.FC = () => {
         { id: 'AIRTEL_OAPI_ZMB', name: 'Airtel', logo: '/assets/images/Airtel_Africa_logo.svg' },
         { id: 'ZAMTEL_ZMB', name: 'Zamtel', logo: '/assets/images/zamtel.png' }
     ];
+
+    const formatDateTime = (value: string) =>
+        new Date(value).toLocaleString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+    const statusTone = (status?: string | null) => {
+        const normalized = String(status || '').toUpperCase();
+        if (normalized === 'COMPLETED' || normalized === 'SUCCESSFUL') return 'bg-emerald-50 text-emerald-700 border-emerald-100';
+        if (normalized === 'FAILED') return 'bg-rose-50 text-rose-700 border-rose-100';
+        return 'bg-amber-50 text-amber-700 border-amber-100';
+    };
+
+    const getWithdrawalBankName = (withdrawal: WithdrawalRecord) => {
+        const directName = withdrawal.destination_details.bankName?.trim();
+        if (directName) return directName;
+        const bankId = String(withdrawal.destination_details.bankId || '').trim();
+        return BANK_ID_TO_NAME[bankId] || null;
+    };
+
+    const summarizeDestination = (withdrawal: WithdrawalRecord) => {
+        if (withdrawal.destination_type === 'bank_account') {
+            return getWithdrawalBankName(withdrawal)
+                || linkedBanks.find(bank => bank.bank_id === withdrawal.destination_details.bankId)?.bank_name
+                || 'Bank account';
+        }
+        return withdrawal.destination_details.accountName
+            || withdrawal.destination_details.phoneNumber
+            || 'Mobile money';
+    };
+
+    const getRecentTransactionBrand = (withdrawal: WithdrawalRecord) => {
+        if (withdrawal.destination_type === 'bank_account') {
+            return {
+                type: 'bank' as const,
+                name: summarizeDestination(withdrawal)
+            };
+        }
+
+        const providerKey = String(
+            withdrawal.destination_details?.operator
+            || withdrawal.destination_details?.provider
+            || withdrawal.provider
+            || ''
+        ).trim().toUpperCase() as keyof typeof MOBILE_MONEY_PROVIDERS;
+
+        return {
+            type: 'mobile' as const,
+            provider: providerKey
+        };
+    };
+
+    const getRecentTransactionLabel = (withdrawal: WithdrawalRecord) =>
+        withdrawal.destination_type === 'bank_account' ? 'Bank withdrawal' : 'Mobile money withdrawal';
+
+    const getRecentTransactionNote = (withdrawal: WithdrawalRecord) => {
+        if (withdrawal.destination_type === 'bank_account') {
+            const accountName = withdrawal.destination_details.accountName?.trim();
+            return accountName
+                ? `${summarizeDestination(withdrawal)} • ${accountName}`
+                : summarizeDestination(withdrawal);
+        }
+
+        const mobileBrand = MOBILE_MONEY_PROVIDERS[
+            String(
+                withdrawal.destination_details?.operator
+                || withdrawal.destination_details?.provider
+                || withdrawal.provider
+                || ''
+            ).trim().toUpperCase() as keyof typeof MOBILE_MONEY_PROVIDERS
+        ];
+        const phone = withdrawal.destination_details.phoneNumber?.trim();
+        return [mobileBrand?.name || 'Mobile money', phone].filter(Boolean).join(' • ');
+    };
 
     return (
         <div className="min-h-screen bg-white flex font-sans selection:bg-orange-100" style={{ backgroundImage: "url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
@@ -303,15 +855,22 @@ export const Withdraw: React.FC = () => {
                                 <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
                                     <div className="space-y-4">
                                         <div>
-                                            <label className="text-xs font-semibold text-gray-500 mb-2 block">
-                                                Select Wallet 
+                                                <label className="text-xs font-semibold text-gray-500 mb-2 block">
+                                                    Select Wallet 
                                                 {withdrawMethod === 'mobile_money' && (
                                                     <span className="text-emerald-600 ml-1">(ZMW only)</span>
+                                                )}
+                                                {withdrawMethod === 'bank_account' && (
+                                                    <span className="text-blue-600 ml-1">(ZMW and USD)</span>
                                                 )}
                                             </label>
                                             <div className="grid grid-cols-2 gap-3">
                                                 {wallets
-                                                    .filter(w => withdrawMethod === 'mobile_money' ? w.currency === 'ZMW' : true)
+                                                    .filter(w => {
+                                                        if (withdrawMethod === 'mobile_money') return w.currency === 'ZMW';
+                                                        if (withdrawMethod === 'bank_account') return ['ZMW', 'USD'].includes(w.currency);
+                                                        return true;
+                                                    })
                                                     .map(w => (
                                                         <button
                                                             key={w.id}
@@ -334,6 +893,11 @@ export const Withdraw: React.FC = () => {
                                                             <p className="text-xs text-gray-500">
                                                                 Balance: {parseFloat(w.balance).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                                                             </p>
+                                                            {Number(w.pending_withdrawal_amount || 0) > 0 && (
+                                                                <p className="mt-1 text-[11px] font-semibold text-amber-600">
+                                                                    {Number(w.pending_withdrawal_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} reserved
+                                                                </p>
+                                                            )}
                                                         </button>
                                                     ))}
                                             </div>
@@ -403,6 +967,17 @@ export const Withdraw: React.FC = () => {
                                                     required
                                                 />
                                             </div>
+                                            <div className="mt-2 text-xs font-semibold">
+                                                {isResolvingAccount ? (
+                                                    <span className="text-amber-700">Resolving account name...</span>
+                                                ) : resolvedAccountName ? (
+                                                    <span className="text-emerald-700">Account name: {resolvedAccountName}</span>
+                                                ) : resolveError ? (
+                                                    <span className="text-rose-600">{resolveError}</span>
+                                                ) : (
+                                                    <span className="text-gray-400">Account name will appear after resolution.</span>
+                                                )}
+                                            </div>
                                         </div>
                                     </div>
                                 ) : (
@@ -433,7 +1008,6 @@ export const Withdraw: React.FC = () => {
                                             <div className="space-y-3">
                                                 {linkedBanks.map(b => {
                                                     const isSelected = selectedBankId === b.id;
-                                                    const logo = getBankLogo(b.bank_name);
                                                     return (
                                                         <button
                                                             key={b.id}
@@ -445,16 +1019,10 @@ export const Withdraw: React.FC = () => {
                                                                     : 'border-gray-200 hover:border-gray-300 bg-white'
                                                             }`}
                                                         >
-                                                            <div className={`w-12 h-12 rounded-lg p-2 flex items-center justify-center ${
+                                                            <div className={`w-12 h-12 rounded-lg flex items-center justify-center overflow-hidden ${
                                                                 isSelected ? 'bg-white' : 'bg-gray-50'
                                                             }`}>
-                                                                {logo ? (
-                                                                    <img src={logo} alt={b.bank_name} className="w-full h-full object-contain" onError={(e) => {
-                                                                        (e.target as HTMLImageElement).style.display = 'none';
-                                                                    }} />
-                                                                ) : (
-                                                                    <span className="text-lg font-bold text-gray-400 capitalize">{b.bank_name.charAt(0)}</span>
-                                                                )}
+                                                                <BankLogo bankName={b.bank_name} className="w-12 h-12 rounded-lg p-2" />
                                                             </div>
                                                             <div className="flex-1">
                                                                 <p className="text-xs font-semibold text-gray-500 uppercase">{b.bank_name}</p>
@@ -500,13 +1068,13 @@ export const Withdraw: React.FC = () => {
                                             <span className="font-bold text-gray-900">{parseFloat(amount).toLocaleString()} {wallet?.currency}</span>
                                         </div>
                                         <div className="flex justify-between">
-                                            <span className="text-sm text-gray-500">Fee (3.5%)</span>
-                                            <span className="font-bold text-gray-900">{(parseFloat(amount) * 0.035).toFixed(2)} {wallet?.currency}</span>
+                                            <span className="text-sm text-gray-500">Fee</span>
+                                            <span className="font-bold text-gray-900">{feeAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {wallet?.currency}</span>
                                         </div>
                                         <div className="pt-3 border-t border-gray-100">
                                             <div className="flex justify-between">
-                                                <span className="text-sm font-semibold text-gray-900">Total</span>
-                                                <span className="text-xl font-bold text-emerald-600">{(parseFloat(amount) * 1.035).toFixed(2)} {wallet?.currency}</span>
+                                                <span className="text-sm font-semibold text-gray-900">Total Debited</span>
+                                                <span className="text-xl font-bold text-emerald-600">{totalDebited.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {wallet?.currency}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -515,11 +1083,23 @@ export const Withdraw: React.FC = () => {
                                         <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
-                                        <p className="text-xs text-blue-700">
-                                            {withdrawMethod === 'mobile_money'
-                                                ? "Mobile money payouts are usually instant. Some networks may take up to 2 hours."
-                                                : "Bank transfers typically settle within 30 minutes during clearing hours."}
-                                        </p>
+                                        <div className="text-xs text-blue-700 space-y-1">
+                                            <p>
+                                                {withdrawMethod === 'mobile_money'
+                                                    ? "Mobile money payouts are usually instant. Some networks may take up to 2 hours."
+                                                    : "Bank transfers typically settle within 30 minutes during clearing hours."}
+                                            </p>
+                                            {withdrawMethod === 'bank_account' && (
+                                                <p className="font-semibold text-blue-700">
+                                                    Bank withdrawal fees follow Airtel-style transfer bands.
+                                                </p>
+                                            )}
+                                            {pendingReserved > 0 && (
+                                                <p className="font-semibold text-amber-700">
+                                                    {pendingReserved.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {wallet?.currency} is currently reserved in pending withdrawals.
+                                                </p>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -532,6 +1112,124 @@ export const Withdraw: React.FC = () => {
                                 </p>
                                 <button className="w-full py-3 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-semibold transition-all border border-white/20">
                                     Contact Support
+                                </button>
+                            </div>
+
+                            <div className="rounded-[28px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-6 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.35)]">
+                                <div className="flex items-start justify-between gap-4 mb-5">
+                                    <div>
+                                        <p className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-400">Recent Transactions</p>
+                                        <h3 className="mt-2 text-xl font-black text-slate-900">Latest withdrawals</h3>
+                                        <p className="mt-1 text-xs leading-5 text-slate-500">Bank and mobile money payouts with live provider branding.</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={loadWithdrawalHistory}
+                                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500 transition hover:border-slate-300 hover:text-slate-900"
+                                    >
+                                        Refresh
+                                    </button>
+                                </div>
+
+                                <div className="space-y-4">
+                                    {isHistoryLoading ? (
+                                        <div className="rounded-[24px] border border-slate-200 bg-white px-4 py-10 text-center text-sm font-medium text-slate-400">
+                                            Loading withdrawal history...
+                                        </div>
+                                    ) : recentWithdrawals.length === 0 ? (
+                                        <div className="rounded-[24px] border border-dashed border-slate-200 bg-white px-4 py-10 text-center">
+                                            <p className="text-sm font-semibold text-slate-500">No withdrawals yet</p>
+                                            <p className="mt-1 text-xs text-slate-400">Recent bank and mobile money payouts will appear here.</p>
+                                        </div>
+                                    ) : (
+                                        recentWithdrawals.map(withdrawal => {
+                                            const brand = getRecentTransactionBrand(withdrawal);
+                                            return (
+                                                <button
+                                                    key={withdrawal.id}
+                                                    type="button"
+                                                    onClick={() => navigate('/transactions')}
+                                                    className="group w-full rounded-[24px] border border-slate-200 bg-white p-4 text-left shadow-[0_16px_45px_-38px_rgba(15,23,42,0.7)] transition hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-[0_20px_50px_-34px_rgba(16,185,129,0.25)]"
+                                                >
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="flex min-w-0 items-start gap-3">
+                                                            {brand.type === 'bank' ? (
+                                                                <BankLogo
+                                                                    bankName={brand.name}
+                                                                    className="h-14 w-14 shrink-0 rounded-2xl border border-slate-100 p-2.5 shadow-sm"
+                                                                />
+                                                            ) : (
+                                                                <MobileMoneyLogo
+                                                                    provider={brand.provider}
+                                                                    className="h-14 w-14 rounded-2xl border border-slate-100 p-2.5 shadow-sm"
+                                                                />
+                                                            )}
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2 flex-wrap">
+                                                                    <p className="text-sm font-black text-slate-900">
+                                                                        {getRecentTransactionLabel(withdrawal)}
+                                                                    </p>
+                                                                    <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${statusTone(withdrawal.local_status)}`}>
+                                                                        {withdrawal.local_status}
+                                                                    </span>
+                                                                </div>
+                                                                <p className="mt-1 truncate text-xs font-semibold text-slate-500">
+                                                                    {getRecentTransactionNote(withdrawal)}
+                                                                </p>
+                                                                <p className="mt-2 text-[11px] text-slate-400">
+                                                                    {formatDateTime(withdrawal.created_at)} • Ref {withdrawal.reference}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="text-right">
+                                                            <p className="text-base font-black text-slate-900">
+                                                                {Number(withdrawal.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                            </p>
+                                                            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-emerald-600">
+                                                                {withdrawal.currency}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-4 grid grid-cols-3 gap-3 rounded-[20px] bg-slate-50 px-3 py-3 text-[11px]">
+                                                        <div>
+                                                            <span className="block uppercase tracking-[0.16em] text-slate-400">Provider</span>
+                                                            <span className="mt-1 block font-semibold text-slate-700">
+                                                                {String(withdrawal.provider || 'settlement').replace(/_/g, ' ')}
+                                                            </span>
+                                                        </div>
+                                                        <div>
+                                                            <span className="block uppercase tracking-[0.16em] text-slate-400">Fee</span>
+                                                            <span className="mt-1 block font-semibold text-slate-700">
+                                                                {Number(withdrawal.fee_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {withdrawal.currency}
+                                                            </span>
+                                                        </div>
+                                                        <div>
+                                                            <span className="block uppercase tracking-[0.16em] text-slate-400">Total</span>
+                                                            <span className="mt-1 block font-semibold text-slate-700">
+                                                                {Number(withdrawal.total_debited || withdrawal.amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {withdrawal.currency}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+
+                                                    {withdrawal.failure_reason && (
+                                                        <div className="mt-3 rounded-2xl border border-rose-100 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                                                            {withdrawal.failure_reason}
+                                                        </div>
+                                                    )}
+                                                </button>
+                                            );
+                                        })
+                                    )}
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={() => navigate('/transactions')}
+                                    className="mt-5 inline-flex w-full items-center justify-center rounded-[20px] bg-slate-900 px-4 py-3 text-xs font-black uppercase tracking-[0.24em] text-white transition hover:bg-slate-800"
+                                >
+                                    View More
                                 </button>
                             </div>
                         </div>
@@ -553,9 +1251,19 @@ export const Withdraw: React.FC = () => {
                             </svg>
                         </div>
 
-                        <h3 className="text-3xl font-black text-gray-900 tracking-tight mb-2">Transaction Completed!</h3>
+                        <h3 className="text-3xl font-black text-gray-900 tracking-tight mb-2">
+                            {withdrawMethod === 'mobile_money'
+                                ? (lastWithdrawal?.status === 'COMPLETED' || lastWithdrawal?.status === 'SUCCESSFUL'
+                                    ? 'Withdrawal Completed!'
+                                    : 'Withdrawal In Progress')
+                                : 'Transaction Completed!'}
+                        </h3>
                         <p className="text-gray-500 font-bold mb-6 uppercase text-[10px] tracking-widest">
-                            Your withdrawal was successful
+                            {withdrawMethod === 'mobile_money'
+                                ? (lastWithdrawal?.status === 'COMPLETED' || lastWithdrawal?.status === 'SUCCESSFUL'
+                                    ? 'Your withdrawal was successful'
+                                    : 'Checking withdrawal status with Lenco')
+                                : 'Your withdrawal was successful'}
                         </p>
 
                         {/* Transaction Details Card */}
@@ -563,27 +1271,43 @@ export const Withdraw: React.FC = () => {
                             <div className="space-y-3">
                                 <div className="flex justify-between items-center">
                                     <span className="text-xs text-gray-500 font-semibold uppercase">Amount</span>
-                                    <span className="text-lg font-black text-gray-900">{amount} {wallet?.currency}</span>
+                                    <span className="text-lg font-black text-gray-900">
+                                        {lastWithdrawal ? `${lastWithdrawal.amount.toFixed(2)} ${lastWithdrawal.currency}` : `${amount} ${wallet?.currency}`}
+                                    </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <span className="text-xs text-gray-500 font-semibold uppercase">Fee (3.5%)</span>
-                                    <span className="text-sm font-bold text-gray-700">{(parseFloat(amount) * 0.035).toFixed(2)} {wallet?.currency}</span>
+                                    <span className="text-xs text-gray-500 font-semibold uppercase">Fee</span>
+                                    <span className="text-sm font-bold text-gray-700">
+                                        {lastWithdrawal ? `${lastWithdrawal.feeAmount.toFixed(2)} ${lastWithdrawal.currency}` : `${feeAmount.toFixed(2)} ${wallet?.currency}`}
+                                    </span>
                                 </div>
                                 <div className="pt-3 border-t border-gray-200 flex justify-between items-center">
                                     <span className="text-xs text-gray-500 font-semibold uppercase">Total Debited</span>
-                                    <span className="text-xl font-black text-emerald-600">{(parseFloat(amount) * 1.035).toFixed(2)} {wallet?.currency}</span>
+                                    <span className="text-xl font-black text-emerald-600">
+                                        {lastWithdrawal ? `${lastWithdrawal.totalDebited.toFixed(2)} ${lastWithdrawal.currency}` : `${totalDebited.toFixed(2)} ${wallet?.currency}`}
+                                    </span>
                                 </div>
+                                {lastWithdrawal && (
+                                    <div className="pt-3 border-t border-gray-200">
+                                        <span className="text-xs text-gray-500 font-semibold uppercase">Settlement Reference</span>
+                                        <p className="mt-1 text-sm font-black text-gray-900 break-all">{lastWithdrawal.reference}</p>
+                                    </div>
+                                )}
                                 <div className="pt-3 border-t border-gray-200">
                                     <div className="flex items-center gap-2">
                                         <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                                        <span className="text-xs font-bold text-emerald-600">Status: COMPLETED</span>
+                                        <span className="text-xs font-bold text-emerald-600">
+                                            Status: {lastWithdrawal?.providerStatus || lastWithdrawal?.status || 'COMPLETED'}
+                                        </span>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <p className="text-xs text-gray-500 font-medium mb-6 leading-relaxed">
-                            Funds have been sent to your mobile wallet. You should receive them shortly.
+                            {withdrawMethod === 'bank_account'
+                                ? 'Your bank payout has been submitted to the settlement rail. You can track its final provider reference in recent withdrawals.'
+                                : 'The transfer is being processed by Lenco. The modal will close once the withdrawal is confirmed.'}
                         </p>
 
                         <Button
@@ -596,11 +1320,56 @@ export const Withdraw: React.FC = () => {
                 </div>
             )}
 
+            {showStatusModal && (
+                <div className="fixed inset-0 bg-gray-900/35 backdrop-blur-md flex items-center justify-center z-[95] animate-in fade-in duration-300">
+                    <div className="bg-white rounded-[40px] shadow-2xl max-w-md w-full mx-4 p-8 border border-gray-100">
+                        <div className="flex items-center gap-4 mb-6">
+                            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-100 to-orange-200 flex items-center justify-center text-orange-700 shadow-sm">
+                                <svg className="w-7 h-7 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m5-3a8 8 0 11-16 0 8 8 0 0116 0z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 className="text-2xl font-black text-gray-900">Processing withdrawal</h3>
+                                <p className="text-sm text-gray-500 font-medium">{pollingMessage}</p>
+                            </div>
+                        </div>
+
+                        <div className="rounded-3xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 p-5 mb-6">
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span className="block text-[10px] uppercase tracking-[0.18em] text-gray-500">Amount</span>
+                                    <span className="block mt-1 text-gray-900 font-black">
+                                        {lastWithdrawal ? `${lastWithdrawal.amount.toFixed(2)} ${lastWithdrawal.currency}` : `${amount} ${wallet?.currency}`}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="block text-[10px] uppercase tracking-[0.18em] text-gray-500">Fee</span>
+                                    <span className="block mt-1 text-gray-900 font-black">
+                                        {lastWithdrawal ? `${lastWithdrawal.feeAmount.toFixed(2)} ${lastWithdrawal.currency}` : `${feeAmount.toFixed(2)} ${wallet?.currency}`}
+                                    </span>
+                                </div>
+                                <div className="col-span-2 pt-3 border-t border-amber-100 flex items-center justify-between">
+                                    <span className="text-[10px] uppercase tracking-[0.18em] text-gray-500">Total Debited</span>
+                                    <span className="text-lg text-orange-700 font-black">
+                                        {lastWithdrawal ? `${lastWithdrawal.totalDebited.toFixed(2)} ${lastWithdrawal.currency}` : `${totalDebited.toFixed(2)} ${wallet?.currency}`}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <p className="text-xs text-gray-500">
+                            Lenco is processing the mobile money withdrawal. This modal will close automatically when the transfer status updates.
+                        </p>
+                    </div>
+                </div>
+            )}
+
             <PinApprovalModal
                 isOpen={isPinModalOpen}
                 onClose={() => setIsPinModalOpen(false)}
                 onSuccess={handlePinSuccess}
-                description={`Approve withdrawal of ${wallet?.currency} ${amount} to your ${withdrawMethod === 'mobile_money' ? 'mobile wallet' : 'bank account'} `}
+                description={`Approve withdrawal of ${wallet?.currency} ${amount} to your ${withdrawMethod === 'mobile_money' ? (resolvedAccountName || 'mobile wallet') : 'bank account'} `}
             />
         </div>
     );

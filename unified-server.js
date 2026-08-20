@@ -17,21 +17,113 @@ const PawaPayService = require('./services/PawaPayService');
 const EscrowService = require('./services/EscrowService');
 const DeveloperGateway = require('./services/DeveloperGateway');
 const CybersourceService = require('./services/CybersourceService');
+const CybersourceRecurringBillingService = require('./services/CybersourceRecurringBillingService');
+const LencoBillPaymentService = require('./services/LencoBillPaymentService');
 const { runSchedulerTick, runRetryWorker, executePayout, emitWebhookForMerchant, retryFailedWebhooks, ensureWebhookRetryColumns } = require('./services/PayoutSchedulerService');
 const SubscriptionRenewalService = require('./services/SubscriptionRenewalService');
+const FraudEventService = require('./services/FraudEventService');
+const FraudRuleService = require('./services/FraudRuleService');
+const FraudAlertService = require('./services/FraudAlertService');
+const FraudActionService = require('./services/FraudActionService');
+const createPosDeviceRoutes = require('./pos/routes/devices');
+const createPosOperatorRoutes = require('./pos/routes/operators');
+const createPosStationRoutes = require('./pos/routes/stations');
+const createPosShiftRoutes = require('./pos/routes/shifts');
+const createPosSalesRoutes = require('./pos/routes/sales');
 const multer = require('multer');
 
 const fs = require('fs');
 const path = require('path');
+const webPublicDir = path.join(__dirname, 'apps', 'web', 'public');
+const webDistDir = path.join(__dirname, 'apps', 'web', 'dist');
+const kycUploadDir = path.join(webPublicDir, 'assets', 'images', 'kyc');
+const avatarUploadDir = path.join(webPublicDir, 'assets', 'images', 'avatars');
+const blogUploadDir = path.join(webPublicDir, 'assets', 'images', 'blog');
+const merchantLogoDir = path.join('/home/flapapay/web/flapapay.com/storage/merchant-assets');
+const PUBLIC_APP_ORIGIN = (process.env.PUBLIC_APP_URL || 'https://www.flapapay.com').replace(/\/+$/, '');
+const ENCRYPTION_KEY_TTL_MS = 60 * 60 * 1000;
+let activeEncryptionKeyBundle = null;
+
+const getActiveEncryptionKeyBundle = () => {
+    const now = Date.now();
+    if (activeEncryptionKeyBundle && activeEncryptionKeyBundle.expires_at_ms > now) {
+        return activeEncryptionKeyBundle;
+    }
+
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { format: 'jwk' },
+        privateKeyEncoding: { format: 'jwk' }
+    });
+
+    const issuedAt = new Date(now);
+    const expiresAt = new Date(now + ENCRYPTION_KEY_TTL_MS);
+    const kid = `enc_${issuedAt.toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}_${crypto.randomBytes(4).toString('hex')}`;
+
+    activeEncryptionKeyBundle = {
+        public_jwk: {
+            ...publicKey,
+            use: 'enc',
+            alg: 'RSA-OAEP-256',
+            kid,
+        },
+        private_jwk: {
+            ...privateKey,
+            use: 'enc',
+            alg: 'RSA-OAEP-256',
+            kid,
+        },
+        issued_at: issuedAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        expires_at_ms: expiresAt.getTime(),
+    };
+
+    return activeEncryptionKeyBundle;
+};
+
+const ensureDir = (dir) => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+};
+
+const normalizePublicAssetUrl = (value) => {
+    if (!value || typeof value !== 'string') return value;
+
+    const normalized = value.trim();
+
+    if (/^(logo-|merchant-logo-)[^/]+\.(png|jpe?g|webp|gif|svg)$/i.test(normalized)) {
+        return `${PUBLIC_APP_ORIGIN}/api/merchant-assets/${normalized}`;
+    }
+
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/src\/assets\/images\//i.test(normalized)) {
+        return normalized.replace(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/src\/assets\/images\//i, `${PUBLIC_APP_ORIGIN}/assets/images/`);
+    }
+
+    if (/^https?:\/\/[^/]+\/assets\/images\/merchant\//i.test(normalized)) {
+        return normalized.replace(/^https?:\/\/[^/]+\/assets\/images\/merchant\//i, `${PUBLIC_APP_ORIGIN}/api/merchant-assets/`);
+    }
+
+    if (/^\/assets\/images\/merchant\//i.test(normalized)) {
+        return `${PUBLIC_APP_ORIGIN}/api/merchant-assets/${normalized.split('/').pop()}`;
+    }
+
+    if (/^\/src\/assets\/images\//i.test(normalized)) {
+        return `${PUBLIC_APP_ORIGIN}${normalized.replace(/^\/src\/assets\/images\//i, '/assets/images/')}`;
+    }
+
+    if (/^\/assets\//i.test(normalized)) {
+        return `${PUBLIC_APP_ORIGIN}${normalized}`;
+    }
+
+    return normalized;
+};
 
 // Multer storage for KYC documents
 const kycStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const dir = 'C:/FlapaPay/apps/web/public/assets/images/kyc';
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
+        ensureDir(kycUploadDir);
+        cb(null, kycUploadDir);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -44,11 +136,8 @@ const uploadKyc = multer({ storage: kycStorage });
 // Multer storage for User Avatars
 const avatarStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const dir = 'C:/FlapaPay/apps/web/public/assets/images/avatars';
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
+        ensureDir(avatarUploadDir);
+        cb(null, avatarUploadDir);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -71,11 +160,8 @@ const uploadAvatar = multer({
 // Multer storage for Blog/CMS Uploads
 const blogStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const dir = 'C:/FlapaPay/apps/web/public/assets/images/blog';
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        cb(null, dir);
+        ensureDir(blogUploadDir);
+        cb(null, blogUploadDir);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -120,6 +206,16 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_key_123';
 const LENCO_SECRET_KEY = process.env.LENCO_SECRET_KEY || 'xo+CAiijrIy9XvZCYyhjrv0fpSAL6CfU8CgA+up1NXqK';
 const LENCO_PUBLIC_KEY = process.env.LENCO_PUBLIC_KEY || '';
 const LENCO_BASE_URL = 'https://api.lenco.co/access/v2';
+const LENCO_SYSTEM_ACCOUNT_ID = process.env.LENCO_ACCOUNT_ID || 'e24f5dee-3b7b-4fbd-835f-b75365a7c4cd';
+const LENCO_ZMW_ACCOUNT_ID = process.env.LENCO_ZMW_ACCOUNT_ID || LENCO_SYSTEM_ACCOUNT_ID;
+const LENCO_USD_ACCOUNT_ID = process.env.LENCO_USD_ACCOUNT_ID || '';
+
+const getLencoAccountIdForCurrency = (currency) => {
+    const normalizedCurrency = String(currency || '').trim().toUpperCase();
+    if (normalizedCurrency === 'ZMW') return LENCO_ZMW_ACCOUNT_ID;
+    if (normalizedCurrency === 'USD') return LENCO_USD_ACCOUNT_ID;
+    return '';
+};
 
 // PostgreSQL configuration - uses environment variables for security
 const pool = new Pool({
@@ -134,11 +230,18 @@ const pool = new Pool({
 const SYSTEM_USER_ID = '00000000-0000-0000-0000-000000000000'; // System User for Fees
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const MAX_BULK_PAYOUT_RECIPIENTS = 20;
+
+const uploadBulkPayoutCsv = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 2 * 1024 * 1024 },
+});
 
 // --- Email & PDF Services ---
 const { Resend } = require('resend');
 const ReactPDF = require('@react-pdf/renderer');
 const { TransferReceiptDocument } = require('./services/TransferReceiptGenerator');
+const { PaymentLinkReceiptDocument } = require('./services/PaymentLinkReceiptGenerator');
 const { renderTransferEmail } = require('./emails/TransferEmail');
 const {
     renderClaimFundsEmail,
@@ -161,10 +264,10 @@ if (process.env.RESEND_API_KEY) {
     console.warn('[Resend] Warning: RESEND_API_KEY is missing');
 }
 
-// Canonical sender — all emails use the verified flapabay.com domain
+// Canonical sender — all emails use the Resend-verified sender configured in RESEND_FROM
 const EMAIL_FROM = process.env.RESEND_FROM
     ? `FlapaPay <${process.env.RESEND_FROM}>`
-    : 'FlapaPay <noreply@flapabay.com>';
+    : 'FlapaPay <onboarding@resend.dev>';
 
 // --- Real-time Postgres Listener ---
 const listenerClient = new Client({
@@ -253,6 +356,26 @@ const getExchangeRates = async (baseCurrency) => {
     }
 };
 
+const getCrossCurrencyRate = async (fromCurrency, toCurrency) => {
+    const normalizedFrom = String(fromCurrency || '').trim().toUpperCase();
+    const normalizedTo = String(toCurrency || '').trim().toUpperCase();
+
+    if (!normalizedFrom || !normalizedTo) {
+        throw new Error('Both source and destination currencies are required');
+    }
+    if (normalizedFrom === normalizedTo) return 1;
+
+    const usdRates = await getExchangeRates('USD');
+    const fromRate = Number(usdRates[normalizedFrom]);
+    const toRate = Number(usdRates[normalizedTo]);
+
+    if (!Number.isFinite(fromRate) || !Number.isFinite(toRate) || fromRate <= 0 || toRate <= 0) {
+        throw new Error(`Unsupported currency pair: ${normalizedFrom}/${normalizedTo}`);
+    }
+
+    return toRate / fromRate;
+};
+
 io.on('connection', (socket) => {
     console.log('Socket connected:', socket.id);
 
@@ -268,24 +391,13 @@ io.on('connection', (socket) => {
 });
 
 app.use(cors());
-
-// Override Express 5's strict default CSP with production-ready policy
-app.use((req, res, next) => {
-    res.setHeader('Content-Security-Policy', [
-        "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com https://js.stripe.com https://cdn.jsdelivr.net",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' data: https://fonts.gstatic.com",
-        "img-src 'self' data: blob: https:",
-        "connect-src 'self' https://www.flapapay.com wss://www.flapapay.com https://api.stripe.com https://api.stripe.com https://cloudflareinsights.com",
-        "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
-        "worker-src 'self' blob:",
-        "media-src 'self' blob:",
-    ].join('; '));
-    next();
-});
-
-app.use(express.json());
+app.use(express.json({
+    verify: (req, _res, buf) => {
+        if (buf && buf.length) {
+            req.rawBody = buf.toString('utf8');
+        }
+    }
+}));
 app.use('/assets/images', express.static(path.join(__dirname, 'apps/web/public/assets/images')));
 
 // Global Request Logger
@@ -342,6 +454,56 @@ const recordFee = async (client, txnRef, amount, currency, description) => {
     }
 };
 
+const insertDepositNotification = async (client, {
+    userId,
+    status = 'PENDING',
+    amount,
+    currency,
+    reference,
+    phoneNumber = null,
+    operator = null,
+    failureReason = null
+}) => {
+    if (!userId || amount == null || !currency || !reference) return;
+
+    const normalizedStatus = String(status || 'PENDING').toUpperCase();
+    const amountLabel = `+${currency} ${Number(amount).toFixed(2)}`;
+    const target = [operator, phoneNumber].filter(Boolean).join(' • ') || 'your mobile money wallet';
+    let title = 'Deposit Update';
+    let message = `Mobile money deposit for ${target} updated.`;
+
+    if (normalizedStatus === 'PENDING') {
+        title = 'Deposit Initiated';
+        message = `Authorize the mobile money request on ${target} to complete your wallet top-up.`;
+    } else if (normalizedStatus === 'COMPLETED') {
+        title = 'Deposit Completed';
+        message = `Your mobile money deposit from ${target} completed successfully.`;
+    } else if (normalizedStatus === 'FAILED') {
+        title = 'Deposit Failed';
+        message = failureReason
+            ? `Your mobile money deposit from ${target} failed: ${failureReason}`
+            : `Your mobile money deposit from ${target} failed.`;
+    }
+
+    await client.query(
+        `INSERT INTO notifications (user_id, type, title, message, amount, metadata)
+         VALUES ($1, 'system', $2, $3, $4, $5)`,
+        [
+            userId,
+            title,
+            message,
+            amountLabel,
+            JSON.stringify({
+                reference,
+                phoneNumber,
+                operator,
+                status: normalizedStatus,
+                failureReason
+            })
+        ]
+    );
+};
+
 // --- Middleware ---
 
 const authenticateToken = async (req, res, next) => {
@@ -363,6 +525,36 @@ const authenticateToken = async (req, res, next) => {
     }
 };
 
+app.use('/v1/pos', createPosDeviceRoutes({
+    pool,
+    jwt,
+    jwtSecret: JWT_SECRET,
+    authenticateToken,
+}));
+app.use('/v1/pos', createPosOperatorRoutes({
+    pool,
+    jwt,
+    jwtSecret: JWT_SECRET,
+    bcrypt,
+    authenticateToken,
+}));
+app.use('/v1/pos', createPosStationRoutes({
+    pool,
+    authenticateToken,
+}));
+app.use('/v1/pos', createPosShiftRoutes({
+    pool,
+    jwt,
+    jwtSecret: JWT_SECRET,
+    authenticateToken,
+}));
+app.use('/v1/pos', createPosSalesRoutes({
+    pool,
+    jwt,
+    jwtSecret: JWT_SECRET,
+    authenticateToken,
+}));
+
 const isAdmin = (req, res, next) => {
     if (req.user && req.user.role === 'admin') {
         next();
@@ -378,6 +570,1812 @@ const verifyUserPin = async (userId, pin) => {
     const user = result.rows[0];
     if (!user.pin_hash) return true; // For legacy users without PIN (if any)
     return await bcrypt.compare(pin, user.pin_hash);
+};
+
+const MERCHANT_TEAM_ROLES = ['owner', 'admin', 'finance', 'operations', 'developer', 'support', 'viewer'];
+
+const MERCHANT_TEAM_ROLE_PERMISSIONS = {
+    owner: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read', 'merchant.keys.read', 'merchant.keys.rotate', 'merchant.settlements.manage', 'merchant.compliance.manage', 'merchant.onboarding.manage', 'merchant.team.manage'],
+    admin: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read', 'merchant.keys.read', 'merchant.keys.rotate', 'merchant.settlements.manage', 'merchant.compliance.manage', 'merchant.onboarding.manage', 'merchant.team.manage'],
+    finance: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read', 'merchant.settlements.manage'],
+    operations: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read', 'merchant.compliance.manage', 'merchant.onboarding.manage'],
+    developer: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read', 'merchant.keys.read', 'merchant.keys.rotate'],
+    support: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read'],
+    viewer: ['merchant.workspace.read', 'merchant.stats.read', 'merchant.activity.read'],
+};
+
+const hashMerchantTeamToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
+
+const resolveMerchantWorkspaceForUser = async (userId) => {
+    const result = await pool.query(
+        `SELECT
+            m.id,
+            m.user_id,
+            m.business_name,
+            CASE
+                WHEN m.user_id = $1 THEN 'owner'
+                ELSE mtm.role
+            END AS membership_role
+         FROM merchants m
+         LEFT JOIN merchant_team_members mtm
+           ON mtm.merchant_id = m.id
+          AND mtm.user_id = $1
+          AND mtm.status = 'active'
+         WHERE m.user_id = $1
+            OR mtm.user_id = $1
+         ORDER BY CASE WHEN m.user_id = $1 THEN 0 ELSE 1 END, m.created_at ASC
+         LIMIT 1`,
+        [userId]
+    );
+
+    if (!result.rows[0]) return null;
+    return {
+        ...result.rows[0],
+        logo_url: normalizePublicAssetUrl(result.rows[0].logo_url)
+    };
+};
+
+const canManageMerchantTeam = (role) => (MERCHANT_TEAM_ROLE_PERMISSIONS[role] || []).includes('merchant.team.manage');
+const hasMerchantPermission = (role, permission) => (MERCHANT_TEAM_ROLE_PERMISSIONS[role] || []).includes(permission);
+
+const resolveMerchantWorkspaceWithOwner = async (userId, requestedMerchantId = null) => {
+    const params = [userId];
+    const merchantFilter = requestedMerchantId ? ` AND m.id = $2` : '';
+    if (requestedMerchantId) params.push(requestedMerchantId);
+
+    const result = await pool.query(
+        `SELECT
+            m.id,
+            m.user_id,
+            m.account_id,
+            m.business_name,
+            m.registered_address,
+            m.contact_phone,
+            m.logo_url,
+            m.brand_color,
+            m.country,
+            m.compliance_status,
+            m.is_live_enabled,
+            m.admin_kyc_notes,
+            m.kyc_submitted_at,
+            m.first_name,
+            m.last_name,
+            m.email,
+            m.is_incorporated,
+            m.registration_type,
+            m.account_type,
+            m.pacra_verified,
+            m.email_verified,
+            owner.email AS owner_email,
+            owner.full_name AS owner_full_name,
+            CASE
+                WHEN m.user_id = $1 THEN 'owner'
+                ELSE mtm.role
+            END AS membership_role
+         FROM merchants m
+         JOIN users owner ON owner.id = m.user_id
+         LEFT JOIN merchant_team_members mtm
+           ON mtm.merchant_id = m.id
+          AND mtm.user_id = $1
+          AND mtm.status = 'active'
+         WHERE (m.user_id = $1
+            OR mtm.user_id = $1)
+            ${merchantFilter}
+         ORDER BY CASE WHEN m.user_id = $1 THEN 0 ELSE 1 END, m.created_at ASC
+         LIMIT 1`,
+        params
+    );
+
+    if (!result.rows[0]) return null;
+    return {
+        ...result.rows[0],
+        logo_url: normalizePublicAssetUrl(result.rows[0].logo_url)
+    };
+};
+
+const requireMerchantWorkspace = async (req, res, next) => {
+    try {
+        const requestedMerchantId = String(req.headers['x-merchant-id'] || req.query.merchantId || '').trim() || null;
+        const merchant = await resolveMerchantWorkspaceWithOwner(req.user.id, requestedMerchantId);
+        if (!merchant) return res.status(404).json({ error: 'Merchant workspace not found' });
+        req.currentMerchant = merchant;
+        next();
+    } catch (err) {
+        console.error('Merchant workspace resolution failed:', err);
+        res.status(500).json({ error: 'Failed to resolve merchant workspace' });
+    }
+};
+
+const requireMerchantPermission = (permission) => async (req, res, next) => {
+    try {
+        const requestedMerchantId = String(req.headers['x-merchant-id'] || req.query.merchantId || '').trim() || null;
+        const merchant = req.currentMerchant || await resolveMerchantWorkspaceWithOwner(req.user.id, requestedMerchantId);
+        if (!merchant) return res.status(404).json({ error: 'Merchant workspace not found' });
+        if (!hasMerchantPermission(merchant.membership_role, permission)) {
+            return res.status(403).json({ error: 'Insufficient merchant permissions' });
+        }
+        req.currentMerchant = merchant;
+        next();
+    } catch (err) {
+        console.error('Merchant permission check failed:', err);
+        res.status(500).json({ error: 'Failed to verify merchant permissions' });
+    }
+};
+
+const requireMerchantTeamManager = async (req, res, next) => {
+    try {
+        const merchant = await resolveMerchantWorkspaceWithOwner(req.user.id);
+        if (!merchant) return res.status(404).json({ error: 'Merchant workspace not found' });
+        if (!canManageMerchantTeam(merchant.membership_role)) {
+            return res.status(403).json({ error: 'Role management access required' });
+        }
+        req.currentMerchant = merchant;
+        next();
+    } catch (err) {
+        console.error('Merchant team manager check failed:', err);
+        res.status(500).json({ error: 'Failed to verify merchant permissions' });
+    }
+};
+
+const logMerchantRoleEvent = async ({ client = pool, merchantId, actorUserId, targetUserId = null, action, oldRole = null, newRole = null, metadata = {} }) => {
+    await client.query(
+        `INSERT INTO merchant_role_audit_log (merchant_id, actor_user_id, target_user_id, action, old_role, new_role, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [merchantId, actorUserId, targetUserId, action, oldRole, newRole, JSON.stringify(metadata || {})]
+    );
+};
+
+const normalizeLencoCountry = (value) => String(value || 'zm').trim().toLowerCase();
+
+const normalizeLencoMobilePhone = (phoneNumber, country = 'zm') => {
+    const normalizedCountry = normalizeLencoCountry(country);
+    const digits = String(phoneNumber || '').replace(/\D/g, '');
+
+    if (!digits) return '';
+
+    if (normalizedCountry === 'zm') {
+        if (digits.startsWith('260')) {
+            return digits;
+        }
+
+        if (digits.startsWith('0')) {
+            return `260${digits.replace(/^0+/, '')}`;
+        }
+
+        if (digits.length === 9) {
+            return `260${digits}`;
+        }
+    }
+
+    return digits;
+};
+
+const mapLencoStatusToLocal = (status) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'successful') return 'COMPLETED';
+    if (normalized === 'failed') return 'FAILED';
+    return 'PENDING';
+};
+
+const mapLencoCollectionStatusToLocal = (status) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'successful') return 'COMPLETED';
+    if (normalized === 'failed') return 'FAILED';
+    return 'PENDING';
+};
+
+const normalizeLencoMobileOperator = (value, country = 'zm') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    const zambiaMap = {
+        mtn: 'mtn',
+        mtn_momo_zmb: 'mtn',
+        airtel: 'airtel',
+        airtel_oapi_zmb: 'airtel',
+        zamtel: 'zamtel',
+        zamtel_zmb: 'zamtel'
+    };
+    const malawiMap = {
+        airtel: 'airtel',
+        tnm: 'tnm'
+    };
+
+    const activeMap = String(country || 'zm').trim().toLowerCase() === 'mw' ? malawiMap : zambiaMap;
+    return activeMap[normalized] || null;
+};
+
+const ZMW_BANK_WITHDRAWAL_FEE_BANDS = [
+    { minExclusive: 0, maxInclusive: 150, fee: 2.5 },
+    { minExclusive: 150, maxInclusive: 300, fee: 3.5 },
+    { minExclusive: 300, maxInclusive: 500, fee: 5.0 },
+    { minExclusive: 500, maxInclusive: 1000, fee: 10.0 },
+    { minExclusive: 1000, maxInclusive: 3000, fee: 20.0 },
+    { minExclusive: 3000, maxInclusive: 5000, fee: 37.5 },
+    { minExclusive: 5000, maxInclusive: 10000, fee: 75.0 },
+    { minExclusive: 10000, maxInclusive: Number.POSITIVE_INFINITY, fee: 100.0 }
+];
+
+const roundMoney = (value) => Math.round(Number(value || 0) * 100) / 100;
+
+const getWithdrawalFeeQuote = ({ destinationType, amount, currency }) => {
+    const normalizedDestination = String(destinationType || '').trim().toLowerCase();
+    const normalizedCurrency = String(currency || '').trim().toUpperCase();
+    const normalizedAmount = Number(amount);
+
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+        return {
+            feeAmount: 0,
+            totalDebited: 0,
+            feePolicy: normalizedDestination === 'bank_account' ? 'airtel_band_bank_transfer' : 'no_fee',
+            feeLabel: normalizedDestination === 'bank_account' ? 'Airtel-style bank transfer band' : 'No fee'
+        };
+    }
+
+    if (normalizedDestination === 'bank_account' && ['ZMW', 'USD'].includes(normalizedCurrency)) {
+        const band = ZMW_BANK_WITHDRAWAL_FEE_BANDS.find(
+            (item) => normalizedAmount > item.minExclusive && normalizedAmount <= item.maxInclusive
+        );
+        const feeAmount = roundMoney(band?.fee || 0);
+        return {
+            feeAmount,
+            totalDebited: roundMoney(normalizedAmount + feeAmount),
+            feePolicy: 'airtel_band_bank_transfer',
+            feeLabel: band
+                ? `Band fee for ${normalizedCurrency} ${band.minExclusive}-${band.maxInclusive}`
+                : 'Band fee unavailable outside configured range'
+        };
+    }
+
+    if (normalizedDestination === 'mobile_money') {
+        const feeAmount = roundMoney(normalizedAmount * 0.01);
+        return {
+            feeAmount,
+            totalDebited: roundMoney(normalizedAmount + feeAmount),
+            feePolicy: 'mobile_money_percentage',
+            feeLabel: '1% mobile money withdrawal fee'
+        };
+    }
+
+    return {
+        feeAmount: 0,
+        totalDebited: roundMoney(normalizedAmount),
+        feePolicy: 'no_fee',
+        feeLabel: 'No fee'
+    };
+};
+
+const BILL_PAYMENT_CATEGORIES = [
+    { code: 'airtime', display_name: 'Airtime', accent: 'from-orange-500 to-amber-500' },
+    { code: 'mobile-data', display_name: 'Mobile Data', accent: 'from-blue-500 to-cyan-500' },
+    { code: 'cable-tv', display_name: 'Cable TV', accent: 'from-violet-500 to-fuchsia-500' },
+    { code: 'electricity', display_name: 'Electricity', accent: 'from-emerald-500 to-lime-500' }
+];
+
+const getBillPaymentFeeQuote = ({ amount, currency }) => {
+    const normalizedCurrency = String(currency || '').trim().toUpperCase();
+    const normalizedAmount = Number(amount);
+
+    if (normalizedCurrency !== 'ZMW') {
+        return {
+            feeAmount: 0,
+            totalDebited: roundMoney(normalizedAmount || 0),
+            feePolicy: 'zmw_launch_only',
+            feeLabel: 'Bill payments currently launch on ZMW wallets only'
+        };
+    }
+
+    return {
+        feeAmount: 0,
+        totalDebited: roundMoney(normalizedAmount || 0),
+        feePolicy: 'launch_zero_fee',
+        feeLabel: 'No platform fee during launch'
+    };
+};
+
+const generateBillPaymentReference = () => `BILL-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+
+const mapLencoBillStatusToLocal = (status) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'successful') return 'COMPLETED';
+    if (normalized === 'failed') return 'FAILED';
+    return 'PENDING';
+};
+
+const maskBillCustomerId = (value) => {
+    const normalized = String(value || '').trim();
+    if (!normalized) return '';
+    if (normalized.length <= 4) return normalized;
+    return `${normalized.slice(0, 4)}${'•'.repeat(Math.max(0, normalized.length - 8))}${normalized.slice(-4)}`;
+};
+
+const buildBillPaymentDescriptor = ({
+    categoryCode,
+    productName,
+    vendorName,
+    customerId,
+    customerName
+}) => {
+    const categoryLabel = String(categoryCode || '')
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, (m) => m.toUpperCase());
+    const title = productName || vendorName || categoryLabel || 'Bill payment';
+    const target = customerName || maskBillCustomerId(customerId);
+    return [title, target].filter(Boolean).join(' • ');
+};
+
+const buildBillPaymentLedgerDescription = ({
+    categoryCode,
+    productName,
+    customerId
+}) => {
+    return `${buildBillPaymentDescriptor({ categoryCode, productName, customerId }) || 'Bill payment'} via Lenco`;
+};
+
+const insertBillPaymentNotification = async (client, {
+    userId,
+    status = 'PENDING',
+    amount,
+    currency,
+    reference,
+    categoryCode,
+    productName,
+    vendorName,
+    customerId,
+    customerName,
+    failureReason = null
+}) => {
+    if (!userId || amount == null || !currency || !reference) return;
+
+    const descriptor = buildBillPaymentDescriptor({
+        categoryCode,
+        productName,
+        vendorName,
+        customerId,
+        customerName
+    }) || 'Bill payment';
+
+    const normalizedStatus = String(status || 'PENDING').toUpperCase();
+    const amountLabel = `-${currency} ${Number(amount).toFixed(2)}`;
+    let title = 'Bill Payment Update';
+    let message = `${descriptor} updated.`;
+
+    if (normalizedStatus === 'PENDING') {
+        title = 'Bill Payment Initiated';
+        message = `${descriptor} is being processed.`;
+    } else if (normalizedStatus === 'COMPLETED') {
+        title = 'Bill Payment Completed';
+        message = `${descriptor} completed successfully.`;
+    } else if (normalizedStatus === 'FAILED') {
+        title = 'Bill Payment Failed';
+        message = failureReason ? `${descriptor} failed: ${failureReason}` : `${descriptor} failed.`;
+    }
+
+    await client.query(
+        `INSERT INTO notifications (user_id, type, title, message, amount, metadata)
+         VALUES ($1, 'bill_payment', $2, $3, $4, $5)`,
+        [
+            userId,
+            title,
+            message,
+            amountLabel,
+            JSON.stringify({
+                reference,
+                categoryCode,
+                productName,
+                vendorName,
+                customerId,
+                customerName,
+                status: normalizedStatus,
+                failureReason
+            })
+        ]
+    );
+};
+
+const buildWithdrawalLedgerDescription = (destinationType, destinationDetails = {}, extra = {}) => {
+    const payload = {
+        ...destinationDetails,
+        ...extra
+    };
+
+    if (destinationType === 'mobile_money') {
+        const provider = String(payload.provider || '').trim();
+        const phoneNumber = String(payload.phoneNumber || '').trim();
+        const accountName = String(payload.accountName || '').trim();
+        const parts = [
+            provider ? provider.toUpperCase() : '',
+            phoneNumber,
+            accountName
+        ].filter(Boolean);
+
+        return parts.length
+            ? `Withdrawal to mobile money • ${parts.join(' • ')}`
+            : 'Withdrawal to mobile money';
+    }
+
+    if (destinationType === 'bank_account') {
+        const bankName = String(payload.bankName || '').trim();
+        const accountName = String(payload.accountName || '').trim();
+        const accountNumber = String(payload.accountNumber || '').trim();
+        const maskedAccount = accountNumber ? `****${accountNumber.slice(-4)}` : '';
+        const parts = [bankName, accountName, maskedAccount].filter(Boolean);
+
+        return parts.length
+            ? `Withdrawal to bank account • ${parts.join(' • ')}`
+            : 'Withdrawal to bank account';
+    }
+
+    return `Withdrawal to ${destinationType}`;
+};
+
+const formatWithdrawalNotificationTarget = (destinationType, destinationDetails = {}) => {
+    if (destinationType === 'bank_account') {
+        const bankName = String(destinationDetails.bankName || '').trim();
+        const accountName = String(destinationDetails.accountName || '').trim();
+        const accountNumber = String(destinationDetails.accountNumber || '').trim();
+        const parts = [bankName, accountName, accountNumber].filter(Boolean);
+        return parts.length ? parts.join(' • ') : 'your bank account';
+    }
+
+    if (destinationType === 'mobile_money') {
+        const provider = String(destinationDetails.provider || '').trim();
+        const phoneNumber = String(destinationDetails.phoneNumber || '').trim();
+        const parts = [provider, phoneNumber].filter(Boolean);
+        return parts.length ? parts.join(' • ') : 'your mobile money wallet';
+    }
+
+    return 'your payout destination';
+};
+
+const insertWithdrawalNotification = async (client, {
+    userId,
+    status = 'PENDING',
+    amount,
+    currency,
+    reference,
+    destinationType,
+    destinationDetails = {},
+    failureReason = null
+}) => {
+    if (!userId || amount == null || !currency || !reference) return;
+
+    const normalizedStatus = String(status || 'PENDING').toUpperCase();
+    const targetLabel = formatWithdrawalNotificationTarget(destinationType, destinationDetails);
+    const amountLabel = `-${currency} ${Number(amount).toFixed(2)}`;
+    let title = 'Withdrawal Update';
+    let message = `Withdrawal to ${targetLabel}.`;
+
+    if (normalizedStatus === 'PENDING') {
+        title = 'Withdrawal Initiated';
+        message = `Withdrawal to ${targetLabel} is being processed.`;
+    } else if (normalizedStatus === 'COMPLETED') {
+        title = 'Withdrawal Completed';
+        message = `Withdrawal to ${targetLabel} completed successfully.`;
+    } else if (normalizedStatus === 'FAILED') {
+        title = 'Withdrawal Failed';
+        message = failureReason
+            ? `Withdrawal to ${targetLabel} failed: ${failureReason}`
+            : `Withdrawal to ${targetLabel} failed.`;
+    }
+
+    await client.query(
+        `INSERT INTO notifications (user_id, type, title, message, amount, metadata)
+         VALUES ($1, 'withdrawal', $2, $3, $4, $5)`,
+        [
+            userId,
+            title,
+            message,
+            amountLabel,
+            JSON.stringify({
+                reference,
+                destinationType,
+                destinationDetails,
+                status: normalizedStatus,
+                failureReason
+            })
+        ]
+    );
+};
+
+const updateWalletWithdrawalRecord = async (client, reference, fields = {}) => {
+    const keys = Object.keys(fields);
+    if (keys.length === 0) return;
+    const assignments = keys.map((key, index) => `${key} = $${index + 2}`);
+    const values = keys.map((key) => fields[key]);
+    await client.query(
+        `UPDATE wallet_withdrawals
+         SET ${assignments.join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE reference = $1`,
+        [reference, ...values]
+    );
+};
+
+const loadWalletForDebit = async (client, { walletId, userId, ignoreWithdrawalPause = false }) => {
+    const walletRes = await client.query(
+        `SELECT w.*, u.status AS user_status
+         FROM wallets w
+         JOIN users u ON u.id = w.user_id
+         WHERE w.id = $1 AND w.user_id = $2
+         FOR UPDATE OF w`,
+        [walletId, userId]
+    );
+    if (walletRes.rows.length === 0) throw new Error('Wallet not found');
+    const wallet = walletRes.rows[0];
+    const userStatus = String(wallet.user_status || 'active').toLowerCase();
+    const walletStatus = String(wallet.status || 'ACTIVE').toUpperCase();
+
+    if (userStatus === 'suspended') {
+        throw new Error('Your account is suspended. Withdrawals are disabled.');
+    }
+    if (walletStatus === 'FROZEN') {
+        throw new Error(wallet.withdrawal_hold_reason || 'This wallet is frozen pending fraud review.');
+    }
+    if (!ignoreWithdrawalPause && wallet.withdrawals_paused) {
+        throw new Error(wallet.withdrawal_hold_reason || 'Withdrawals are temporarily paused pending manual review.');
+    }
+
+    return wallet;
+};
+
+const loadWalletForWithdrawal = async (client, params) => loadWalletForDebit(client, params);
+
+const loadConnectedAccountForPayout = async (client, { accountId, platformMerchantId = null }) => {
+    const values = [accountId];
+    let sql = 'SELECT * FROM connected_accounts WHERE id = $1';
+    if (platformMerchantId) {
+        values.push(platformMerchantId);
+        sql += ' AND platform_merchant_id = $2';
+    }
+    sql += ' FOR UPDATE';
+    const accountRes = await client.query(sql, values);
+    if (accountRes.rows.length === 0) throw new Error('Account not found');
+    const account = accountRes.rows[0];
+
+    if (String(account.status || '').toUpperCase() === 'SUSPENDED') {
+        throw new Error('Account is suspended');
+    }
+    if (account.payouts_paused) {
+        throw new Error(account.payout_hold_reason || 'Payouts are temporarily paused pending fraud review.');
+    }
+
+    return account;
+};
+
+const loadMerchantForCharge = async (client, { merchantId }) => {
+    const merchantRes = await client.query(
+        `SELECT *
+         FROM merchants
+         WHERE id = $1
+         FOR UPDATE`,
+        [merchantId]
+    );
+    if (merchantRes.rows.length === 0) throw new Error('Merchant not found');
+    const merchant = merchantRes.rows[0];
+
+    if (merchant.charges_paused) {
+        throw new Error(merchant.charge_hold_reason || 'Charge acceptance is temporarily paused pending fraud review.');
+    }
+
+    return merchant;
+};
+
+const loadConnectedAccountForCharge = async (client, { accountId, platformMerchantId = null }) => {
+    const values = [accountId];
+    let sql = 'SELECT * FROM connected_accounts WHERE id = $1';
+    if (platformMerchantId) {
+        values.push(platformMerchantId);
+        sql += ' AND platform_merchant_id = $2';
+    }
+    sql += ' FOR UPDATE';
+    const accountRes = await client.query(sql, values);
+    if (accountRes.rows.length === 0) throw new Error('Connected account not found');
+    const account = accountRes.rows[0];
+
+    if (String(account.status || '').toUpperCase() === 'SUSPENDED') {
+        throw new Error('Connected account is suspended and cannot receive new charges.');
+    }
+    if (account.charges_paused) {
+        throw new Error(account.charge_hold_reason || 'Connected account charge acceptance is temporarily paused pending fraud review.');
+    }
+
+    return account;
+};
+
+const applyConnectedAccountPayoutRestriction = async (client, { accountId, fraudCaseId = null, reason = '' }) => {
+    await client.query(
+        `UPDATE connected_accounts
+         SET payouts_paused = TRUE,
+             payout_hold_reason = $2,
+             payouts_paused_at = NOW(),
+             payout_hold_case_id = $3
+         WHERE id = $1`,
+        [accountId, reason, fraudCaseId]
+    );
+};
+
+const releaseConnectedAccountPayoutRestriction = async (client, { accountId, excludingCaseId = null }) => {
+    const activeCaseRes = await client.query(
+        `SELECT id
+         FROM fraud_cases
+         WHERE connected_account_id = $1
+           AND status IN ('open', 'in_review', 'escalated', 'confirmed_fraud')
+           AND ($2::uuid IS NULL OR id <> $2::uuid)
+         LIMIT 1`,
+        [accountId, excludingCaseId]
+    );
+    if (activeCaseRes.rows.length > 0) return false;
+
+    await client.query(
+        `UPDATE connected_accounts
+         SET payouts_paused = FALSE,
+             payout_hold_reason = NULL,
+             payouts_paused_at = NULL,
+             payout_hold_case_id = NULL
+         WHERE id = $1`,
+        [accountId]
+    );
+    return true;
+};
+
+const applyMerchantChargeRestriction = async (client, { merchantId, fraudCaseId = null, reason = '' }) => {
+    await client.query(
+        `UPDATE merchants
+         SET charges_paused = TRUE,
+             charge_hold_reason = $2,
+             charges_paused_at = NOW(),
+             charge_hold_case_id = $3
+         WHERE id = $1`,
+        [merchantId, reason, fraudCaseId]
+    );
+};
+
+const releaseMerchantChargeRestriction = async (client, { merchantId, excludingCaseId = null }) => {
+    const activeCaseRes = await client.query(
+        `SELECT id
+         FROM fraud_cases
+         WHERE merchant_id = $1
+           AND status IN ('open', 'in_review', 'escalated', 'confirmed_fraud')
+           AND ($2::uuid IS NULL OR id <> $2::uuid)
+         LIMIT 1`,
+        [merchantId, excludingCaseId]
+    );
+    if (activeCaseRes.rows.length > 0) return false;
+
+    await client.query(
+        `UPDATE merchants
+         SET charges_paused = FALSE,
+             charge_hold_reason = NULL,
+             charges_paused_at = NULL,
+             charge_hold_case_id = NULL
+         WHERE id = $1`,
+        [merchantId]
+    );
+    return true;
+};
+
+const applyConnectedAccountChargeRestriction = async (client, { accountId, fraudCaseId = null, reason = '' }) => {
+    await client.query(
+        `UPDATE connected_accounts
+         SET charges_paused = TRUE,
+             charge_hold_reason = $2,
+             charges_paused_at = NOW(),
+             charge_hold_case_id = $3
+         WHERE id = $1`,
+        [accountId, reason, fraudCaseId]
+    );
+};
+
+const releaseConnectedAccountChargeRestriction = async (client, { accountId, excludingCaseId = null }) => {
+    const activeCaseRes = await client.query(
+        `SELECT id
+         FROM fraud_cases
+         WHERE connected_account_id = $1
+           AND status IN ('open', 'in_review', 'escalated', 'confirmed_fraud')
+           AND ($2::uuid IS NULL OR id <> $2::uuid)
+         LIMIT 1`,
+        [accountId, excludingCaseId]
+    );
+    if (activeCaseRes.rows.length > 0) return false;
+
+    await client.query(
+        `UPDATE connected_accounts
+         SET charges_paused = FALSE,
+             charge_hold_reason = NULL,
+             charges_paused_at = NULL,
+             charge_hold_case_id = NULL
+         WHERE id = $1`,
+        [accountId]
+    );
+    return true;
+};
+
+const applyFraudWalletRestriction = async (client, { walletId, fraudCaseId = null, action = 'review', reason = '' }) => {
+    const shouldFreeze = action === 'freeze';
+    await client.query(
+        `UPDATE wallets
+         SET status = CASE
+                WHEN $2 = TRUE THEN 'FROZEN'
+                WHEN status = 'FROZEN' THEN status
+                ELSE COALESCE(status, 'ACTIVE')
+             END,
+             withdrawals_paused = TRUE,
+             withdrawal_hold_reason = $3,
+             withdrawals_paused_at = NOW(),
+             withdrawal_hold_case_id = $4
+         WHERE id = $1`,
+        [walletId, shouldFreeze, reason, fraudCaseId]
+    );
+};
+
+const releaseFraudWalletRestriction = async (client, { walletId, excludingCaseId = null, forceUnfreeze = false }) => {
+    const activeCaseRes = await client.query(
+        `SELECT id, status
+         FROM fraud_cases
+         WHERE wallet_id = $1
+           AND status IN ('open', 'in_review', 'escalated', 'confirmed_fraud')
+           AND ($2::uuid IS NULL OR id <> $2::uuid)
+         LIMIT 1`,
+        [walletId, excludingCaseId]
+    );
+    if (activeCaseRes.rows.length > 0) return false;
+
+    await client.query(
+        `UPDATE wallets
+         SET withdrawals_paused = FALSE,
+             withdrawal_hold_reason = NULL,
+             withdrawals_paused_at = NULL,
+             withdrawal_hold_case_id = NULL,
+             status = CASE
+                WHEN $2 = TRUE AND status = 'FROZEN' THEN 'ACTIVE'
+                ELSE status
+             END
+         WHERE id = $1`,
+        [walletId, forceUnfreeze]
+    );
+    return true;
+};
+
+const emitFraudEventRecord = async (fraudEvent) => {
+    const insertedEvent = await FraudEventService.insertFraudEvent(pool, fraudEvent);
+    const fraudEventRecord = { id: insertedEvent?.id || null, ...fraudEvent };
+    await evaluateFraudEventAndCreateCase(fraudEventRecord);
+};
+
+const emitFraudWithdrawalEvent = async ({
+    sourceSystem = 'wallets',
+    eventType,
+    userId,
+    walletId,
+    reference,
+    providerReference = null,
+    provider = '',
+    destinationType,
+    destinationDetails = {},
+    amount,
+    feeAmount = 0,
+    currency,
+    status,
+    livemode = true,
+    ipAddress = null,
+    userAgent = null,
+    metadata = {}
+}) => {
+    try {
+        const fraudEvent = FraudEventService.buildWithdrawalEvent({
+            eventType,
+            sourceSystem,
+            userId,
+            walletId,
+            reference,
+            providerReference,
+            provider,
+            destinationType,
+            destinationDetails,
+            amount,
+            feeAmount,
+            currency,
+            status,
+            livemode,
+            ipAddress,
+            userAgent,
+            metadata
+        });
+        await emitFraudEventRecord(fraudEvent);
+    } catch (err) {
+        console.error('[FraudEvent] Failed to emit withdrawal event:', err.message);
+    }
+};
+
+const emitFraudDebitEvent = async ({
+    eventType,
+    sourceSystem = 'wallets',
+    userId = null,
+    walletId = null,
+    reference = null,
+    providerReference = null,
+    rail = 'wallet',
+    currency = null,
+    amount = 0,
+    feeAmount = 0,
+    status = 'COMPLETED',
+    livemode = true,
+    counterpartyType = null,
+    counterpartyKey = null,
+    country = null,
+    ipAddress = null,
+    userAgent = null,
+    metadata = {}
+}) => {
+    try {
+        await emitFraudEventRecord({
+            event_type: eventType,
+            source_system: sourceSystem,
+            livemode,
+            user_id: userId,
+            wallet_id: walletId,
+            transaction_reference: reference,
+            provider_reference: providerReference,
+            rail,
+            direction: 'debit',
+            currency,
+            amount,
+            fee_amount: feeAmount,
+            status,
+            counterparty_type: counterpartyType,
+            counterparty_key: counterpartyKey,
+            country,
+            ip_address: ipAddress,
+            user_agent: userAgent,
+            metadata
+        });
+    } catch (err) {
+        console.error('[FraudEvent] Failed to emit debit event:', err.message);
+    }
+};
+
+const emitFraudPlatformEvent = async ({
+    eventType,
+    sourceSystem = 'platform',
+    userId = null,
+    walletId = null,
+    merchantId = null,
+    connectedAccountId = null,
+    reference = null,
+    providerReference = null,
+    rail = 'wallet',
+    direction = 'debit',
+    currency = null,
+    amount = 0,
+    feeAmount = 0,
+    status = 'COMPLETED',
+    livemode = true,
+    counterpartyType = null,
+    counterpartyKey = null,
+    country = null,
+    ipAddress = null,
+    userAgent = null,
+    metadata = {}
+}) => {
+    try {
+        await emitFraudEventRecord({
+            event_type: eventType,
+            source_system: sourceSystem,
+            livemode,
+            user_id: userId,
+            wallet_id: walletId,
+            merchant_id: merchantId,
+            connected_account_id: connectedAccountId,
+            transaction_reference: reference,
+            provider_reference: providerReference,
+            rail,
+            direction,
+            currency,
+            amount,
+            fee_amount: feeAmount,
+            status,
+            counterparty_type: counterpartyType,
+            counterparty_key: counterpartyKey,
+            country,
+            ip_address: ipAddress,
+            user_agent: userAgent,
+            metadata
+        });
+    } catch (err) {
+        console.error('[FraudEvent] Failed to emit platform event:', err.message);
+    }
+};
+
+const evaluateFraudEventAndCreateCase = async (fraudEvent) => {
+    const client = await pool.connect();
+    let clientReleased = false;
+    try {
+        await client.query('BEGIN');
+
+        const evaluation = await FraudRuleService.evaluateEvent(client, fraudEvent);
+        if (evaluation.signals.length > 0) {
+            for (const signal of evaluation.signals) {
+                await client.query(
+                    `INSERT INTO fraud_signals (fraud_event_id, signal_code, severity, weight, description, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+                    [
+                        fraudEvent.id,
+                        signal.signal_code,
+                        signal.severity,
+                        signal.weight,
+                        signal.description,
+                        JSON.stringify(signal.metadata || {})
+                    ]
+                );
+            }
+        }
+
+        const shouldOpenCase = evaluation.score >= 40 || evaluation.matched_rules.length > 0;
+        let fraudCase = null;
+
+        if (shouldOpenCase) {
+            const existingCaseRes = await client.query(
+                `SELECT *
+                 FROM fraud_cases
+                 WHERE transaction_reference = $1
+                   AND status IN ('open', 'in_review', 'escalated')
+                 ORDER BY opened_at DESC
+                 LIMIT 1`,
+                [fraudEvent.transaction_reference]
+            );
+
+            if (existingCaseRes.rows.length > 0) {
+                fraudCase = existingCaseRes.rows[0];
+                const mergedMetadata = {
+                    ...(fraudCase.metadata || {}),
+                    last_event_id: fraudEvent.id,
+                    last_event_type: fraudEvent.event_type,
+                    last_event_status: fraudEvent.status,
+                    last_evaluation: {
+                        score: evaluation.score,
+                        severity: evaluation.severity,
+                        action: evaluation.action,
+                        matched_rules: evaluation.matched_rules
+                    }
+                };
+                const caseUpdateRes = await client.query(
+                    `UPDATE fraud_cases
+                     SET fraud_event_id = $1,
+                         severity = CASE
+                             WHEN severity = 'critical' THEN severity
+                             WHEN $2 = 'critical' THEN 'critical'
+                             WHEN severity = 'high' AND $2 IN ('medium', 'low') THEN severity
+                             WHEN $2 = 'high' THEN 'high'
+                             WHEN severity = 'medium' AND $2 = 'low' THEN severity
+                             ELSE $2
+                         END,
+                         score = GREATEST(score, $3),
+                         status = CASE WHEN status = 'open' AND $4 = 'freeze' THEN 'escalated' ELSE status END,
+                         metadata = $5::jsonb
+                     WHERE id = $6
+                     RETURNING *`,
+                    [
+                        fraudEvent.id,
+                        evaluation.severity,
+                        evaluation.score,
+                        evaluation.action,
+                        JSON.stringify(mergedMetadata),
+                        fraudCase.id
+                    ]
+                );
+                fraudCase = caseUpdateRes.rows[0];
+            } else {
+                const caseMetadata = {
+                    event_type: fraudEvent.event_type,
+                    source_system: fraudEvent.source_system,
+                    provider_reference: fraudEvent.provider_reference,
+                    rail: fraudEvent.rail,
+                    counterparty_type: fraudEvent.counterparty_type,
+                    counterparty_key: fraudEvent.counterparty_key,
+                    matched_rules: evaluation.matched_rules
+                };
+                const caseRes = await client.query(
+                    `INSERT INTO fraud_cases (
+                        fraud_event_id, user_id, wallet_id, merchant_id, connected_account_id, transaction_reference,
+                        severity, score, status, queue, metadata
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'fraud_ops', $10::jsonb)
+                    RETURNING *`,
+                    [
+                        fraudEvent.id,
+                        fraudEvent.user_id || null,
+                        fraudEvent.wallet_id || null,
+                        fraudEvent.merchant_id || null,
+                        fraudEvent.connected_account_id || null,
+                        fraudEvent.transaction_reference || null,
+                        evaluation.severity,
+                        evaluation.score,
+                        evaluation.action === 'freeze' ? 'escalated' : 'open',
+                        JSON.stringify(caseMetadata)
+                    ]
+                );
+                fraudCase = caseRes.rows[0];
+            }
+
+            if (fraudCase) {
+                // Wallet withdrawal fraud cases remain visible to ops, but they no longer auto-pause withdrawals.
+                if (
+                    fraudEvent.wallet_id &&
+                    fraudEvent.event_type === 'wallet.withdrawal.initiated' &&
+                    fraudEvent.metadata?.enforceReviewHold === true
+                ) {
+                    const restrictionReason = evaluation.action === 'freeze'
+                        ? `Wallet frozen automatically by fraud engine. Case ${fraudCase.id.slice(0, 8)} requires immediate review.`
+                        : `Withdrawals paused pending fraud review. Case ${fraudCase.id.slice(0, 8)} is awaiting compliance approval.`;
+                    await applyFraudWalletRestriction(client, {
+                        walletId: fraudEvent.wallet_id,
+                        fraudCaseId: fraudCase.id,
+                        action: evaluation.action,
+                        reason: restrictionReason
+                    });
+                }
+                if (fraudEvent.connected_account_id && fraudEvent.event_type.startsWith('connect.')) {
+                    const restrictionReason = `Connected account payouts paused by fraud engine. Case ${fraudCase.id.slice(0, 8)} requires compliance review.`;
+                    await applyConnectedAccountPayoutRestriction(client, {
+                        accountId: fraudEvent.connected_account_id,
+                        fraudCaseId: fraudCase.id,
+                        reason: restrictionReason
+                    });
+                }
+                if (fraudEvent.merchant_id && ['charge.succeeded', 'checkout.charge.completed'].includes(fraudEvent.event_type) && evaluation.action !== 'allow') {
+                    const restrictionReason = evaluation.action === 'freeze'
+                        ? `Charge acceptance frozen automatically by fraud engine. Case ${fraudCase.id.slice(0, 8)} requires immediate review.`
+                        : `Charge acceptance paused pending fraud review. Case ${fraudCase.id.slice(0, 8)} is awaiting compliance approval.`;
+                    await applyMerchantChargeRestriction(client, {
+                        merchantId: fraudEvent.merchant_id,
+                        fraudCaseId: fraudCase.id,
+                        reason: restrictionReason
+                    });
+                }
+                if (fraudEvent.connected_account_id && ['charge.succeeded', 'checkout.charge.completed'].includes(fraudEvent.event_type) && evaluation.action !== 'allow') {
+                    const restrictionReason = `Connected account charge acceptance paused by fraud engine. Case ${fraudCase.id.slice(0, 8)} requires compliance review.`;
+                    await applyConnectedAccountChargeRestriction(client, {
+                        accountId: fraudEvent.connected_account_id,
+                        fraudCaseId: fraudCase.id,
+                        reason: restrictionReason
+                    });
+                }
+
+                await FraudAlertService.queueAlert(client, {
+                    fraudCaseId: fraudCase.id,
+                    channel: 'admin_notification',
+                    recipient: 'fraud_ops',
+                    payload: {
+                        title: `Fraud review: ${evaluation.severity.toUpperCase()} ${fraudEvent.transaction_reference || fraudEvent.id}`,
+                        message: `${fraudEvent.event_type} scored ${evaluation.score} (${evaluation.severity}) on ${fraudEvent.rail || 'wallet'} rail. ${
+                            evaluation.matched_rules.map((rule) => rule.name).join(', ') || 'Automatic review'
+                        }.`,
+                        case_id: fraudCase.id,
+                        reference: fraudEvent.transaction_reference || null
+                    }
+                });
+
+                if (['high', 'critical'].includes(evaluation.severity) || evaluation.action === 'freeze') {
+                    await FraudAlertService.queueAlert(client, {
+                        fraudCaseId: fraudCase.id,
+                        channel: 'email',
+                        recipient: process.env.FRAUD_ALERT_EMAIL || 'mbolela.pule@flapapay.com',
+                        payload: {
+                            subject: `Fraud escalation: ${evaluation.severity.toUpperCase()} ${fraudEvent.transaction_reference || fraudCase.id}`,
+                            title: `Fraud escalation for ${fraudEvent.transaction_reference || fraudCase.id}`,
+                            message: `${fraudEvent.event_type} triggered ${evaluation.matched_rules.length || 0} rule hit(s) and requires immediate compliance review.`,
+                            case_id: fraudCase.id,
+                            reference: fraudEvent.transaction_reference || null,
+                            severity: evaluation.severity,
+                            rail: fraudEvent.rail || null,
+                            score: evaluation.score,
+                            action: evaluation.action
+                        }
+                    });
+                }
+
+                let actionType = evaluation.action === 'freeze' ? 'auto_wallet_freeze' : 'auto_withdrawal_hold';
+                let targetType = fraudEvent.wallet_id ? 'wallet' : 'transaction';
+                let targetId = fraudEvent.wallet_id || fraudEvent.transaction_reference || fraudEvent.id;
+                if (fraudEvent.connected_account_id && fraudEvent.event_type.startsWith('connect.')) {
+                    actionType = 'auto_connected_account_payout_hold';
+                    targetType = 'connected_account';
+                    targetId = fraudEvent.connected_account_id;
+                } else if (fraudEvent.merchant_id && ['charge.succeeded', 'checkout.charge.completed'].includes(fraudEvent.event_type)) {
+                    actionType = evaluation.action === 'freeze' ? 'auto_merchant_charge_freeze' : 'auto_merchant_charge_hold';
+                    targetType = 'merchant';
+                    targetId = fraudEvent.merchant_id;
+                } else if (fraudEvent.connected_account_id && ['charge.succeeded', 'checkout.charge.completed'].includes(fraudEvent.event_type)) {
+                    actionType = 'auto_connected_account_charge_hold';
+                    targetType = 'connected_account';
+                    targetId = fraudEvent.connected_account_id;
+                }
+
+                await FraudActionService.recordAction(client, {
+                    fraudCaseId: fraudCase.id,
+                    actionType,
+                    targetType,
+                    targetId,
+                    metadata: {
+                        score: evaluation.score,
+                        severity: evaluation.severity,
+                        matched_rules: evaluation.matched_rules
+                    }
+                });
+            }
+        }
+
+        await client.query('COMMIT');
+        return { evaluation, fraudCase };
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const completeWalletWithdrawal = async (reference, providerData = {}) => {
+    const client = await pool.connect();
+    let fraudPayload = null;
+    try {
+        await client.query('BEGIN');
+        const wdRes = await client.query(
+            `SELECT user_id, wallet_id, amount, fee_amount, currency, destination_type, destination_details, local_status, livemode
+             FROM wallet_withdrawals
+             WHERE reference = $1
+             FOR UPDATE`,
+            [reference]
+        );
+        if (wdRes.rows.length === 0) {
+            throw new Error(`Withdrawal ${reference} not found`);
+        }
+        const withdrawal = wdRes.rows[0];
+        const withdrawalProvider = String(withdrawal.provider || 'lenco').trim().toLowerCase();
+        if (withdrawal.local_status === 'COMPLETED') {
+            await client.query('COMMIT');
+            return;
+        }
+
+        await client.query(
+            `UPDATE ledger_entries
+             SET status = 'COMPLETED'
+             WHERE transaction_reference IN ($1, $2) AND transaction_type IN ('WITHDRAWAL', 'FEE') AND status = 'PENDING'`,
+            [reference, `${reference}-FEE`]
+        );
+        await updateWalletWithdrawalRecord(client, reference, {
+            provider_transfer_id: providerData.id || null,
+            provider_reference: providerData.lencoReference || providerData.providerTransactionId || null,
+            provider_status: String(providerData.status || 'successful').toLowerCase(),
+            local_status: 'COMPLETED',
+            failure_reason: null,
+            provider_response: JSON.stringify(providerData)
+        });
+        await insertWithdrawalNotification(client, {
+            userId: withdrawal.user_id,
+            status: 'COMPLETED',
+            amount: withdrawal.amount,
+            currency: withdrawal.currency,
+            reference,
+            destinationType: withdrawal.destination_type,
+            destinationDetails: withdrawal.destination_details
+        });
+        fraudPayload = {
+            eventType: 'wallet.withdrawal.completed',
+            sourceSystem: withdrawalProvider === 'lenco' ? 'lenco' : 'pawapay',
+            userId: withdrawal.user_id,
+            walletId: withdrawal.wallet_id,
+            reference,
+            providerReference: providerData.lencoReference || providerData.providerTransactionId || providerData.id || null,
+            provider: withdrawalProvider,
+            destinationType: withdrawal.destination_type,
+            destinationDetails: withdrawal.destination_details,
+            amount: withdrawal.amount,
+            feeAmount: withdrawal.fee_amount || 0,
+            currency: withdrawal.currency,
+            status: 'COMPLETED',
+            livemode: withdrawal.livemode,
+            metadata: { providerData }
+        };
+        await client.query('COMMIT');
+        if (fraudPayload) await emitFraudWithdrawalEvent(fraudPayload);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const failWalletWithdrawal = async (reference, failureReason, providerData = {}) => {
+    const client = await pool.connect();
+    let fraudPayload = null;
+    try {
+        await client.query('BEGIN');
+
+        const wdRes = await client.query(
+            `SELECT user_id, wallet_id, amount, fee_amount, total_debited, currency, destination_type, destination_details, local_status, livemode
+             FROM wallet_withdrawals
+             WHERE reference = $1
+             FOR UPDATE`,
+            [reference]
+        );
+        if (wdRes.rows.length === 0) {
+            throw new Error(`Withdrawal ${reference} not found`);
+        }
+
+        const withdrawal = wdRes.rows[0];
+        const withdrawalProvider = String(withdrawal.provider || 'lenco').trim().toLowerCase();
+        if (withdrawal.local_status === 'FAILED') {
+            await client.query('COMMIT');
+            return;
+        }
+
+        if (withdrawal.local_status !== 'COMPLETED') {
+            await client.query(
+                'UPDATE wallets SET balance = balance + $1 WHERE id = $2',
+                [withdrawal.total_debited || roundMoney(Number(withdrawal.amount) + Number(withdrawal.fee_amount || 0)), withdrawal.wallet_id]
+            );
+        }
+
+        await client.query(
+            `UPDATE ledger_entries
+             SET status = 'FAILED'
+             WHERE transaction_reference IN ($1, $2) AND transaction_type IN ('WITHDRAWAL', 'FEE') AND status = 'PENDING'`,
+            [reference, `${reference}-FEE`]
+        );
+        await updateWalletWithdrawalRecord(client, reference, {
+            provider_transfer_id: providerData.id || null,
+            provider_reference: providerData.lencoReference || providerData.providerTransactionId || null,
+            provider_status: String(providerData.status || 'failed').toLowerCase(),
+            local_status: 'FAILED',
+            failure_reason: failureReason || providerData.reasonForFailure || 'Bank transfer failed',
+            provider_response: JSON.stringify(providerData)
+        });
+        await insertWithdrawalNotification(client, {
+            userId: withdrawal.user_id,
+            status: 'FAILED',
+            amount: withdrawal.amount,
+            currency: withdrawal.currency,
+            reference,
+            destinationType: withdrawal.destination_type,
+            destinationDetails: withdrawal.destination_details,
+            failureReason: failureReason || providerData.reasonForFailure || 'Bank transfer failed'
+        });
+        fraudPayload = {
+            eventType: 'wallet.withdrawal.failed',
+            sourceSystem: withdrawalProvider === 'lenco' ? 'lenco' : 'pawapay',
+            userId: withdrawal.user_id,
+            walletId: withdrawal.wallet_id,
+            reference,
+            providerReference: providerData.lencoReference || providerData.providerTransactionId || providerData.id || null,
+            provider: withdrawalProvider,
+            destinationType: withdrawal.destination_type,
+            destinationDetails: withdrawal.destination_details,
+            amount: withdrawal.amount,
+            feeAmount: withdrawal.fee_amount || 0,
+            currency: withdrawal.currency,
+            status: 'FAILED',
+            livemode: withdrawal.livemode,
+            metadata: { providerData, failureReason }
+        };
+        await client.query('COMMIT');
+        if (fraudPayload) await emitFraudWithdrawalEvent(fraudPayload);
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const handleWalletWithdrawalStatus = async (req, res) => {
+    const { reference } = req.params;
+    try {
+        let withdrawalRes = await pool.query(
+            `SELECT * FROM wallet_withdrawals WHERE reference = $1 AND user_id = $2`,
+            [reference, req.user.id]
+        );
+        if (withdrawalRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Withdrawal not found' });
+        }
+
+        const withdrawal = withdrawalRes.rows[0];
+        if (withdrawal.provider === 'lenco' && withdrawal.local_status === 'PENDING') {
+            try {
+                const statusRes = await axios.get(`${LENCO_BASE_URL}/transfers/status/${reference}`, {
+                    headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+                });
+                const providerData = statusRes.data?.data || statusRes.data || {};
+                const localStatus = mapLencoStatusToLocal(providerData.status);
+
+                if (localStatus === 'COMPLETED') {
+                    await completeWalletWithdrawal(reference, providerData);
+                } else if (localStatus === 'FAILED') {
+                    await failWalletWithdrawal(reference, providerData.reasonForFailure || 'Bank transfer failed', providerData);
+                } else {
+                    const syncClient = await pool.connect();
+                    try {
+                        await syncClient.query('BEGIN');
+                        await updateWalletWithdrawalRecord(syncClient, reference, {
+                            provider_transfer_id: providerData.id || withdrawal.provider_transfer_id || null,
+                            provider_reference: providerData.lencoReference || withdrawal.provider_reference || null,
+                            provider_status: String(providerData.status || 'pending').toLowerCase(),
+                            provider_response: JSON.stringify(providerData)
+                        });
+                        await syncClient.query('COMMIT');
+                    } catch (err) {
+                        await syncClient.query('ROLLBACK');
+                        throw err;
+                    } finally {
+                        syncClient.release();
+                    }
+                }
+            } catch (error) {
+                console.error('[Lenco] Status sync error:', error.response?.data || error.message);
+            }
+
+            withdrawalRes = await pool.query(
+                `SELECT * FROM wallet_withdrawals WHERE reference = $1 AND user_id = $2`,
+                [reference, req.user.id]
+            );
+        }
+
+        return res.json(withdrawalRes.rows[0]);
+    } catch (err) {
+        console.error('[WalletWithdrawalStatus]', err);
+        return res.status(500).json({ error: 'Failed to fetch withdrawal status' });
+    }
+};
+
+const syncLencoWithdrawalReference = async (reference) => {
+    const statusRes = await axios.get(`${LENCO_BASE_URL}/transfers/status/${reference}`, {
+        headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+    });
+    const providerData = statusRes.data?.data || statusRes.data || {};
+    const localStatus = mapLencoStatusToLocal(providerData.status);
+
+    if (localStatus === 'COMPLETED') {
+        await completeWalletWithdrawal(reference, providerData);
+    } else if (localStatus === 'FAILED') {
+        await failWalletWithdrawal(reference, providerData.reasonForFailure || 'Bank transfer failed', providerData);
+    } else {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            await updateWalletWithdrawalRecord(client, reference, {
+                provider_transfer_id: providerData.id || null,
+                provider_reference: providerData.lencoReference || null,
+                provider_status: String(providerData.status || 'pending').toLowerCase(),
+                provider_response: JSON.stringify(providerData)
+            });
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+};
+
+const syncPendingLencoWithdrawalsForUser = async (userId, limit = 10) => {
+    const pendingRes = await pool.query(
+        `SELECT reference
+         FROM wallet_withdrawals
+         WHERE user_id = $1
+           AND provider = 'lenco'
+           AND local_status = 'PENDING'
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [userId, limit]
+    );
+
+    for (const row of pendingRes.rows) {
+        try {
+            await syncLencoWithdrawalReference(row.reference);
+        } catch (err) {
+            console.error('[Lenco] User withdrawal sync error:', row.reference, err.response?.data || err.message);
+        }
+    }
+};
+
+const syncPendingLencoWithdrawals = async (limit = 25) => {
+    const pendingRes = await pool.query(
+        `SELECT reference
+         FROM wallet_withdrawals
+         WHERE provider = 'lenco'
+           AND local_status = 'PENDING'
+         ORDER BY created_at ASC
+         LIMIT $1`,
+        [limit]
+    );
+
+    for (const row of pendingRes.rows) {
+        try {
+            await syncLencoWithdrawalReference(row.reference);
+        } catch (err) {
+            console.error('[Lenco] Pending withdrawal sync error:', row.reference, err.response?.data || err.message);
+        }
+    }
+};
+
+const upsertBillPaymentVendors = async (client, vendors = []) => {
+    for (const vendor of vendors) {
+        if (!vendor.providerVendorId || !vendor.name) continue;
+        await client.query(
+            `INSERT INTO bill_payment_vendors
+                (provider, provider_vendor_id, category_code, name, is_active, raw_payload, updated_at)
+             VALUES ('lenco', $1, NULLIF($2, ''), $3, TRUE, $4::jsonb, NOW())
+             ON CONFLICT (provider_vendor_id) DO UPDATE
+             SET category_code = EXCLUDED.category_code,
+                 name = EXCLUDED.name,
+                 is_active = TRUE,
+                 raw_payload = EXCLUDED.raw_payload,
+                 updated_at = NOW()`,
+            [
+                vendor.providerVendorId,
+                vendor.categoryCode || null,
+                vendor.name,
+                JSON.stringify(vendor.rawPayload || {})
+            ]
+        );
+    }
+};
+
+const upsertBillPaymentProducts = async (client, products = []) => {
+    for (const product of products) {
+        if (!product.providerProductId || !product.name) continue;
+        await client.query(
+            `INSERT INTO bill_payment_products
+                (provider, provider_product_id, provider_vendor_id, category_code, name, customer_id_label,
+                 amount_type, fixed_amount, minimum_amount, maximum_amount, commission_percentage, is_active, raw_payload, updated_at)
+             VALUES ('lenco', $1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10, TRUE, $11::jsonb, NOW())
+             ON CONFLICT (provider_product_id) DO UPDATE
+             SET provider_vendor_id = EXCLUDED.provider_vendor_id,
+                 category_code = EXCLUDED.category_code,
+                 name = EXCLUDED.name,
+                 customer_id_label = EXCLUDED.customer_id_label,
+                 amount_type = EXCLUDED.amount_type,
+                 fixed_amount = EXCLUDED.fixed_amount,
+                 minimum_amount = EXCLUDED.minimum_amount,
+                 maximum_amount = EXCLUDED.maximum_amount,
+                 commission_percentage = EXCLUDED.commission_percentage,
+                 is_active = TRUE,
+                 raw_payload = EXCLUDED.raw_payload,
+                 updated_at = NOW()`,
+            [
+                product.providerProductId,
+                product.providerVendorId || null,
+                product.categoryCode || null,
+                product.name,
+                product.customerIdLabel || 'Customer ID',
+                product.amountType || 'range',
+                product.fixedAmount || 0,
+                product.minimumAmount || 0,
+                product.maximumAmount || 0,
+                product.commissionPercentage || 0,
+                JSON.stringify(product.rawPayload || {})
+            ]
+        );
+    }
+};
+
+const getBillPaymentProductByProviderId = async (client, providerProductId) => {
+    const result = await client.query(
+        `SELECT provider_product_id, provider_vendor_id, category_code, name, customer_id_label,
+                amount_type, fixed_amount, minimum_amount, maximum_amount, commission_percentage, raw_payload
+         FROM bill_payment_products
+         WHERE provider_product_id = $1
+         LIMIT 1`,
+        [providerProductId]
+    );
+    return result.rows[0] || null;
+};
+
+const getBillPaymentVendorByProviderId = async (client, providerVendorId) => {
+    if (!providerVendorId) return null;
+    const result = await client.query(
+        `SELECT provider_vendor_id, category_code, name
+         FROM bill_payment_vendors
+         WHERE provider_vendor_id = $1
+         LIMIT 1`,
+        [providerVendorId]
+    );
+    return result.rows[0] || null;
+};
+
+const validateBillPaymentAmount = ({ amount, product }) => {
+    const numericAmount = roundMoney(amount);
+    const amountType = String(product.amount_type || 'range').toLowerCase();
+    const fixedAmount = Number(product.fixed_amount || 0);
+    const minimumAmount = Number(product.minimum_amount || 0);
+    const maximumAmount = Number(product.maximum_amount || 0);
+
+    if (amountType === 'fixed') {
+        const enforcedAmount = fixedAmount > 0 ? fixedAmount : numericAmount;
+        return {
+            amount: roundMoney(enforcedAmount),
+            amountType: 'fixed'
+        };
+    }
+
+    if (minimumAmount > 0 && numericAmount < minimumAmount) {
+        throw new Error(`Amount must be at least ${minimumAmount.toFixed(2)}`);
+    }
+    if (maximumAmount > 0 && numericAmount > maximumAmount) {
+        throw new Error(`Amount must not exceed ${maximumAmount.toFixed(2)}`);
+    }
+
+    return {
+        amount: numericAmount,
+        amountType: 'range'
+    };
+};
+
+const completeBillPayment = async (reference, providerData = {}) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const billRes = await client.query(
+            `SELECT user_id, wallet_id, amount, currency, category_code, vendor_name, product_name, customer_id, customer_name, local_status
+             FROM bill_payments
+             WHERE client_reference = $1
+             FOR UPDATE`,
+            [reference]
+        );
+        if (billRes.rows.length === 0) {
+            throw new Error('Bill payment record not found');
+        }
+
+        const billPayment = billRes.rows[0];
+        if (billPayment.local_status === 'COMPLETED') {
+            await client.query('COMMIT');
+            return;
+        }
+
+        const providerStatus = String(providerData.providerStatus || providerData.status || 'successful').toLowerCase();
+        await client.query(
+            `UPDATE bill_payments
+             SET provider_bill_payment_id = COALESCE($2, provider_bill_payment_id),
+                 provider_transaction_reference = COALESCE($3, provider_transaction_reference),
+                 provider_status = $4,
+                 local_status = 'COMPLETED',
+                 provider_payload = $5::jsonb,
+                 instructions = COALESCE($6::jsonb, instructions),
+                 customer_name = COALESCE($7, customer_name),
+                 provider_completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE client_reference = $1`,
+            [
+                reference,
+                providerData.providerBillPaymentId || null,
+                providerData.providerReference || reference,
+                providerStatus,
+                JSON.stringify(providerData.rawPayload || providerData),
+                providerData.instructions ? JSON.stringify(providerData.instructions) : null,
+                providerData.customerName || null
+            ]
+        );
+
+        await client.query(
+            `UPDATE ledger_entries
+             SET status = 'COMPLETED'
+             WHERE transaction_reference IN ($1, $2)
+               AND transaction_type IN ('BILL_PAYMENT', 'FEE')
+               AND status = 'PENDING'`,
+            [reference, `${reference}-FEE`]
+        );
+
+        await insertBillPaymentNotification(client, {
+            userId: billPayment.user_id,
+            status: 'COMPLETED',
+            amount: billPayment.amount,
+            currency: billPayment.currency,
+            reference,
+            categoryCode: billPayment.category_code,
+            productName: billPayment.product_name,
+            vendorName: billPayment.vendor_name,
+            customerId: billPayment.customer_id,
+            customerName: providerData.customerName || billPayment.customer_name
+        });
+
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const failBillPayment = async (reference, reason = 'Bill payment failed', providerData = {}) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const billRes = await client.query(
+            `SELECT user_id, wallet_id, amount, fee_amount, total_debited, currency, category_code, vendor_name, product_name, customer_id, customer_name, local_status
+             FROM bill_payments
+             WHERE client_reference = $1
+             FOR UPDATE`,
+            [reference]
+        );
+        if (billRes.rows.length === 0) {
+            throw new Error('Bill payment record not found');
+        }
+
+        const billPayment = billRes.rows[0];
+        if (billPayment.local_status === 'FAILED') {
+            await client.query('COMMIT');
+            return;
+        }
+
+        const refundAmount = roundMoney(Number(billPayment.total_debited || 0));
+        await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [refundAmount, billPayment.wallet_id]);
+
+        await client.query(
+            `UPDATE bill_payments
+             SET provider_bill_payment_id = COALESCE($2, provider_bill_payment_id),
+                 provider_transaction_reference = COALESCE($3, provider_transaction_reference),
+                 provider_status = $4,
+                 local_status = 'FAILED',
+                 reason_for_failure = $5,
+                 provider_payload = $6::jsonb,
+                 provider_failed_at = NOW(),
+                 updated_at = NOW()
+             WHERE client_reference = $1`,
+            [
+                reference,
+                providerData.providerBillPaymentId || null,
+                providerData.providerReference || reference,
+                String(providerData.providerStatus || providerData.status || 'failed').toLowerCase(),
+                reason,
+                JSON.stringify(providerData.rawPayload || providerData)
+            ]
+        );
+
+        await client.query(
+            `UPDATE ledger_entries
+             SET status = 'FAILED'
+             WHERE transaction_reference IN ($1, $2)
+               AND transaction_type IN ('BILL_PAYMENT', 'FEE')
+               AND status = 'PENDING'`,
+            [reference, `${reference}-FEE`]
+        );
+
+        await insertBillPaymentNotification(client, {
+            userId: billPayment.user_id,
+            status: 'FAILED',
+            amount: billPayment.amount,
+            currency: billPayment.currency,
+            reference,
+            categoryCode: billPayment.category_code,
+            productName: billPayment.product_name,
+            vendorName: billPayment.vendor_name,
+            customerId: billPayment.customer_id,
+            customerName: billPayment.customer_name,
+            failureReason: reason
+        });
+
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const syncBillPaymentReference = async (reference) => {
+    const providerData = await LencoBillPaymentService.getBillByReference(reference);
+    const localStatus = mapLencoBillStatusToLocal(providerData.providerStatus);
+    if (localStatus === 'COMPLETED') {
+        await completeBillPayment(reference, providerData);
+    } else if (localStatus === 'FAILED') {
+        await failBillPayment(reference, providerData.rawPayload?.message || 'Bill payment failed', providerData);
+    } else {
+        await pool.query(
+            `UPDATE bill_payments
+             SET provider_bill_payment_id = COALESCE($2, provider_bill_payment_id),
+                 provider_transaction_reference = COALESCE($3, provider_transaction_reference),
+                 provider_status = $4,
+                 provider_payload = $5::jsonb,
+                 instructions = COALESCE($6::jsonb, instructions),
+                 customer_name = COALESCE($7, customer_name),
+                 updated_at = NOW()
+             WHERE client_reference = $1`,
+            [
+                reference,
+                providerData.providerBillPaymentId || null,
+                providerData.providerReference || reference,
+                String(providerData.providerStatus || 'pending').toLowerCase(),
+                JSON.stringify(providerData.rawPayload || providerData),
+                providerData.instructions ? JSON.stringify(providerData.instructions) : null,
+                providerData.customerName || null
+            ]
+        );
+    }
+};
+
+const syncPendingBillPaymentsForUser = async (userId, limit = 8) => {
+    const pendingRes = await pool.query(
+        `SELECT client_reference
+         FROM bill_payments
+         WHERE user_id = $1
+           AND local_status = 'PENDING'
+         ORDER BY created_at DESC
+         LIMIT $2`,
+        [userId, limit]
+    );
+
+    for (const row of pendingRes.rows) {
+        try {
+            await syncBillPaymentReference(row.client_reference);
+        } catch (err) {
+            console.error('[Lenco Bill Payments] User sync error:', row.client_reference, err.response?.data || err.message);
+        }
+    }
+};
+
+const syncPendingPawaPayPayoutsForUser = async (userId, limit = 10) => {
+    const pendingRes = await pool.query(
+        `SELECT p.id AS payout_id, p.client_reference_id
+         FROM payouts p
+         WHERE p.user_id = $1
+           AND UPPER(COALESCE(p.status, '')) IN ('PENDING', 'ACCEPTED', 'ENQUEUED')
+         ORDER BY p.created_at DESC
+         LIMIT $2`,
+        [userId, limit]
+    );
+
+    for (const row of pendingRes.rows) {
+        try {
+            const response = await axios.get(`${PAWAPAY_BASE_URL}/v2/payouts/${row.payout_id}`, {
+                headers: { Authorization: `Bearer ${PAWAPAY_TOKEN}` }
+            });
+            const payoutData = response.data?.data || response.data || {};
+            const payoutStatus = String(payoutData.status || '').toUpperCase();
+
+            if (!payoutStatus) continue;
+
+            await pool.query('UPDATE payouts SET status = $1 WHERE id = $2', [payoutStatus, row.payout_id]);
+
+            const walletWithdrawalRes = await pool.query(
+                'SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1',
+                [row.client_reference_id]
+            );
+            const hasWalletWithdrawal = walletWithdrawalRes.rows.length > 0;
+
+            if (payoutStatus === 'COMPLETED') {
+                if (hasWalletWithdrawal) {
+                    await completeWalletWithdrawal(row.client_reference_id, {
+                        id: row.payout_id,
+                        providerTransactionId: payoutData.providerTransactionId || null,
+                        status: payoutStatus,
+                        ...payoutData
+                    });
+                } else {
+                    await pool.query(
+                        "UPDATE ledger_entries SET status = 'COMPLETED' WHERE transaction_reference IN ($1, $2) AND transaction_type IN ('WITHDRAWAL', 'FEE') AND status = 'PENDING'",
+                        [row.client_reference_id, `${row.client_reference_id}-FEE`]
+                    );
+                }
+            } else if (['FAILED', 'REJECTED', 'CANCELLED'].includes(payoutStatus)) {
+                if (hasWalletWithdrawal) {
+                    await failWalletWithdrawal(
+                        row.client_reference_id,
+                        payoutData.failureReason || payoutData.statusDescription || 'Mobile money payout failed',
+                        {
+                            id: row.payout_id,
+                            providerTransactionId: payoutData.providerTransactionId || null,
+                            status: payoutStatus,
+                            ...payoutData
+                        }
+                    );
+                }
+            }
+        } catch (err) {
+            console.error('[PawaPay] User payout sync error:', row.payout_id, err.response?.data || err.message);
+        }
+    }
 };
 
 const getOrCreateStripeCustomer = async (userId, email) => {
@@ -427,15 +2425,288 @@ const getOrCreateCybersourceCustomer = async (userId, email, name = '') => {
     }
 };
 
+const getOrCreateCybersourceMerchantCustomer = async (customerId, email, name = '') => {
+    try {
+        const custRes = await pool.query(
+            'SELECT cybersource_customer_id, email, name FROM customers WHERE id = $1',
+            [customerId]
+        );
+        if (!custRes.rows.length) throw new Error('Customer not found');
+
+        let csCustomerId = custRes.rows[0]?.cybersource_customer_id;
+        if (!csCustomerId) {
+            csCustomerId = await CybersourceService.tokens.createCustomer({
+                userId: `merchant-customer-${customerId}`,
+                email: email || custRes.rows[0].email,
+                name: name || custRes.rows[0].name || '',
+            });
+            await pool.query(
+                'UPDATE customers SET cybersource_customer_id = $1, updated_at = NOW() WHERE id = $2',
+                [csCustomerId, customerId]
+            );
+        }
+        return csCustomerId;
+    } catch (err) {
+        console.error('[CyberSource] getOrCreateCybersourceMerchantCustomer error:', err.message);
+        throw err;
+    }
+};
+
+const maskEmailAddress = (email = '') => String(email || '').replace(/(^.).*?(@.*$)/, '$1***$2');
+
+const paymentLinkOtpToken = (paymentLinkId, email) => crypto
+    .createHash('sha256')
+    .update(`payment-link:${paymentLinkId}:${String(email || '').trim().toLowerCase()}`)
+    .digest('hex')
+    .slice(0, 64);
+
+const mapMobileProviderLabel = (provider = '') => {
+    const normalized = String(provider || '').trim().toUpperCase();
+    const labels = {
+        MTN_MOMO_ZMB: 'MTN MoMo',
+        MTN_MOMO_NGA: 'MTN MoMo',
+        AIRTEL_OAPI_ZMB: 'Airtel Money',
+        AIRTEL_NGA: 'Airtel Money',
+        ZAMTEL_ZMB: 'Zamtel Money',
+    };
+    return labels[normalized] || normalized || 'Mobile Money';
+};
+
+const buildPaymentLinkLinkSessionToken = ({ paymentLinkId, customerId, email }) => jwt.sign(
+    {
+        type: 'payment_link_link',
+        paymentLinkId,
+        customerId,
+        email: String(email || '').trim().toLowerCase(),
+    },
+    JWT_SECRET,
+    { expiresIn: '30m' }
+);
+
+const buildPaymentLinkSessionResponse = async ({ paymentLinkId, customer }) => {
+    const sessionToken = buildPaymentLinkLinkSessionToken({
+        paymentLinkId,
+        customerId: customer.id,
+        email: customer.email,
+    });
+    const savedMethods = await getPaymentLinkSavedMethods(customer.id);
+
+    return {
+        verified: true,
+        sessionToken,
+        sessionExpiresAt: new Date(Date.now() + (30 * 60 * 1000)).toISOString(),
+        email: customer.email,
+        customer: {
+            id: customer.id,
+            email: customer.email,
+            name: customer.name,
+        },
+        savedMethods,
+    };
+};
+
+const getVerifiedPaymentLinkSession = (paymentLinkId, token) => {
+    if (!token) return null;
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded?.type !== 'payment_link_link') return null;
+        if (decoded?.paymentLinkId !== paymentLinkId) return null;
+        return decoded;
+    } catch {
+        return null;
+    }
+};
+
+const getOrCreatePaymentLinkCustomer = async ({ client = pool, paymentLinkId, email }) => {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) throw new Error('email required');
+
+    const linkRes = await client.query('SELECT id, user_id FROM payment_links WHERE id = $1 AND active = true', [paymentLinkId]);
+    if (linkRes.rows.length === 0) throw new Error('Payment link not found');
+
+    const merchantRes = await client.query('SELECT id FROM merchants WHERE user_id = $1 LIMIT 1', [linkRes.rows[0].user_id]);
+    if (merchantRes.rows.length === 0) throw new Error('Merchant not found for payment link');
+
+    const customerRes = await client.query(
+        `INSERT INTO customers (email, merchant_id)
+         VALUES ($1, $2)
+         ON CONFLICT (email, merchant_id)
+         DO UPDATE SET updated_at = NOW()
+         RETURNING *`,
+        [normalizedEmail, merchantRes.rows[0].id]
+    );
+
+    return {
+        customer: customerRes.rows[0],
+        merchantId: merchantRes.rows[0].id,
+        paymentLinkUserId: linkRes.rows[0].user_id,
+    };
+};
+
+const getPaymentLinkSavedMethods = async (customerId) => {
+    const [customerRes, cardsRes] = await Promise.all([
+        pool.query(
+            `SELECT id,
+                    email,
+                    name,
+                    phone,
+                    mobile_money_provider,
+                    mobile_money_account_name,
+                    preferred_payment_method_type,
+                    cybersource_customer_id
+             FROM customers
+             WHERE id = $1`,
+            [customerId]
+        ),
+        pool.query(
+            `SELECT id, cybersource_instrument_id, last4, brand, exp_month, exp_year, is_default
+             FROM customer_payment_instruments
+             WHERE customer_id = $1
+             ORDER BY is_default DESC, created_at DESC`,
+            [customerId]
+        )
+    ]);
+
+    const customer = customerRes.rows[0] || null;
+    const cards = cardsRes.rows.map((row) => ({
+        id: row.id,
+        instrumentId: row.cybersource_instrument_id,
+        brand: row.brand,
+        last4: row.last4,
+        exp_month: row.exp_month,
+        exp_year: row.exp_year,
+        is_default: row.is_default,
+    }));
+
+    const hasSavedMobile = Boolean(customer?.phone && customer?.mobile_money_provider);
+    const hasSavedCards = cards.length > 0;
+    const preferredMethodType = String(customer?.preferred_payment_method_type || '').trim().toLowerCase();
+    const defaultMethodType = preferredMethodType === 'mobile_money' && hasSavedMobile
+        ? 'mobile_money'
+        : preferredMethodType === 'card' && hasSavedCards
+            ? 'card'
+            : hasSavedMobile
+                ? 'mobile_money'
+                : hasSavedCards
+                    ? 'card'
+                    : null;
+
+    return {
+        customer,
+        defaultMethodType,
+        mobile_money: hasSavedMobile
+            ? {
+                phone: customer.phone,
+                provider: customer.mobile_money_provider,
+                provider_label: mapMobileProviderLabel(customer.mobile_money_provider),
+                account_name: customer.mobile_money_account_name || '',
+            }
+            : null,
+        cards,
+    };
+};
+
+const resolveFlexTargetOrigin = (req) => {
+    const configuredOrigin = process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN;
+    if (typeof configuredOrigin === 'string' && /^https?:\/\//i.test(configuredOrigin)) {
+        return configuredOrigin;
+    }
+
+    const headerOrigin = req.headers.origin;
+    if (typeof headerOrigin === 'string' && /^https?:\/\//i.test(headerOrigin)) {
+        return headerOrigin;
+    }
+
+    const referer = req.headers.referer;
+    if (typeof referer === 'string') {
+        try {
+            return new URL(referer).origin;
+        } catch (err) {
+            // Ignore malformed referer and continue with the next fallback.
+        }
+    }
+
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) || req.headers.host;
+    if (typeof host === 'string' && host) {
+        const forwardedProto = req.headers['x-forwarded-proto'];
+        const protoHeader = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+        const protocol = typeof protoHeader === 'string' && protoHeader
+            ? protoHeader.split(',')[0].trim()
+            : (req.protocol || 'https');
+        return `${protocol}://${host}`;
+    }
+
+    return 'http://localhost:5173';
+};
+
+const resolveFrontendBaseUrl = () => {
+    return (process.env.FRONTEND_URL || process.env.APP_URL || 'https://www.flapapay.com').replace(/\/+$/, '');
+};
+
+const normalizePawaPayMsisdn = (phoneNumber, currency = 'ZMW') => {
+    const expectedCountryCode = currency === 'NGN' ? '234' : '260';
+    let normalizedPhone = String(phoneNumber || '').replace(/\D/g, '');
+
+    if (!normalizedPhone) return '';
+
+    if (normalizedPhone.startsWith(expectedCountryCode)) {
+        normalizedPhone = expectedCountryCode + normalizedPhone.slice(expectedCountryCode.length).replace(/^0+/, '');
+    } else if (normalizedPhone.startsWith('0')) {
+        normalizedPhone = expectedCountryCode + normalizedPhone.slice(1).replace(/^0+/, '');
+    } else {
+        normalizedPhone = expectedCountryCode + normalizedPhone.replace(/^0+/, '');
+    }
+
+    return normalizedPhone;
+};
+
+const extractPawaPayErrorMessage = (payload) => {
+    if (!payload) return null;
+    if (typeof payload === 'string') return payload;
+    if (Array.isArray(payload)) {
+        for (const item of payload) {
+            const nested = extractPawaPayErrorMessage(item);
+            if (nested) return nested;
+        }
+        return null;
+    }
+    return (
+        payload.error ||
+        payload.message ||
+        payload.errorMessage ||
+        payload.failureReason ||
+        payload.statusDescription ||
+        payload.details?.message ||
+        payload.failureReason?.failureMessage ||
+        payload.failureReason?.failureCode ||
+        null
+    );
+};
+
 // --- Schema Initialization ---
 const ensureSchema = async () => {
     try {
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS cybersource_customer_id VARCHAR(255)');
+        await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS cybersource_customer_id VARCHAR(255)');
+        await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
+        await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS mobile_money_provider VARCHAR(50)');
+        await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS mobile_money_account_name VARCHAR(255)');
+        await pool.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS preferred_payment_method_type VARCHAR(30)');
+        await pool.query('ALTER TABLE prices ADD COLUMN IF NOT EXISTS cybersource_plan_id VARCHAR(255)');
+        await pool.query('ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cybersource_subscription_id VARCHAR(255)');
+        await pool.query("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_rail VARCHAR(30) DEFAULT 'cybersource'");
+        await pool.query('ALTER TABLE sub_invoice ADD COLUMN IF NOT EXISTS cybersource_payment_id VARCHAR(255)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS default_payment_method_id VARCHAR(255)');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT \'user\'');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pin_hash VARCHAR(255)');
+        await pool.query('ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS fee_amount DECIMAL(18, 2) DEFAULT 0');
+        await pool.query('ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS total_charged DECIMAL(18, 2) DEFAULT 0');
+        await pool.query('ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(50)');
 
         // Create payouts table if not exists
         await pool.query(`
@@ -461,6 +2732,9 @@ const ensureSchema = async () => {
                 business_name VARCHAR(255),
                 business_type VARCHAR(50),
                 country VARCHAR(100),
+                logo_url TEXT,
+                contact_phone VARCHAR(40),
+                brand_color VARCHAR(20),
                 pacra_number VARCHAR(100),
                 tpin VARCHAR(100),
                 director_name VARCHAR(255),
@@ -476,11 +2750,65 @@ const ensureSchema = async () => {
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS tpin VARCHAR(100)');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS director_name VARCHAR(255)');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS director_nrc VARCHAR(100)');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS logo_url TEXT');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(40)');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS brand_color VARCHAR(20)');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS registered_address TEXT');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS kyc_draft JSONB');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS kyc_payload JSONB');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS kyc_submitted_at TIMESTAMP');
         await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS admin_kyc_notes TEXT');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS charges_paused BOOLEAN NOT NULL DEFAULT FALSE');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS charge_hold_reason TEXT');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS charges_paused_at TIMESTAMPTZ');
+        await pool.query('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS charge_hold_case_id UUID');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS merchant_team_members (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                role VARCHAR(30) NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'active',
+                invited_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                joined_at TIMESTAMPTZ,
+                last_active_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (merchant_id, user_id)
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS merchant_team_invites (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
+                email VARCHAR(255) NOT NULL,
+                full_name VARCHAR(255),
+                role VARCHAR(30) NOT NULL,
+                token_hash VARCHAR(255) NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                accepted_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ,
+                invited_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS merchant_role_audit_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
+                actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                action VARCHAR(80) NOT NULL,
+                old_role VARCHAR(30),
+                new_role VARCHAR(30),
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
         // Create merchant_documents table
         await pool.query(`
@@ -533,6 +2861,9 @@ const ensureSchema = async () => {
         // Test/Live wallet and ledger separation
         await pool.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT TRUE');
         await pool.query('ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT TRUE');
+        await pool.query('ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS funding_source_type VARCHAR(50)');
+        await pool.query('ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS funding_source_brand VARCHAR(50)');
+        await pool.query('ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS funding_source_last4 VARCHAR(4)');
         // Create test wallets for users who only have live wallets
         await pool.query(`
             INSERT INTO wallets (user_id, currency, balance, status, livemode)
@@ -600,7 +2931,11 @@ const ensureSchema = async () => {
             ADD COLUMN IF NOT EXISTS pacra_number VARCHAR(100),
             ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'custom',
-            ADD COLUMN IF NOT EXISTS country VARCHAR(2) DEFAULT 'ZM'
+            ADD COLUMN IF NOT EXISTS country VARCHAR(2) DEFAULT 'ZM',
+            ADD COLUMN IF NOT EXISTS charges_paused BOOLEAN DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS charge_hold_reason TEXT,
+            ADD COLUMN IF NOT EXISTS charges_paused_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS charge_hold_case_id UUID
         `);
 
         // Create account_sessions table (Embedded Onboarding)
@@ -671,6 +3006,7 @@ const ensureSchema = async () => {
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(50) DEFAULT \'payment\'');
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS subscription_data JSONB');
         await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS customer_id UUID');
+        await pool.query('ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS livemode BOOLEAN DEFAULT FALSE');
 
         // Create Products Table
         await pool.query(`
@@ -697,6 +3033,7 @@ const ensureSchema = async () => {
                 billing_interval VARCHAR(50) NOT NULL,
                 interval_count INTEGER DEFAULT 1,
                 trial_days INTEGER DEFAULT 0,
+                cybersource_plan_id VARCHAR(255),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
@@ -709,6 +3046,7 @@ const ensureSchema = async () => {
                 email VARCHAR(255) NOT NULL,
                 name VARCHAR(255),
                 stripe_id VARCHAR(255),
+                cybersource_customer_id VARCHAR(255),
                 merchant_id UUID REFERENCES merchants(id),
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -726,6 +3064,8 @@ const ensureSchema = async () => {
                 current_period_start TIMESTAMP WITH TIME ZONE,
                 current_period_end TIMESTAMP WITH TIME ZONE,
                 stripe_subscription_id VARCHAR(255),
+                cybersource_subscription_id VARCHAR(255),
+                payment_rail VARCHAR(30) DEFAULT 'cybersource',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
@@ -742,6 +3082,7 @@ const ensureSchema = async () => {
                 status VARCHAR(50) DEFAULT 'open', -- paid, open, void, uncollectible
                 stripe_invoice_id VARCHAR(255),
                 payment_intent_id VARCHAR(255),
+                cybersource_payment_id VARCHAR(255),
                 due_date TIMESTAMP WITH TIME ZONE,
                 paid_at TIMESTAMP WITH TIME ZONE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -833,6 +3174,244 @@ const ensureSchema = async () => {
             )
         `);
 
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS merchant_wallet_settlements (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                merchant_id UUID REFERENCES merchants(id),
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                transaction_reference VARCHAR(100) UNIQUE NOT NULL,
+                livemode BOOLEAN DEFAULT FALSE,
+                source_currency VARCHAR(10) NOT NULL DEFAULT 'ZMW',
+                source_amount DECIMAL(15, 4) NOT NULL,
+                destination_currency VARCHAR(10) NOT NULL,
+                destination_amount DECIMAL(15, 4) NOT NULL,
+                applied_rate DECIMAL(18, 8) NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawals_paused BOOLEAN NOT NULL DEFAULT FALSE");
+        await pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawal_hold_reason TEXT");
+        await pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawals_paused_at TIMESTAMPTZ");
+        await pool.query("ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawal_hold_case_id UUID");
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS wallet_withdrawals (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                destination_type VARCHAR(30) NOT NULL,
+                destination_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+                amount DECIMAL(15, 2) NOT NULL,
+                fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                total_debited DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                currency VARCHAR(10) NOT NULL,
+                reference VARCHAR(100) NOT NULL UNIQUE,
+                provider_transfer_id VARCHAR(100),
+                provider_reference VARCHAR(100),
+                provider_status VARCHAR(50),
+                local_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                failure_reason TEXT,
+                provider_response JSONB,
+                livemode BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('ALTER TABLE wallet_withdrawals ADD COLUMN IF NOT EXISTS fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+        await pool.query('ALTER TABLE wallet_withdrawals ADD COLUMN IF NOT EXISTS total_debited DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS wallet_mobile_money_collections (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                phone_number VARCHAR(40) NOT NULL,
+                operator VARCHAR(30) NOT NULL,
+                country VARCHAR(10) NOT NULL DEFAULT 'zm',
+                requested_amount DECIMAL(15, 2) NOT NULL,
+                fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                total_charged DECIMAL(15, 2) NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                reference VARCHAR(100) NOT NULL UNIQUE,
+                provider_collection_id VARCHAR(100),
+                provider_reference VARCHAR(100),
+                provider_status VARCHAR(50),
+                local_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                credited_transaction_reference VARCHAR(100),
+                credited_at TIMESTAMPTZ,
+                failure_reason TEXT,
+                provider_response JSONB,
+                livemode BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('ALTER TABLE wallet_mobile_money_collections ADD COLUMN IF NOT EXISTS fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+        await pool.query('ALTER TABLE wallet_mobile_money_collections ADD COLUMN IF NOT EXISTS total_charged DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+        await pool.query('ALTER TABLE wallet_mobile_money_collections ADD COLUMN IF NOT EXISTS credited_transaction_reference VARCHAR(100)');
+        await pool.query('ALTER TABLE wallet_mobile_money_collections ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS wallet_card_collections (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                provider VARCHAR(30) NOT NULL DEFAULT 'card_processor',
+                requested_amount DECIMAL(15, 2) NOT NULL,
+                fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+                total_charged DECIMAL(15, 2) NOT NULL,
+                currency VARCHAR(10) NOT NULL,
+                reference VARCHAR(100) NOT NULL UNIQUE,
+                processor_payment_id VARCHAR(100),
+                processor_transaction_id VARCHAR(100),
+                processor_status VARCHAR(50),
+                local_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                card_brand VARCHAR(50),
+                card_last4 VARCHAR(4),
+                credited_transaction_reference VARCHAR(100),
+                credited_at TIMESTAMPTZ,
+                failure_reason TEXT,
+                processor_response JSONB,
+                livemode BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS total_charged DECIMAL(15, 2) NOT NULL DEFAULT 0.00');
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS card_brand VARCHAR(50)');
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(4)');
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS credited_transaction_reference VARCHAR(100)');
+        await pool.query('ALTER TABLE wallet_card_collections ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bill_payment_categories (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                category_code VARCHAR(60) NOT NULL UNIQUE,
+                display_name VARCHAR(120) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                raw_payload JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(`
+            INSERT INTO bill_payment_categories (provider, category_code, display_name, raw_payload)
+            SELECT * FROM (
+                VALUES
+                    ('lenco', 'airtime', 'Airtime', '{"code":"airtime"}'::jsonb),
+                    ('lenco', 'mobile-data', 'Mobile Data', '{"code":"mobile-data"}'::jsonb),
+                    ('lenco', 'cable-tv', 'Cable TV', '{"code":"cable-tv"}'::jsonb),
+                    ('lenco', 'electricity', 'Electricity', '{"code":"electricity"}'::jsonb)
+            ) AS seed(provider, category_code, display_name, raw_payload)
+            ON CONFLICT (category_code) DO UPDATE
+            SET display_name = EXCLUDED.display_name,
+                raw_payload = EXCLUDED.raw_payload,
+                updated_at = NOW()
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bill_payment_vendors (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                provider_vendor_id VARCHAR(120) NOT NULL UNIQUE,
+                category_code VARCHAR(60),
+                name VARCHAR(255) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                raw_payload JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payment_vendors_category ON bill_payment_vendors(category_code, name)');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bill_payment_products (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                provider_product_id VARCHAR(120) NOT NULL UNIQUE,
+                provider_vendor_id VARCHAR(120),
+                category_code VARCHAR(60),
+                name VARCHAR(255) NOT NULL,
+                customer_id_label VARCHAR(120) DEFAULT 'Customer ID',
+                amount_type VARCHAR(30) DEFAULT 'range',
+                fixed_amount DECIMAL(15, 2) DEFAULT 0,
+                minimum_amount DECIMAL(15, 2) DEFAULT 0,
+                maximum_amount DECIMAL(15, 2) DEFAULT 0,
+                commission_percentage DECIMAL(10, 4) DEFAULT 0,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                raw_payload JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payment_products_vendor ON bill_payment_products(provider_vendor_id, name)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payment_products_category ON bill_payment_products(category_code, name)');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bill_payments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                currency VARCHAR(10) NOT NULL,
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                provider_bill_payment_id VARCHAR(120),
+                provider_transaction_reference VARCHAR(120),
+                client_reference VARCHAR(120) NOT NULL UNIQUE,
+                category_code VARCHAR(60),
+                provider_vendor_id VARCHAR(120),
+                provider_product_id VARCHAR(120),
+                vendor_name VARCHAR(255),
+                product_name VARCHAR(255),
+                customer_id TEXT NOT NULL,
+                customer_name VARCHAR(255),
+                customer_id_label VARCHAR(120),
+                debit_account_id VARCHAR(120),
+                amount DECIMAL(15, 2) NOT NULL,
+                fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0,
+                total_debited DECIMAL(15, 2) NOT NULL DEFAULT 0,
+                provider_commission_amount DECIMAL(15, 2) DEFAULT 0,
+                provider_commission_percentage DECIMAL(10, 4) DEFAULT 0,
+                local_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+                provider_status VARCHAR(50) DEFAULT 'pending',
+                reason_for_failure TEXT,
+                instructions JSONB,
+                lookup_payload JSONB,
+                provider_payload JSONB,
+                livemode BOOLEAN DEFAULT TRUE,
+                initiated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                provider_completed_at TIMESTAMPTZ,
+                provider_failed_at TIMESTAMPTZ,
+                lookup_verified_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payments_user_created ON bill_payments(user_id, created_at DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payments_local_status ON bill_payments(local_status, created_at DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payments_provider_reference ON bill_payments(provider_transaction_reference)');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS bill_payment_webhooks (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                provider VARCHAR(30) NOT NULL DEFAULT 'lenco',
+                event_type VARCHAR(120),
+                provider_reference VARCHAR(120),
+                signature TEXT,
+                payload JSONB NOT NULL,
+                processed BOOLEAN NOT NULL DEFAULT FALSE,
+                processed_at TIMESTAMPTZ,
+                processing_error TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_bill_payment_webhooks_reference ON bill_payment_webhooks(provider_reference, created_at DESC)');
+
         // Create connected_account_payout_methods table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS connected_account_payout_methods (
@@ -843,6 +3422,25 @@ const ensureSchema = async () => {
                 is_default BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        `);
+        await pool.query("ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS payouts_paused BOOLEAN NOT NULL DEFAULT FALSE");
+        await pool.query("ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS payout_hold_reason TEXT");
+        await pool.query("ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS payouts_paused_at TIMESTAMPTZ");
+        await pool.query("ALTER TABLE connected_accounts ADD COLUMN IF NOT EXISTS payout_hold_case_id UUID");
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints
+                    WHERE constraint_name = 'connected_accounts_payout_hold_case_id_fkey'
+                      AND table_name = 'connected_accounts'
+                ) THEN
+                    ALTER TABLE connected_accounts
+                    ADD CONSTRAINT connected_accounts_payout_hold_case_id_fkey
+                    FOREIGN KEY (payout_hold_case_id) REFERENCES fraud_cases(id) ON DELETE SET NULL;
+                END IF;
+            END$$;
         `);
 
         // Payout Schedules (Task 1.1)
@@ -877,6 +3475,274 @@ const ensureSchema = async () => {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                event_type VARCHAR(120) NOT NULL,
+                source_system VARCHAR(60) NOT NULL,
+                occurred_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                livemode BOOLEAN DEFAULT TRUE,
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                merchant_id UUID REFERENCES merchants(id),
+                connected_account_id UUID,
+                transaction_reference VARCHAR(120),
+                provider_reference VARCHAR(120),
+                rail VARCHAR(40),
+                direction VARCHAR(20),
+                currency VARCHAR(10),
+                amount DECIMAL(15, 4) DEFAULT 0,
+                fee_amount DECIMAL(15, 4) DEFAULT 0,
+                status VARCHAR(40),
+                counterparty_type VARCHAR(60),
+                counterparty_key TEXT,
+                country VARCHAR(8),
+                ip_address INET,
+                device_fingerprint TEXT,
+                user_agent TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_events_user_time ON fraud_events(user_id, occurred_at DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_events_wallet_time ON fraud_events(wallet_id, occurred_at DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_events_reference ON fraud_events(transaction_reference)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_events_counterparty ON fraud_events(counterparty_key)');
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_rules (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(160) NOT NULL,
+                rule_type VARCHAR(80) NOT NULL,
+                action VARCHAR(40) NOT NULL DEFAULT 'review',
+                severity VARCHAR(20) NOT NULL DEFAULT 'medium',
+                weight INTEGER NOT NULL DEFAULT 20,
+                applies_to TEXT[] NOT NULL DEFAULT ARRAY['wallet.withdrawal.initiated'],
+                parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by UUID REFERENCES users(id),
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_rules_enabled ON fraud_rules(enabled, created_at DESC)');
+        await pool.query(`
+            INSERT INTO fraud_rules (name, rule_type, action, severity, weight, applies_to, parameters)
+            SELECT * FROM (
+                VALUES
+                    ('Large wallet withdrawal', 'large_amount', 'review', 'high', 35, ARRAY['wallet.withdrawal.initiated']::text[], '{"amount":5000}'::jsonb),
+                    ('Rapid withdrawal velocity', 'velocity_count', 'review', 'high', 30, ARRAY['wallet.withdrawal.initiated']::text[], '{"count":3,"window_minutes":30}'::jsonb),
+                    ('High withdrawal volume', 'velocity_amount', 'review', 'critical', 40, ARRAY['wallet.withdrawal.initiated']::text[], '{"amount":10000,"window_minutes":60}'::jsonb),
+                    ('Repeated counterparty withdrawals', 'repeat_counterparty', 'alert', 'medium', 20, ARRAY['wallet.withdrawal.initiated']::text[], '{"count":3,"window_hours":24,"min_amount_for_rule":1000,"exclude_counterparty_types":["bank_account"]}'::jsonb),
+                    ('Large first-time destination', 'new_counterparty_large_amount', 'review', 'high', 25, ARRAY['wallet.withdrawal.initiated']::text[], '{"min_amount":2500}'::jsonb)
+            ) AS seed(name, rule_type, action, severity, weight, applies_to, parameters)
+            WHERE NOT EXISTS (SELECT 1 FROM fraud_rules)
+        `);
+        await pool.query(`
+            INSERT INTO fraud_rules (name, rule_type, action, severity, weight, applies_to, parameters)
+            SELECT * FROM (
+                VALUES
+                    ('Large wallet transfer', 'large_amount', 'review', 'high', 30, ARRAY['wallet.transfer.completed']::text[], '{"amount":5000}'::jsonb),
+                    ('Rapid wallet transfer velocity', 'velocity_count', 'review', 'high', 25, ARRAY['wallet.transfer.completed']::text[], '{"count":4,"window_minutes":30}'::jsonb),
+                    ('Large FX conversion', 'large_amount', 'review', 'high', 25, ARRAY['fx.convert.completed']::text[], '{"amount":5000}'::jsonb),
+                    ('Large card funding', 'large_amount', 'review', 'high', 25, ARRAY['card.fund.completed','virtual_card.issue.completed']::text[], '{"amount":2500}'::jsonb),
+                    ('Large connect payout', 'large_amount', 'review', 'high', 35, ARRAY['connect.payout.initiated','connect.portal.payout.completed']::text[], '{"amount":5000}'::jsonb),
+                    ('Rapid connect payout velocity', 'velocity_count', 'review', 'high', 25, ARRAY['connect.payout.initiated','connect.portal.payout.completed']::text[], '{"count":3,"window_minutes":60}'::jsonb),
+                    ('Large incoming charge', 'large_amount', 'alert', 'medium', 20, ARRAY['charge.succeeded','checkout.charge.completed','payment_link.charge.completed']::text[], '{"amount":10000}'::jsonb),
+                    ('Rapid incoming charge velocity', 'velocity_count', 'review', 'high', 30, ARRAY['charge.succeeded','checkout.charge.completed','payment_link.charge.completed']::text[], '{"count":5,"window_minutes":15}'::jsonb)
+                ) AS seed(name, rule_type, action, severity, weight, applies_to, parameters)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM fraud_rules fr
+                WHERE fr.name = seed.name
+            )
+        `);
+        await pool.query(`
+            UPDATE fraud_rules
+            SET parameters = parameters || '{"exclude_counterparty_types":["bank_account"]}'::jsonb,
+                updated_at = NOW()
+            WHERE name IN (
+                'Large wallet withdrawal',
+                'Rapid withdrawal velocity',
+                'High withdrawal volume',
+                'Repeated counterparty withdrawals',
+                'Large first-time destination'
+            )
+        `);
+        await pool.query(`
+            INSERT INTO fraud_rules (name, rule_type, action, severity, weight, applies_to, parameters)
+            SELECT * FROM (
+                VALUES
+                    ('Large bank withdrawal', 'large_amount', 'review', 'high', 30, ARRAY['wallet.withdrawal.initiated']::text[], '{"amount":50000,"only_counterparty_types":["bank_account"]}'::jsonb),
+                    ('Rapid bank withdrawal velocity', 'velocity_count', 'review', 'medium', 20, ARRAY['wallet.withdrawal.initiated']::text[], '{"count":10,"window_minutes":30,"min_amount_for_rule":5000,"only_counterparty_types":["bank_account"]}'::jsonb),
+                    ('High bank withdrawal volume', 'velocity_amount', 'review', 'high', 30, ARRAY['wallet.withdrawal.initiated']::text[], '{"amount":50000,"window_minutes":60,"only_counterparty_types":["bank_account"]}'::jsonb),
+                    ('Large first-time bank destination', 'new_counterparty_large_amount', 'review', 'medium', 20, ARRAY['wallet.withdrawal.initiated']::text[], '{"min_amount":50000,"only_counterparty_types":["bank_account"]}'::jsonb)
+            ) AS seed(name, rule_type, action, severity, weight, applies_to, parameters)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM fraud_rules fr
+                WHERE fr.name = seed.name
+            )
+        `);
+        await pool.query(`
+            UPDATE fraud_rules
+            SET enabled = FALSE,
+                updated_at = NOW()
+            WHERE name IN (
+                'Large bank withdrawal',
+                'Rapid bank withdrawal velocity',
+                'High bank withdrawal volume',
+                'Large first-time bank destination'
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_signals (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                fraud_event_id UUID REFERENCES fraud_events(id) ON DELETE CASCADE,
+                signal_code VARCHAR(120) NOT NULL,
+                severity VARCHAR(20) DEFAULT 'low',
+                weight INTEGER DEFAULT 0,
+                description TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_cases (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                fraud_event_id UUID REFERENCES fraud_events(id) ON DELETE SET NULL,
+                user_id UUID REFERENCES users(id),
+                wallet_id UUID REFERENCES wallets(id),
+                merchant_id UUID REFERENCES merchants(id),
+                connected_account_id UUID REFERENCES connected_accounts(id),
+                transaction_reference VARCHAR(120),
+                severity VARCHAR(20) DEFAULT 'low',
+                score INTEGER DEFAULT 0,
+                status VARCHAR(40) DEFAULT 'open',
+                queue VARCHAR(40) DEFAULT 'fraud_ops',
+                assigned_to UUID REFERENCES users(id),
+                opened_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMPTZ,
+                closed_at TIMESTAMPTZ,
+                resolution VARCHAR(60),
+                resolution_note TEXT,
+                metadata JSONB DEFAULT '{}'::jsonb
+            )
+        `);
+        await pool.query('ALTER TABLE fraud_cases ADD COLUMN IF NOT EXISTS connected_account_id UUID');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_fraud_cases_status ON fraud_cases(status, opened_at DESC)');
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.table_constraints
+                    WHERE constraint_name = 'fraud_cases_connected_account_id_fkey'
+                      AND table_name = 'fraud_cases'
+                ) THEN
+                    ALTER TABLE fraud_cases
+                    ADD CONSTRAINT fraud_cases_connected_account_id_fkey
+                    FOREIGN KEY (connected_account_id) REFERENCES connected_accounts(id);
+                END IF;
+            END $$;
+        `);
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.table_constraints
+                    WHERE constraint_name = 'merchants_charge_hold_case_id_fkey'
+                      AND table_name = 'merchants'
+                ) THEN
+                    ALTER TABLE merchants
+                    ADD CONSTRAINT merchants_charge_hold_case_id_fkey
+                    FOREIGN KEY (charge_hold_case_id) REFERENCES fraud_cases(id);
+                END IF;
+            END $$;
+        `);
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.table_constraints
+                    WHERE constraint_name = 'connected_accounts_charge_hold_case_id_fkey'
+                      AND table_name = 'connected_accounts'
+                ) THEN
+                    ALTER TABLE connected_accounts
+                    ADD CONSTRAINT connected_accounts_charge_hold_case_id_fkey
+                    FOREIGN KEY (charge_hold_case_id) REFERENCES fraud_cases(id);
+                END IF;
+            END $$;
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_alerts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                fraud_case_id UUID REFERENCES fraud_cases(id) ON DELETE CASCADE,
+                channel VARCHAR(40) NOT NULL,
+                recipient VARCHAR(255) NOT NULL,
+                status VARCHAR(40) DEFAULT 'queued',
+                payload JSONB DEFAULT '{}'::jsonb,
+                sent_at TIMESTAMPTZ,
+                error TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_actions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                fraud_case_id UUID REFERENCES fraud_cases(id) ON DELETE CASCADE,
+                action_type VARCHAR(60) NOT NULL,
+                target_type VARCHAR(60) NOT NULL,
+                target_id VARCHAR(120),
+                executed_by UUID REFERENCES users(id),
+                status VARCHAR(40) DEFAULT 'recorded',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                executed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_case_notes (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                fraud_case_id UUID REFERENCES fraud_cases(id) ON DELETE CASCADE,
+                author_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                note TEXT NOT NULL,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints
+                    WHERE constraint_name = 'wallets_withdrawal_hold_case_id_fkey'
+                      AND table_name = 'wallets'
+                ) THEN
+                    ALTER TABLE wallets
+                    ADD CONSTRAINT wallets_withdrawal_hold_case_id_fkey
+                    FOREIGN KEY (withdrawal_hold_case_id) REFERENCES fraud_cases(id) ON DELETE SET NULL;
+                END IF;
+            END$$;
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS admin_notifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                type VARCHAR(50) NOT NULL,
+                read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query("ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS priority VARCHAR(20) DEFAULT 'medium'");
+        await pool.query("ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending'");
+        await pool.query("ALTER TABLE admin_notifications ADD COLUMN IF NOT EXISTS escrow_id UUID");
 
         // Webhook Endpoints (Task 1.4)
         await pool.query(`
@@ -986,6 +3852,38 @@ const ensureSchema = async () => {
                 content TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_read BOOLEAN DEFAULT false
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS connect_refund_requests (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                platform_merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
+                account_id UUID REFERENCES connected_accounts(id) ON DELETE CASCADE,
+                charge_id UUID NOT NULL,
+                amount NUMERIC(18,2) NOT NULL,
+                currency VARCHAR(10) NOT NULL DEFAULT 'ZMW',
+                reason TEXT,
+                status VARCHAR(30) NOT NULL DEFAULT 'pending',
+                requested_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                review_note TEXT,
+                reviewed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS connect_dispute_evidence (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                platform_merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
+                account_id UUID REFERENCES connected_accounts(id) ON DELETE CASCADE,
+                charge_id UUID NOT NULL,
+                dispute_id UUID NOT NULL,
+                evidence TEXT NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'submitted',
+                submitted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -1100,6 +3998,40 @@ const ensureSchema = async () => {
                 created_at TIMESTAMP DEFAULT NOW()
             )
         `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS customer_payment_instruments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                customer_id UUID REFERENCES customers(id) ON DELETE CASCADE,
+                cybersource_customer_id VARCHAR(255) NOT NULL,
+                cybersource_instrument_id VARCHAR(255) NOT NULL UNIQUE,
+                cybersource_identifier_id VARCHAR(255),
+                last4 VARCHAR(4),
+                brand VARCHAR(20),
+                exp_month VARCHAR(2),
+                exp_year VARCHAR(4),
+                is_default BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_customer_payment_instruments_customer_id ON customer_payment_instruments (customer_id)`);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS payment_tokenization_attempts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id),
+                cybersource_customer_id VARCHAR(255),
+                transient_token_hash CHAR(64) NOT NULL,
+                transient_token_jti VARCHAR(128),
+                token_length INTEGER,
+                status VARCHAR(30) NOT NULL DEFAULT 'received',
+                payment_id VARCHAR(255),
+                cybersource_instrument_id VARCHAR(255),
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        await pool.query(`ALTER TABLE payment_tokenization_attempts ALTER COLUMN status SET DEFAULT 'received'`);
         console.log('Database schema ensured');
     } catch (err) {
         console.error('Schema Sync Error:', err);
@@ -1112,6 +4044,487 @@ ensureSchema();
 
 const PAWAPAY_BASE_URL = 'https://api.sandbox.pawapay.io';
 const PAWAPAY_TOKEN = process.env.PAWAPAY_TOKEN;
+
+const finalizeLencoMobileMoneyCollection = async (reference, providerData = null) => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const collectionRes = await client.query(
+            `SELECT * FROM wallet_mobile_money_collections WHERE reference = $1 FOR UPDATE`,
+            [reference]
+        );
+        if (collectionRes.rows.length === 0) {
+            throw new Error('Collection not found');
+        }
+
+        const collection = collectionRes.rows[0];
+        const providerStatus = String(
+            providerData?.status ||
+            collection.provider_status ||
+            ''
+        ).trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+        const failureReason = providerData?.reasonForFailure || providerData?.message || collection.failure_reason || null;
+
+        await client.query(
+            `UPDATE wallet_mobile_money_collections
+             SET provider_collection_id = COALESCE($2, provider_collection_id),
+                 provider_reference = COALESCE($3, provider_reference),
+                 provider_status = $4,
+                 local_status = $5,
+                 failure_reason = $6,
+                 provider_response = COALESCE($7, provider_response),
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE reference = $1`,
+            [
+                reference,
+                providerData?.id || null,
+                providerData?.lencoReference || null,
+                providerStatus || null,
+                localStatus,
+                failureReason,
+                providerData ? JSON.stringify(providerData) : null
+            ]
+        );
+
+        if (localStatus === 'COMPLETED' && !collection.credited_at) {
+            const depositRef = `LMMDEP-${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
+
+            await client.query(
+                `INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
+                 VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED')`,
+                [
+                    depositRef,
+                    collection.wallet_id,
+                    collection.requested_amount,
+                    collection.currency,
+                    'Mobile Money Deposit'
+                ]
+            );
+
+            await client.query(
+                'UPDATE wallets SET balance = balance + $1 WHERE id = $2',
+                [collection.requested_amount, collection.wallet_id]
+            );
+
+            if (Number(collection.fee_amount) > 0) {
+                await recordFee(
+                    client,
+                    depositRef,
+                    Number(collection.fee_amount),
+                    collection.currency,
+                    'Mobile Money Deposit Fee'
+                );
+            }
+
+            await client.query(
+                `UPDATE wallet_mobile_money_collections
+                 SET credited_transaction_reference = $2,
+                     credited_at = CURRENT_TIMESTAMP,
+                     updated_at = CURRENT_TIMESTAMP
+                 WHERE reference = $1`,
+                [reference, depositRef]
+            );
+
+            await insertDepositNotification(client, {
+                userId: collection.user_id,
+                status: 'COMPLETED',
+                amount: collection.requested_amount,
+                currency: collection.currency,
+                reference,
+                phoneNumber: collection.phone_number,
+                operator: collection.operator
+            });
+        } else if (localStatus === 'FAILED' && collection.local_status !== 'FAILED') {
+            await insertDepositNotification(client, {
+                userId: collection.user_id,
+                status: 'FAILED',
+                amount: collection.requested_amount,
+                currency: collection.currency,
+                reference,
+                phoneNumber: collection.phone_number,
+                operator: collection.operator,
+                failureReason
+            });
+        }
+
+        await client.query('COMMIT');
+        const walletBalanceRes = await pool.query('SELECT balance FROM wallets WHERE id = $1', [collection.wallet_id]);
+        return {
+            ...collection,
+            provider_status: providerStatus,
+            local_status: localStatus,
+            failure_reason: failureReason,
+            credited_at: localStatus === 'COMPLETED' ? (collection.credited_at || new Date().toISOString()) : collection.credited_at,
+            current_balance: walletBalanceRes.rows[0]?.balance ?? null
+        };
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
+    }
+};
+
+const fetchLencoCollectionByReference = async (reference) => {
+    const response = await axios.get(`${LENCO_BASE_URL}/collections/status/${encodeURIComponent(reference)}`, {
+        headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+    });
+    return response.data?.data || response.data || {};
+};
+
+const resolveLencoMobileMoneyAccount = async ({ phoneNumber, operator, country = 'zm' }) => {
+    const normalizedCountry = normalizeLencoCountry(country);
+    const normalizedOperator = normalizeLencoMobileOperator(operator, normalizedCountry);
+    const normalizedPhone = normalizeLencoMobilePhone(phoneNumber, normalizedCountry);
+
+    if (!normalizedPhone) {
+        throw new Error('phoneNumber is required');
+    }
+
+    if (!normalizedOperator) {
+        throw new Error('Unsupported mobile money operator for Lenco resolution');
+    }
+
+    const response = await axios.post(`${LENCO_BASE_URL}/resolve/mobile-money`, {
+        phone: normalizedPhone,
+        operator: normalizedOperator,
+        country: normalizedCountry
+    }, {
+        headers: {
+            'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+        }
+    });
+
+    return response.data?.data || response.data || {};
+};
+
+const createLencoMobileMoneyTransferRecipient = async ({ phoneNumber, operator, country = 'zm' }) => {
+    const normalizedCountry = normalizeLencoCountry(country);
+    const normalizedOperator = normalizeLencoMobileOperator(operator, normalizedCountry);
+    const normalizedPhone = normalizeLencoMobilePhone(phoneNumber, normalizedCountry);
+
+    if (!normalizedPhone) {
+        throw new Error('phoneNumber is required');
+    }
+
+    if (!normalizedOperator) {
+        throw new Error('Unsupported mobile money operator for Lenco transfer recipients');
+    }
+
+    const response = await axios.post(`${LENCO_BASE_URL}/transfer-recipients/mobile-money`, {
+        phone: normalizedPhone,
+        operator: normalizedOperator,
+        country: normalizedCountry
+    }, {
+        headers: {
+            'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+        }
+    });
+
+    return response.data?.data || response.data || {};
+};
+
+const initiateLencoMobileMoneyTransfer = async ({ accountId, amount, reference, phoneNumber, operator, country = 'zm', narration = 'FlapaPay Wallet Withdrawal' }) => {
+    const normalizedCountry = normalizeLencoCountry(country);
+    const normalizedOperator = normalizeLencoMobileOperator(operator, normalizedCountry);
+    const normalizedPhone = normalizeLencoMobilePhone(phoneNumber, normalizedCountry);
+    const transferRecipient = await createLencoMobileMoneyTransferRecipient({
+        phoneNumber: normalizedPhone,
+        operator: normalizedOperator,
+        country: normalizedCountry
+    });
+
+    const transferRes = await axios.post(`${LENCO_BASE_URL}/transfers/mobile-money`, {
+        accountId,
+        amount: roundMoney(Number(amount)),
+        narration,
+        reference,
+        transferRecipientId: transferRecipient.id,
+        phone: normalizedPhone,
+        operator: normalizedOperator,
+        country: normalizedCountry
+    }, {
+        headers: {
+            'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+            'Content-Type': 'application/json'
+        }
+    });
+
+    return {
+        transferRecipient,
+        transferData: transferRes.data?.data || transferRes.data || {}
+    };
+};
+
+const handleLencoMobileMoneyResolve = async (req, res) => {
+    const requestBody = req.body && typeof req.body === 'object' ? req.body : {};
+    const {
+        phoneNumber,
+        phone,
+        operator,
+        country = 'zm'
+    } = requestBody;
+    const requestedPhone = String(phoneNumber || phone || '').trim();
+    const normalizedCountry = normalizeLencoCountry(country);
+    const normalizedOperator = normalizeLencoMobileOperator(operator, normalizedCountry);
+    const normalizedPhone = normalizeLencoMobilePhone(requestedPhone, normalizedCountry);
+
+    console.log('[Lenco Mobile Money Resolve] Incoming request', {
+        hasBody: Boolean(req.body),
+        phone: requestedPhone,
+        operator,
+        country: normalizedCountry,
+        userId: req.user?.id || null
+    });
+
+    if (!requestedPhone) {
+        return res.status(400).json({
+            status: false,
+            message: 'phone is required',
+            data: null,
+            error: 'phone is required'
+        });
+    }
+
+    if (!normalizedOperator) {
+        return res.status(400).json({
+            status: false,
+            message: 'Unsupported mobile money operator',
+            data: null,
+            error: 'Unsupported mobile money operator'
+        });
+    }
+
+    if (normalizedCountry === 'zm' && normalizedPhone.length !== 12) {
+        return res.status(400).json({
+            status: false,
+            message: 'Invalid Zambia mobile number',
+            data: null,
+            error: 'Invalid Zambia mobile number'
+        });
+    }
+
+    try {
+        const providerData = await resolveLencoMobileMoneyAccount({ phoneNumber: requestedPhone, operator, country });
+        if (!providerData?.accountName) {
+            console.warn('[Lenco Mobile Money Resolve] Account not found', {
+                phone: normalizedPhone,
+                operator: normalizedOperator,
+                country: normalizedCountry
+            });
+            return res.status(422).json({
+                status: false,
+                message: 'Account details were not found',
+                data: null,
+                error: 'Account details were not found'
+            });
+        }
+        const resolvedPayload = {
+            type: 'mobile-money',
+            accountName: providerData.accountName || '',
+            phone: providerData.phone || requestedPhone.replace(/\D/g, ''),
+            operator: providerData.operator || normalizedOperator,
+            country: providerData.country || normalizedCountry
+        };
+
+        return res.json({
+            status: true,
+            message: '',
+            data: resolvedPayload,
+            success: true,
+            provider: 'lenco',
+            accountName: resolvedPayload.accountName,
+            phone: resolvedPayload.phone,
+            operator: resolvedPayload.operator,
+            country: resolvedPayload.country,
+            providerData
+        });
+    } catch (error) {
+        const upstreamMessage = String(error.response?.data?.message || error.message || '').trim();
+        const normalizedMessage = upstreamMessage.toLowerCase();
+        const statusCode = error.response?.status || (
+            normalizedMessage.includes('invalid phone') || normalizedMessage.includes('phone is required')
+                ? 400
+                : normalizedMessage.includes('account details')
+                    ? 422
+                    : 502
+        );
+
+        console.error('[Lenco Mobile Money Resolve] Error:', {
+            phone: normalizedPhone,
+            operator: normalizedOperator,
+            country: normalizedCountry,
+            statusCode,
+            upstream: error.response?.data || null,
+            message: error.message
+        });
+        return res.status(statusCode).json({
+            status: false,
+            message: upstreamMessage || 'Failed to resolve mobile money account',
+            data: null,
+            error: upstreamMessage || 'Failed to resolve mobile money account',
+            details: error.response?.data || null
+        });
+    }
+};
+
+app.post('/lenco/mobile-money/resolve', handleLencoMobileMoneyResolve);
+
+app.post('/lenco/mobile-money/collections', authenticateToken, async (req, res) => {
+    const { walletId, amount, phoneNumber, operator, country = 'zm' } = req.body;
+
+    const requestedAmount = Number(amount);
+    if (!walletId) return res.status(400).json({ error: 'walletId is required' });
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return res.status(400).json({ error: 'Amount must be a positive number' });
+    if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber is required' });
+
+    const normalizedCountry = normalizeLencoCountry(country);
+    const normalizedOperator = normalizeLencoMobileOperator(operator, normalizedCountry);
+    if (!normalizedOperator) {
+        return res.status(400).json({ error: 'Unsupported mobile money operator for Lenco collections' });
+    }
+
+    const feeRate = 0.018;
+    const feeAmount = roundMoney(requestedAmount * feeRate);
+    const totalCharged = roundMoney(requestedAmount + feeAmount);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const walletRes = await client.query(
+            'SELECT id, currency, livemode FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [walletId, req.user.id]
+        );
+        if (walletRes.rows.length === 0) throw new Error('Wallet not found');
+
+        const wallet = walletRes.rows[0];
+        if (wallet.currency !== 'ZMW') {
+            throw new Error('Lenco mobile money collections currently support ZMW wallets only');
+        }
+
+        const reference = `LMM-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        const normalizedPhone = String(phoneNumber || '').replace(/\D/g, '');
+
+        const response = await axios.post(`${LENCO_BASE_URL}/collections/mobile-money`, {
+            amount: totalCharged,
+            reference,
+            phone: normalizedPhone,
+            operator: normalizedOperator,
+            country: normalizedCountry,
+            bearer: 'merchant'
+        }, {
+            headers: {
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const providerData = response.data?.data || {};
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+        await client.query(
+            `INSERT INTO wallet_mobile_money_collections
+                (user_id, wallet_id, provider, phone_number, operator, country, requested_amount, fee_amount, total_charged, currency, reference, provider_collection_id, provider_reference, provider_status, local_status, provider_response, livemode)
+             VALUES ($1, $2, 'lenco', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            [
+                req.user.id,
+                wallet.id,
+                normalizedPhone,
+                normalizedOperator,
+                normalizedCountry,
+                requestedAmount,
+                feeAmount,
+                totalCharged,
+                wallet.currency,
+                reference,
+                providerData.id || null,
+                providerData.lencoReference || null,
+                providerStatus || null,
+                localStatus,
+                JSON.stringify(providerData),
+                wallet.livemode
+            ]
+        );
+
+        await insertDepositNotification(client, {
+            userId: req.user.id,
+            status: 'PENDING',
+            amount: requestedAmount,
+            currency: wallet.currency,
+            reference,
+            phoneNumber: normalizedPhone,
+            operator: normalizedOperator
+        });
+
+        await client.query('COMMIT');
+
+        if (localStatus === 'COMPLETED') {
+            await finalizeLencoMobileMoneyCollection(reference, providerData);
+        }
+
+        return res.json({
+            success: Boolean(response.data?.status),
+            message: response.data?.message || '',
+            reference,
+            amount: requestedAmount.toFixed(2),
+            fee: feeAmount.toFixed(2),
+            totalCharged: totalCharged.toFixed(2),
+            provider: 'lenco',
+            providerData,
+            status: providerStatus || 'pending',
+            localStatus,
+            pollUrl: `/lenco/mobile-money/collections/${reference}/status`
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('[Lenco Mobile Money Collection] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to initiate mobile money collection',
+            details: error.response?.data || null
+        });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/lenco/mobile-money/collections/:reference/status', authenticateToken, async (req, res) => {
+    const { reference } = req.params;
+
+    try {
+        const collectionRes = await pool.query(
+            'SELECT * FROM wallet_mobile_money_collections WHERE reference = $1 AND user_id = $2',
+            [reference, req.user.id]
+        );
+        if (collectionRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Collection not found' });
+        }
+
+        const providerData = await fetchLencoCollectionByReference(reference);
+        const finalized = await finalizeLencoMobileMoneyCollection(reference, providerData);
+
+        return res.json({
+            success: true,
+            reference,
+            status: String(providerData.status || '').trim().toLowerCase() || finalized.provider_status || 'pending',
+            localStatus: finalized.local_status,
+            failureReason: finalized.failure_reason || null,
+            providerData,
+            credited: Boolean(finalized.credited_at),
+            creditedAt: finalized.credited_at || null,
+            currentBalance: finalized.current_balance
+        });
+    } catch (error) {
+        console.error('[Lenco Mobile Money Collection] Status Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to check collection status',
+            details: error.response?.data || null
+        });
+    }
+});
 
 app.post('/pawapay/deposit', authenticateToken, async (req, res) => {
     const { amount, phoneNumber, provider, currency = 'ZMW' } = req.body;
@@ -1128,17 +4541,7 @@ app.post('/pawapay/deposit', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Amount must be a positive number' });
     }
 
-    // Normalize phone number: remove +, spaces, dashes, ensure country code
-    let normalizedPhone = phoneNumber.replace(/\D/g, '');
-
-    // Determine country code based on currency
-    const expectedCountryCode = currency === 'ZMW' ? '260' : currency === 'NGN' ? '234' : '260';
-
-    if (normalizedPhone.startsWith('0')) {
-        normalizedPhone = expectedCountryCode + normalizedPhone.substring(1);
-    } else if (!normalizedPhone.startsWith(expectedCountryCode)) {
-        normalizedPhone = expectedCountryCode + normalizedPhone;
-    }
+    const normalizedPhone = normalizePawaPayMsisdn(phoneNumber, currency);
 
     console.log('[PawaPay Deposit] Normalized phone:', normalizedPhone);
 
@@ -1216,133 +4619,6 @@ app.post('/pawapay/resend-callback', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Auth Routes ---
-
-app.post('/pawapay/payout', authenticateToken, async (req, res) => {
-    console.log('--- Payout Request Start ---');
-    console.log('User:', req.user);
-    console.log('Body:', req.body);
-
-    const { amount, phoneNumber, provider, currency, walletId, customerMessage, pin } = req.body;
-
-    // Verify PIN
-    const isPinValid = await verifyUserPin(req.user.id, pin);
-    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
-
-    if (!amount) { console.error('Missing amount'); return res.status(400).json({ error: 'Missing amount' }); }
-    if (!phoneNumber) { console.error('Missing phoneNumber'); return res.status(400).json({ error: 'Missing phoneNumber' }); }
-    if (!provider) { console.error('Missing provider'); return res.status(400).json({ error: 'Missing provider' }); }
-    if (!currency) { console.error('Missing currency'); return res.status(400).json({ error: 'Missing currency' }); }
-    if (!walletId) { console.error('Missing walletId'); return res.status(400).json({ error: 'Missing walletId' }); }
-
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // 1. Check wallet balance
-        const walletRes = await client.query(
-            'SELECT balance FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE',
-            [walletId, req.user.id]
-        );
-
-        if (walletRes.rows.length === 0) throw new Error('Wallet not found');
-
-        const payoutFee = 0.10;
-        const totalDeduction = parseFloat(amount) + payoutFee;
-
-        if (parseFloat(walletRes.rows[0].balance) < totalDeduction) {
-            throw new Error(`Insufficient funds. Available: ${walletRes.rows[0].balance}, Required: ${totalDeduction.toFixed(2)} (incl. $0.10 fee)`);
-        }
-
-        // 2. Initiate Payout with PawaPay
-        const payoutId = crypto.randomUUID();
-        const clientReferenceId = `PAY-${Date.now()}`;
-
-        const response = await axios.post(`${PAWAPAY_BASE_URL}/v2/payouts`, {
-            payoutId: payoutId,
-            recipient: {
-                type: 'MMO',
-                accountDetails: { phoneNumber: phoneNumber, provider: provider }
-            },
-            amount: amount.toString(),
-            currency: currency,
-            clientReferenceId: clientReferenceId,
-            customerMessage: customerMessage || 'FlapaPay Withdrawal',
-            metadata: [
-                { orderId: clientReferenceId },
-                { customerId: req.user.email, isPII: true }
-            ]
-        }, {
-            headers: {
-                'Authorization': `Bearer ${PAWAPAY_TOKEN}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        // 3. Record Payout in DB
-        await client.query(`
-            INSERT INTO payouts (id, user_id, wallet_id, amount, currency, phone_number, provider, status, client_reference_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [payoutId, req.user.id, walletId, amount, currency, phoneNumber, provider, response.data.status, clientReferenceId]
-        );
-
-        // 4. Debit Wallet (for Payout we usually debit upfront or on completion. Here upfront with reversal on failure is safer for UX)
-        await client.query(
-            'UPDATE wallets SET balance = balance - $1 WHERE id = $2',
-            [amount, walletId]
-        );
-
-        // 5. Add to Ledger
-        await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING')`,
-            [clientReferenceId, walletId, amount, currency, `Withdrawal to ${phoneNumber}`]
-        );
-
-        // 6. Deduct Payout Fee ($0.10) - Fee defined above
-        // const payoutFee = 0.10; // Already declared
-        // Check if we already deducted enough? We checked balance >= amount. 
-        // We should have checked balance >= amount + fee.
-
-        // Let's assume the user needs Amount + Fee.
-        // Debit Fee
-        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [payoutFee, walletId]);
-
-        // Record Fee
-        await recordFee(client, clientReferenceId + '-FEE', payoutFee, currency, 'Payout Fee');
-
-        await client.query('COMMIT');
-        res.json(response.data);
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('PawaPay Payout Error:', error.response?.data || error.message);
-        res.status(error.response?.status || 500).json({
-            error: error.message || 'Failed to initiate payout',
-            details: error.response?.data
-        });
-    } finally {
-        client.release();
-    }
-});
-
-app.get('/pawapay/payout/:payoutId', authenticateToken, async (req, res) => {
-    const { payoutId } = req.params;
-
-    try {
-        const response = await axios.get(`${PAWAPAY_BASE_URL}/v2/payouts/${payoutId}`, {
-            headers: { 'Authorization': `Bearer ${PAWAPAY_TOKEN}` }
-        });
-
-        // Optionally update local status
-        await pool.query('UPDATE payouts SET status = $1 WHERE id = $2', [response.data[0]?.status, payoutId]);
-
-        res.json(response.data);
-    } catch (error) {
-        console.error('PawaPay Payout Status Error:', error.response?.data || error.message);
-        res.status(error.response?.status || 500).json({ error: 'Failed to check payout status', details: error.response?.data });
-    }
-});
-
 app.post('/pawapay/payout/resend-callback/:payoutId', authenticateToken, async (req, res) => {
     const { payoutId } = req.params;
 
@@ -1372,12 +4648,13 @@ app.post('/pawapay/payout/fail-enqueued/:payoutId', authenticateToken, async (re
 });
 app.post('/auth/register', async (req, res) => {
     const { email, password, fullName, pin } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
 
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
-    if (!validateEmail(email)) return res.status(400).json({ error: 'Invalid email format' });
+    if (!validateEmail(normalizedEmail)) return res.status(400).json({ error: 'Invalid email format' });
 
     try {
-        const userCheck = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+        const userCheck = await pool.query('SELECT id FROM users WHERE LOWER(TRIM(email)) = $1', [normalizedEmail]);
         if (userCheck.rows.length > 0) return res.status(409).json({ error: 'User already exists' });
 
         const passwordHash = await bcrypt.hash(password, 12);
@@ -1394,7 +4671,7 @@ app.post('/auth/register', async (req, res) => {
             const userResult = await regClient.query(
                 `INSERT INTO users (email, password_hash, pin_hash, full_name, phone, email_verified, created_at)
                  VALUES ($1, $2, $3, $4, $5, true, NOW()) RETURNING id, email, full_name`,
-                [email, passwordHash, pinHash, fullNameStr, phone]
+                [normalizedEmail, passwordHash, pinHash, fullNameStr, phone]
             );
             const user = userResult.rows[0];
 
@@ -1409,7 +4686,7 @@ app.post('/auth/register', async (req, res) => {
             // ── Auto-credit any unclaimed payments waiting for this email ──────
             const pendingPayments = await regClient.query(
                 `SELECT * FROM unclaimed_payments WHERE recipient_email = $1 AND status = 'PENDING' AND expires_at > NOW()`,
-                [email.toLowerCase().trim()]
+                [normalizedEmail]
             );
 
             const creditedPayments = [];
@@ -1454,7 +4731,7 @@ app.post('/auth/register', async (req, res) => {
                 }).then(html => {
                     resend.emails.send({
                         from: EMAIL_FROM,
-                        to: [email],
+                        to: [normalizedEmail],
                         subject: `Your funds are here — ${p.currency} ${parseFloat(p.amount).toFixed(2)} credited to your wallet`,
                         html,
                     }).catch(e => console.error('Failed to send credited email:', e));
@@ -1465,9 +4742,9 @@ app.post('/auth/register', async (req, res) => {
                     resend.emails.send({
                         from: EMAIL_FROM,
                         to: [senderInfo.email],
-                        subject: `Your payment of ${p.currency} ${parseFloat(p.amount).toFixed(2)} was claimed by ${email}`,
+                        subject: `Your payment of ${p.currency} ${parseFloat(p.amount).toFixed(2)} was claimed by ${normalizedEmail}`,
                         html: `<p>Hello ${senderInfo.full_name || 'there'},</p>
-                               <p>Your pending payment of <strong>${p.currency} ${parseFloat(p.amount).toFixed(2)}</strong> to <strong>${email}</strong> has been claimed. The funds have been credited to their new FlapaPay wallet.</p>
+                               <p>Your pending payment of <strong>${p.currency} ${parseFloat(p.amount).toFixed(2)}</strong> to <strong>${normalizedEmail}</strong> has been claimed. The funds have been credited to their new FlapaPay wallet.</p>
                                <p>— The FlapaPay Team</p>`,
                     }).catch(e => console.error('Failed to send sender claim notification:', e));
                 }
@@ -1496,9 +4773,10 @@ app.post('/auth/register', async (req, res) => {
 
 app.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
 
     try {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        const result = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = $1', [normalizedEmail]);
         if (result.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
 
         const user = result.rows[0];
@@ -1575,6 +4853,21 @@ app.post('/auth/verify-pin', async (req, res) => {
     }
 });
 
+app.post('/auth/confirm-pin', authenticateToken, async (req, res) => {
+    const { pin } = req.body;
+    if (!pin) return res.status(400).json({ error: 'Security PIN is required' });
+
+    try {
+        const isPinValid = await verifyUserPin(req.user.id, pin);
+        if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+
+        return res.json({ ok: true, message: 'PIN confirmed' });
+    } catch (err) {
+        console.error('Authenticated PIN confirmation error:', err);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 app.post('/auth/setup-pin', async (req, res) => {
     const { partialToken, pin } = req.body;
 
@@ -1616,8 +4909,29 @@ app.post('/auth/setup-pin', async (req, res) => {
 
 app.get('/auth/me', authenticateToken, async (req, res) => {
     try {
-        const walletsResult = await pool.query('SELECT id, currency, balance FROM wallets WHERE user_id = $1 AND livemode = TRUE', [req.user.id]);
-        const userRes = await pool.query('SELECT id, email, full_name, role, default_payment_method_id, avatar_url, pin_hash FROM users WHERE id = $1', [req.user.id]);
+        await syncPendingLencoWithdrawalsForUser(req.user.id, 10);
+        await syncPendingPawaPayPayoutsForUser(req.user.id, 10);
+        const walletsResult = await pool.query(
+            `SELECT w.id,
+                    w.currency,
+                    w.balance,
+                    COALESCE(p.pending_withdrawal_amount, 0) AS pending_withdrawal_amount,
+                    COALESCE(p.pending_withdrawal_count, 0) AS pending_withdrawal_count
+             FROM wallets w
+             LEFT JOIN (
+                 SELECT wallet_id,
+                        SUM(amount) AS pending_withdrawal_amount,
+                        COUNT(*) AS pending_withdrawal_count
+                 FROM wallet_withdrawals
+                 WHERE user_id = $1
+                   AND local_status = 'PENDING'
+                 GROUP BY wallet_id
+             ) p ON p.wallet_id = w.id
+             WHERE w.user_id = $1 AND w.livemode = TRUE
+             ORDER BY w.currency`,
+            [req.user.id]
+        );
+        const userRes = await pool.query('SELECT id, email, full_name, phone, role, default_payment_method_id, avatar_url, pin_hash FROM users WHERE id = $1', [req.user.id]);
         const updatedUser = userRes.rows[0];
 
         res.json({
@@ -1625,6 +4939,7 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
                 id: updatedUser.id,
                 email: updatedUser.email,
                 fullName: updatedUser.full_name,
+                phone: updatedUser.phone,
                 role: updatedUser.role,
                 defaultPaymentMethodId: updatedUser.default_payment_method_id,
                 avatarUrl: updatedUser.avatar_url,
@@ -1774,8 +5089,16 @@ app.post('/wallets', authenticateToken, async (req, res) => {
 });
 
 app.post('/wallets/deposit', authenticateToken, async (req, res) => {
-    const { walletId, amount, description } = req.body;
+    const { walletId, amount, description, fundingSourceType, fundingSourceBrand, fundingSourceLast4 } = req.body;
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+
+    const normalizedDescription = String(description || '').trim();
+    const allowedDescriptions = new Set(['Card Deposit', 'Linked Card Deposit']);
+    if (!allowedDescriptions.has(normalizedDescription)) {
+        return res.status(400).json({
+            error: 'Direct wallet deposit is restricted to verified card funding only'
+        });
+    }
 
     const client = await pool.connect();
     try {
@@ -1796,12 +5119,18 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
         const totalCharged = amount + fee; // Simulated external charge
 
         const ref = 'DEP-' + crypto.randomBytes(8).toString('hex').toUpperCase();
+        const normalizedFundingSourceType = String(fundingSourceType || '').trim().toLowerCase() || null;
+        const normalizedFundingSourceBrand = String(fundingSourceBrand || '').trim().toLowerCase() || null;
+        const normalizedFundingSourceLast4 = String(fundingSourceLast4 || '').replace(/\D/g, '').slice(-4) || null;
 
         // Credit User (Full request amount)
         await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED')`,
-            [ref, walletId, amount, wallet.currency, description || 'Funds added']
+            INSERT INTO ledger_entries (
+                transaction_reference, credit_wallet_id, amount, currency, description,
+                transaction_type, status, funding_source_type, funding_source_brand, funding_source_last4
+            )
+            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED', $6, $7, $8)`,
+            [ref, walletId, amount, wallet.currency, normalizedDescription, normalizedFundingSourceType, normalizedFundingSourceBrand, normalizedFundingSourceLast4]
         );
 
         const updateResult = await client.query(
@@ -1810,7 +5139,7 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
         );
 
         // Record Fee
-        await recordFee(client, ref + '-FEE', fee, wallet.currency, 'Mobile Money Deposit Fee');
+        await recordFee(client, ref + '-FEE', fee, wallet.currency, 'Card Deposit Fee');
 
         await client.query('COMMIT');
         res.json({
@@ -1843,6 +5172,9 @@ app.get('/wallets', authenticateToken, async (req, res) => {
     }
 });
 
+app.get('/v1/wallet-withdrawals/:reference/status', authenticateToken, handleWalletWithdrawalStatus);
+app.get('/wallets/withdraw/:reference/status', authenticateToken, handleWalletWithdrawalStatus);
+
 app.post('/payments/transfer', authenticateToken, async (req, res) => {
     const { debitWalletId, creditWalletId, amount, currency, description, pin } = req.body;
 
@@ -1853,12 +5185,10 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
     if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
-        const debitRes = await client.query('SELECT balance, currency FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE', [debitWalletId, req.user.id]);
-        if (debitRes.rows.length === 0) throw new Error('Source wallet not found or access denied');
-
-        const sourceWallet = debitRes.rows[0];
+        const sourceWallet = await loadWalletForDebit(client, { walletId: debitWalletId, userId: req.user.id });
         if (sourceWallet.currency !== currency) throw new Error('Currency mismatch');
         if (parseFloat(sourceWallet.balance) < amount) throw new Error('Insufficient funds');
 
@@ -1902,7 +5232,30 @@ app.post('/payments/transfer', authenticateToken, async (req, res) => {
         // 4. Record Fee
         await recordFee(client, ref + '-FEE', fee, currency, 'Transfer Fee');
 
+        fraudPayload = {
+            eventType: 'wallet.transfer.completed',
+            userId: req.user.id,
+            walletId: debitWalletId,
+            reference: ref,
+            rail: 'wallet',
+            currency,
+            amount: Number(amount),
+            feeAmount: fee,
+            status: 'COMPLETED',
+            livemode: sourceWallet.livemode,
+            counterpartyType: 'wallet',
+            counterpartyKey: targetWalletId ? `wallet:${targetWalletId}` : null,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                creditWalletId: targetWalletId,
+                recipientEmail: req.body.recipientEmail || null,
+                description: description || null
+            }
+        };
+
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudDebitEvent(fraudPayload);
 
         // --- Post-Transfer Notifications ---
         try {
@@ -2355,7 +5708,22 @@ app.post('/payments/expire-unclaimed', async (req, res) => {
 
 app.get('/v1/wallet/balance', authenticateToken, async (req, res) => {
     try {
-        const walletsResult = await pool.query('SELECT currency, balance FROM wallets WHERE user_id = $1', [req.user.id]);
+        const mode = String(req.query.mode || '').trim().toLowerCase();
+        const values = [req.user.id];
+        let sql = `
+            SELECT id, currency, balance, livemode, status
+            FROM wallets
+            WHERE user_id = $1
+        `;
+
+        if (mode === 'live' || mode === 'test') {
+            values.push(mode === 'live');
+            sql += ` AND livemode = $2`;
+        }
+
+        sql += ' ORDER BY livemode DESC, currency ASC';
+
+        const walletsResult = await pool.query(sql, values);
         res.json({ wallets: walletsResult.rows });
     } catch (err) {
         console.error('Failed to fetch wallet balances:', err);
@@ -2363,82 +5731,346 @@ app.get('/v1/wallet/balance', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/v1/payouts/bulk', authenticateToken, async (req, res) => {
-    const payouts = req.body;
+const bulkPayoutProviderMap = {
+    MTN: 'MTN_MOMO_ZMB',
+    MTN_ZM: 'MTN_MOMO_ZMB',
+    MTN_ZAMBIA: 'MTN_MOMO_ZMB',
+    MTN_MOMO: 'MTN_MOMO_ZMB',
+    MTN_MOMO_ZMB: 'MTN_MOMO_ZMB',
+    AIRTEL: 'AIRTEL_OAPI_ZMB',
+    AIRTEL_ZM: 'AIRTEL_OAPI_ZMB',
+    AIRTEL_ZAMBIA: 'AIRTEL_OAPI_ZMB',
+    AIRTEL_MONEY: 'AIRTEL_OAPI_ZMB',
+    AIRTEL_OAPI_ZMB: 'AIRTEL_OAPI_ZMB',
+    ZAMTEL: 'ZAMTEL_ZMB',
+    ZAMTEL_ZMB: 'ZAMTEL_ZMB',
+    MTN_MOMO_ZMB: 'MTN_MOMO_ZMB',
+    AIRTEL_OAPI_ZMB: 'AIRTEL_OAPI_ZMB',
+    ZAMTEL_MOMO_ZMB: 'ZAMTEL_ZMB',
+};
 
-    if (!Array.isArray(payouts) || payouts.length === 0) {
-        return res.status(400).json({ error: 'Payouts must be a non-empty array' });
-    }
+const parseBulkCsvLine = (line) => {
+    const values = [];
+    let current = '';
+    let inQuotes = false;
 
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
+    for (let i = 0; i < line.length; i += 1) {
+        const char = line[i];
+        const nextChar = line[i + 1];
 
-        const totals = payouts.reduce((acc, p) => {
-            const amt = parseFloat(p.amount);
-            acc[p.currency] = (acc[p.currency] || 0) + amt;
-            return acc;
-        }, {});
-
-        for (const [currency, totalAmount] of Object.entries(totals)) {
-            const walletRes = await client.query('SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE', [req.user.id, currency]);
-            if (walletRes.rows.length === 0) throw new Error(`You do not have a ${currency} wallet`);
-
-            const wallet = walletRes.rows[0];
-            if (parseFloat(wallet.balance) < totalAmount) {
-                throw new Error(`Insufficient funds in your ${currency} wallet. Needed: ${totalAmount}, Available: ${wallet.balance}`);
+        if (char === '"') {
+            if (inQuotes && nextChar === '"') {
+                current += '"';
+                i += 1;
+            } else {
+                inQuotes = !inQuotes;
             }
-
-            await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalAmount, wallet.id]);
-
-            const batchRef = 'BULK-' + crypto.randomBytes(6).toString('hex').toUpperCase();
-            await client.query(`
-                INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
-                VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'COMPLETED')`,
-                [batchRef, wallet.id, totalAmount, currency, `Bulk Remittance via PawaPay (${payouts.length} recipients)`]
-            );
+            continue;
         }
 
-        const pawapayResult = await PawaPayService.initiateBulkPayout(payouts);
+        if (char === ',' && !inQuotes) {
+            values.push(current.trim());
+            current = '';
+            continue;
+        }
 
-        await client.query('COMMIT');
-
-        res.json({
-            message: 'Bulk payout initiated successfully',
-            batchId: pawapayResult.batchId || 'PENDING',
-            pawaPayResponse: pawapayResult
-        });
-
-    } catch (err) {
-        if (client) await client.query('ROLLBACK');
-        console.error('Bulk Payout Error:', err);
-        res.status(400).json({ error: err.message });
-    } finally {
-        if (client) client.release();
+        current += char;
     }
+
+    values.push(current.trim());
+    return values;
+};
+
+const normalizeBulkCsvHeader = (header) => header.replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+const normalizeBulkPhoneNumber = (value) => String(value || '').replace(/[^\d]/g, '');
+const normalizeBulkProvider = (value) => {
+    const normalized = String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+    return bulkPayoutProviderMap[normalized] || '';
+};
+
+const parseBulkPayoutCsvRecipients = (csvText) => {
+    const rows = String(csvText || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    if (rows.length < 2) {
+        throw new Error('CSV must include a header row and at least one recipient.');
+    }
+
+    const headers = parseBulkCsvLine(rows[0]).map(normalizeBulkCsvHeader);
+    const phoneIndex = headers.findIndex((header) => ['phonenumber', 'phone', 'msisdn', 'mobile', 'mobilenumber'].includes(header));
+    const amountIndex = headers.findIndex((header) => ['amount', 'value'].includes(header));
+    const providerIndex = headers.findIndex((header) => ['provider', 'network', 'correspondent', 'operator'].includes(header));
+
+    if (phoneIndex === -1 || amountIndex === -1 || providerIndex === -1) {
+        throw new Error('CSV headers must include phoneNumber, amount, and provider.');
+    }
+
+    const recipients = [];
+
+    rows.slice(1).forEach((row, index) => {
+        const columns = parseBulkCsvLine(row);
+        const phoneNumber = normalizeBulkPhoneNumber(columns[phoneIndex] || '');
+        const amountRaw = String(columns[amountIndex] || '').trim();
+        const provider = normalizeBulkProvider(columns[providerIndex] || '');
+
+        if (!phoneNumber && !amountRaw && !provider) {
+            return;
+        }
+
+        if (!phoneNumber || !amountRaw || !provider) {
+            throw new Error(`Row ${index + 2} is missing phone number, amount, or provider.`);
+        }
+
+        const amount = parseFloat(amountRaw);
+        if (Number.isNaN(amount) || amount <= 0) {
+            throw new Error(`Row ${index + 2} has an invalid amount.`);
+        }
+
+        recipients.push({
+            phoneNumber,
+            amount: amount.toFixed(2),
+            provider,
+        });
+    });
+
+    if (recipients.length === 0) {
+        throw new Error('No valid recipients were found in the CSV.');
+    }
+
+    if (recipients.length > MAX_BULK_PAYOUT_RECIPIENTS) {
+        throw new Error(`CSV contains ${recipients.length} recipients. The current limit is ${MAX_BULK_PAYOUT_RECIPIENTS}.`);
+    }
+
+    return recipients;
+};
+
+const parseBulkBankPayoutCsvRecipients = (csvText) => {
+    const rows = String(csvText || '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    if (rows.length < 2) {
+        throw new Error('CSV must include a header row and at least one recipient.');
+    }
+
+    const headers = parseBulkCsvLine(rows[0]).map(normalizeBulkCsvHeader);
+    const accountNumberIndex = headers.findIndex((header) => ['accountnumber', 'account', 'accountno'].includes(header));
+    const amountIndex = headers.findIndex((header) => ['amount', 'value'].includes(header));
+    const bankIdIndex = headers.findIndex((header) => ['bankid', 'bank'].includes(header));
+    const accountNameIndex = headers.findIndex((header) => ['accountname', 'beneficiaryname', 'name'].includes(header));
+    const bankNameIndex = headers.findIndex((header) => ['bankname'].includes(header));
+    const countryIndex = headers.findIndex((header) => ['country', 'countrycode'].includes(header));
+
+    if (accountNumberIndex === -1 || amountIndex === -1 || bankIdIndex === -1) {
+        throw new Error('CSV headers must include accountNumber, amount, and bankId.');
+    }
+
+    const recipients = [];
+
+    rows.slice(1).forEach((row, index) => {
+        const columns = parseBulkCsvLine(row);
+        const accountNumber = String(columns[accountNumberIndex] || '').replace(/\s+/g, '');
+        const amountRaw = String(columns[amountIndex] || '').trim();
+        const bankId = String(columns[bankIdIndex] || '').trim();
+        const accountName = accountNameIndex >= 0 ? String(columns[accountNameIndex] || '').trim() : '';
+        const bankName = bankNameIndex >= 0 ? String(columns[bankNameIndex] || '').trim() : '';
+        const country = countryIndex >= 0 ? String(columns[countryIndex] || '').trim() : 'zm';
+
+        if (!accountNumber && !amountRaw && !bankId && !accountName && !bankName) {
+            return;
+        }
+
+        if (!accountNumber || !amountRaw || !bankId) {
+            throw new Error(`Row ${index + 2} is missing account number, amount, or bank ID.`);
+        }
+
+        const amount = parseFloat(amountRaw);
+        if (Number.isNaN(amount) || amount <= 0) {
+            throw new Error(`Row ${index + 2} has an invalid amount.`);
+        }
+
+        recipients.push({
+            accountNumber,
+            amount: amount.toFixed(2),
+            bankId,
+            accountName,
+            bankName,
+            country: normalizeLencoCountry(country || 'zm'),
+        });
+    });
+
+    if (recipients.length === 0) {
+        throw new Error('No valid recipients were found in the CSV.');
+    }
+
+    if (recipients.length > MAX_BULK_PAYOUT_RECIPIENTS) {
+        throw new Error(`CSV contains ${recipients.length} recipients. The current limit is ${MAX_BULK_PAYOUT_RECIPIENTS}.`);
+    }
+
+    return recipients;
+};
+
+app.post('/v1/payouts/bulk/upload', authenticateToken, uploadBulkPayoutCsv.single('file'), async (req, res) => {
+    return res.status(410).json({ error: 'Bulk remittance has been discontinued.' });
+});
+
+app.post('/v1/payouts/bulk', authenticateToken, async (req, res) => {
+    return res.status(410).json({ error: 'Bulk remittance has been discontinued.' });
 });
 
 
 app.get('/transactions', authenticateToken, async (req, res) => {
     try {
+        await syncPendingLencoWithdrawalsForUser(req.user.id, 10);
+        await syncPendingPawaPayPayoutsForUser(req.user.id, 10);
+        const { walletId = '', startDate, endDate, status = 'all', type = 'all', limit = '20' } = req.query;
+        const normalizedStatus = normalizeReportStatus(status);
+        const { start, end } = getReportDateRange(startDate, endDate);
+        const params = [req.user.id];
+        const conditions = [
+            `w.user_id = $1`,
+            `le.transaction_type != 'FEE'`,
+            `w.livemode = TRUE`,
+            `le.livemode = TRUE`,
+            `le.created_at >= $2`,
+            `le.created_at <= $3`
+        ];
+        params.push(start, end);
+
+        const trimmedWalletId = String(walletId || '').trim();
+        if (trimmedWalletId) {
+            params.push(trimmedWalletId);
+            conditions.push(`(le.credit_wallet_id = $${params.length} OR le.debit_wallet_id = $${params.length})`);
+        }
+
+        if (normalizedStatus !== 'all') {
+            params.push(normalizedStatus === 'completed' ? 'COMPLETED' : normalizedStatus === 'pending' ? 'PENDING' : 'FAILED');
+            conditions.push(`UPPER(COALESCE(ww.local_status, le.status, '')) = $${params.length}`);
+        }
+
+        if (type && String(type).trim().toLowerCase() !== 'all') {
+            params.push(String(type).trim().toUpperCase());
+            conditions.push(`UPPER(le.transaction_type) = $${params.length}`);
+        }
+
+        const normalizedLimit = Math.min(Math.max(parseInt(String(limit), 10) || 20, 1), 500);
+        params.push(normalizedLimit);
         const query = `
-            SELECT le.*, w.currency,
-                (SELECT amount FROM ledger_entries fee WHERE fee.transaction_reference = le.transaction_reference AND fee.transaction_type = 'FEE' LIMIT 1) as fee_amount
-            FROM ledger_entries le
-            JOIN wallets w ON le.credit_wallet_id = w.id OR le.debit_wallet_id = w.id
-            WHERE w.user_id = $1 AND le.transaction_type != 'FEE' AND w.livemode = TRUE AND le.livemode = TRUE
-            ORDER BY le.created_at DESC
-            LIMIT 20
+            SELECT * FROM (
+                SELECT DISTINCT ON (le.id)
+                    le.*, w.currency,
+                    ww.provider as withdrawal_provider,
+                    ww.destination_type as withdrawal_destination_type,
+                    ww.destination_details as withdrawal_destination_details,
+                    ww.provider_transfer_id as withdrawal_provider_transfer_id,
+                    ww.provider_reference as withdrawal_provider_reference,
+                    ww.provider_status as withdrawal_provider_status,
+                    ww.local_status as withdrawal_local_status,
+                    ww.failure_reason as withdrawal_failure_reason,
+                    mmc.provider as deposit_provider,
+                    mmc.operator as deposit_operator,
+                    mmc.phone_number as deposit_phone_number,
+                    mmc.country as deposit_country,
+                    mmc.provider_status as deposit_provider_status,
+                    mmc.local_status as deposit_local_status,
+                    (SELECT amount
+                     FROM ledger_entries fee
+                     WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                       AND fee.transaction_type = 'FEE'
+                     LIMIT 1) as fee_amount,
+                    CASE
+                        WHEN le.credit_wallet_id = w.id AND le.debit_wallet_id = w.id THEN CASE
+                            WHEN UPPER(COALESCE(le.transaction_type, '')) = 'DEPOSIT' THEN 'CREDIT'
+                            ELSE 'DEBIT'
+                        END
+                        WHEN le.credit_wallet_id = w.id THEN 'CREDIT'
+                        WHEN le.debit_wallet_id = w.id THEN 'DEBIT'
+                    END as flow_type
+                FROM ledger_entries le
+                LEFT JOIN wallet_withdrawals ww ON ww.reference = le.transaction_reference
+                LEFT JOIN wallet_mobile_money_collections mmc ON mmc.credited_transaction_reference = le.transaction_reference
+                JOIN wallets w ON le.credit_wallet_id = w.id OR le.debit_wallet_id = w.id
+                WHERE ${conditions.join(' AND ')}
+                ORDER BY le.id, le.created_at DESC
+            ) tx
+            ORDER BY created_at DESC
+            LIMIT $${params.length}
         `;
-        const result = await pool.query(query, [req.user.id]);
-        res.json(result.rows);
+        const result = await pool.query(query, params);
+
+        const invoiceRes = await pool.query(
+            `SELECT
+                le.*,
+                w.currency,
+                COALESCE(ip.fee_amount, (
+                    SELECT amount
+                    FROM ledger_entries fee
+                    WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                      AND fee.transaction_type = 'FEE'
+                    LIMIT 1
+                ), 0) AS fee_amount,
+                COALESCE(ip.total_charged, le.amount) AS total_charged,
+                COALESCE(ip.payment_provider, 'invoice') AS payment_provider,
+                COALESCE(ip.status, le.status) AS payment_status
+             FROM ledger_entries le
+             JOIN wallets w ON le.credit_wallet_id = w.id
+             LEFT JOIN invoice_payments ip ON ip.transaction_reference = le.transaction_reference
+             WHERE w.user_id = $1
+               AND w.livemode = TRUE
+               AND le.livemode = TRUE
+               AND le.transaction_type = 'DEPOSIT'
+               AND (
+                    le.description ILIKE 'Payment for Invoice%'
+                    OR le.transaction_reference LIKE 'INV-%'
+                    OR ip.id IS NOT NULL
+               )
+               AND le.created_at >= $2
+               AND le.created_at <= $3
+             ORDER BY le.created_at DESC
+             LIMIT 200`,
+            [req.user.id, start, end]
+        );
+
+        const mergedRows = [
+            ...result.rows.map(row => ({ ...row, source: 'ledger' })),
+            ...invoiceRes.rows.map(row => ({
+                ...row,
+                status: String(row.payment_status || row.status || 'COMPLETED').toUpperCase(),
+                source: 'invoice',
+                transaction_type: 'DEPOSIT',
+                amount: row.amount,
+                description: row.description || 'Payment for Invoice',
+                fee_amount: row.fee_amount,
+                payment_provider: row.payment_provider,
+                total_charged: row.total_charged
+            }))
+        ]
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+        res.json(mergedRows);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: 'Failed to fetch transactions' });
+        res.status(err.message === 'Invalid date range' ? 400 : 500).json({ error: err.message === 'Invalid date range' ? err.message : 'Failed to fetch transactions' });
     }
 });
 
 // --- Escrow Routes ---
+
+function sendDeprecatedProductResponse(res, productName, replacement) {
+    return res.status(410).json({
+        error: `${productName} is no longer available in Merchant Hub`,
+        message: replacement
+            ? `${productName} has been retired from the merchant workspace. Use ${replacement} instead.`
+            : `${productName} has been retired from the merchant workspace.`
+    });
+}
+
+app.use('/escrows', (req, res) => {
+    return sendDeprecatedProductResponse(res, 'Escrow', 'checkout sessions with direct wallet settlement');
+});
 
 app.post('/escrows/create', authenticateToken, async (req, res) => {
     try {
@@ -2704,7 +6336,7 @@ app.post('/payments/create-payment-intent', authenticateToken, async (req, res) 
 app.post('/payments/create-setup-intent', authenticateToken, async (req, res) => {
     try {
         // CyberSource Flex Microform replaces Stripe Setup Intent for card linking
-        const targetOrigin = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
+        const targetOrigin = resolveFlexTargetOrigin(req);
         const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
         const csCustomerId   = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
         res.json({ captureContext, customerId: csCustomerId });
@@ -2721,9 +6353,11 @@ app.get('/payments/methods', authenticateToken, async (req, res) => {
         res.json({ methods: paymentMethods.data });
     } catch (err) {
         console.error('Error fetching payment methods:', err);
-        res.status(500).json({ error: 'Failed to fetch payment methods' });
+        res.json({ methods: [] });
     }
 });
+
+app.post('/resolve/mobile-money', handleLencoMobileMoneyResolve);
 
 app.get('/users/search', authenticateToken, async (req, res) => {
     const { query } = req.query;
@@ -2819,52 +6453,65 @@ app.get('/rates', (req, res) => {
 });
 
 // --- Upload Route (Multer) ---
-// Configure storage for specific path requested
-const uploadDir = path.join(__dirname, 'apps/web/src/assets/images');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+const upload = multer({ storage: multer.memoryStorage() });
 
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadDir);
-    },
-    filename: function (req, file, cb) {
-        // Sanitize and ensure unique
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, 'logo-' + uniqueSuffix + path.extname(file.originalname));
+ensureDir(merchantLogoDir);
+app.use('/api/merchant-assets', express.static(merchantLogoDir, {
+    fallthrough: false,
+    maxAge: '30d',
+    immutable: true
+}));
+app.use('/merchant-assets', express.static(merchantLogoDir, {
+    fallthrough: false,
+    maxAge: '30d',
+    immutable: true
+}));
+app.use('/assets/images/merchant', express.static(merchantLogoDir, {
+    fallthrough: false,
+    maxAge: '30d',
+    immutable: true
+}));
+
+app.post('/v1/upload', (req, res) => {
+    try {
+        upload.any()(req, res, (err) => {
+            if (err) {
+                console.error('[Merchant Upload] Multer error:', err);
+                return res.status(500).json({ error: 'Failed to upload file' });
+            }
+            const uploadedFile = req.files && req.files.length ? req.files[0] : null;
+            if (!uploadedFile) {
+                console.warn('[Merchant Upload] Missing file payload');
+                return res.status(400).json({ error: 'No file uploaded' });
+            }
+
+            try {
+                ensureDir(merchantLogoDir);
+                const merchantPublicDir = path.join(webPublicDir, 'assets', 'images', 'merchant');
+                ensureDir(merchantPublicDir);
+                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+                const extension = path.extname(uploadedFile.originalname || '.png') || '.png';
+                const filename = `logo-${uniqueSuffix}${extension}`;
+                const targetPath = path.join(merchantLogoDir, filename);
+                const publicTargetPath = path.join(merchantPublicDir, filename);
+                console.log('[Merchant Upload] Saving logo to', targetPath, 'and', publicTargetPath, 'bytes=', uploadedFile.buffer?.length || 0);
+                fs.writeFileSync(targetPath, uploadedFile.buffer);
+                fs.writeFileSync(publicTargetPath, uploadedFile.buffer);
+
+                res.json({
+                    url: `/api/merchant-assets/${filename}`,
+                    filename
+                });
+            } catch (uploadErr) {
+                console.error('[Merchant Upload] Save error:', uploadErr);
+                return res.status(500).json({ error: 'Failed to upload file' });
+            }
+        });
+    } catch (invokeErr) {
+        console.error('[Merchant Upload] Invoke error:', invokeErr);
+        return res.status(500).json({ error: 'Failed to upload file' });
     }
 });
-
-const upload = multer({ storage: storage });
-
-app.post('/v1/upload', upload.single('file'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
-    }
-    // Return path relative to web src (for Vite to serve)
-    // In dev, Vite serves /src/assets/images just fine if imported or referenced correctly.
-    // However, dynamically added files might need a restart or specific handling? 
-    // Actually, for a running React app, serving from public is better, but user insisted on this path.
-    // We will return the absolute path or a path that the frontend can try to use.
-    // For local dev, a relative path from 'src' might work if we set up an alias or if valid.
-    // Let's return a relative path that CreateInvoice can use.
-
-    // Note: React 'src' is not served statically by default in production. 
-    // But for this "local demo", we will assume the user wants it there. 
-    // We return a URL that the frontend can theoretically access if we serve it or if Vite picks it up.
-    // To be safe, we ALSO serve this directory statically from Node so the PDF generator and Frontend can see it.
-
-    res.json({
-        url: `/src/assets/images/${req.file.filename}`,
-        filename: req.file.filename
-    });
-});
-
-// Serve the assets directory statically so the frontend can fetch them via the node server if needed (as proxy)
-// OR simpler: The frontend uses the path. 
-// Let's also serve it here to be safe for the PDF generator.
-app.use('/src/assets/images', express.static(path.join(__dirname, 'apps/web/src/assets/images')));
 
 // --- Invoice Management Routes ---
 
@@ -3260,18 +6907,58 @@ app.get('/v1/public/invoices/:id', async (req, res) => {
 
         // Fetch merchant details (business name)
         const merchantRes = await pool.query(`
-            SELECT m.business_name, u.email 
+            SELECT m.business_name, m.logo_url, m.registered_address, m.contact_phone, m.brand_color, u.email 
             FROM merchants m 
             JOIN users u ON m.user_id = u.id 
             WHERE u.id = $1
         `, [invoiceRes.rows[0].user_id]);
 
-        const merchant = merchantRes.rows[0] || { business_name: 'FlapaPay Merchant' };
+        const merchant = merchantRes.rows[0]
+            ? {
+                ...merchantRes.rows[0],
+                logo_url: normalizePublicAssetUrl(merchantRes.rows[0].logo_url)
+            }
+            : { business_name: 'FlapaPay Merchant' };
 
-        res.json({ ...invoiceRes.rows[0], items: itemsRes.rows, merchant });
+        res.json({ ...invoiceRes.rows[0], logo_url: normalizePublicAssetUrl(invoiceRes.rows[0].logo_url), items: itemsRes.rows, merchant });
     } catch (err) {
         console.error('Get Public Invoice Error:', err);
         res.status(500).json({ error: 'Failed to fetch invoice' });
+    }
+});
+
+app.get('/v1/public/invoices/:id/statement', async (req, res) => {
+    try {
+        const invoiceRes = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+        if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+
+        const itemsRes = await pool.query('SELECT * FROM invoice_items WHERE invoice_id = $1', [req.params.id]);
+        const paymentsRes = await pool.query('SELECT * FROM invoice_payments WHERE invoice_id = $1 ORDER BY created_at DESC', [req.params.id]);
+
+        const merchantRes = await pool.query(`
+            SELECT m.business_name, m.logo_url, m.registered_address, m.contact_phone, m.brand_color, u.email
+            FROM merchants m
+            JOIN users u ON m.user_id = u.id
+            WHERE u.id = $1
+        `, [invoiceRes.rows[0].user_id]);
+
+        const merchant = merchantRes.rows[0]
+            ? {
+                ...merchantRes.rows[0],
+                logo_url: normalizePublicAssetUrl(merchantRes.rows[0].logo_url)
+            }
+            : { business_name: 'FlapaPay Merchant' };
+
+        res.json({
+            ...invoiceRes.rows[0],
+            logo_url: normalizePublicAssetUrl(invoiceRes.rows[0].logo_url),
+            items: itemsRes.rows,
+            payments: paymentsRes.rows,
+            merchant
+        });
+    } catch (err) {
+        console.error('Get Public Invoice Statement Error:', err);
+        res.status(500).json({ error: 'Failed to fetch invoice statement' });
     }
 });
 
@@ -3293,19 +6980,29 @@ app.post('/v1/public/invoices/:id/intent', async (req, res) => {
         if (paymentAmount <= 0) return res.status(400).json({ error: 'Invalid payment amount' });
         if (paymentAmount > remainingBalance + 0.01) return res.status(400).json({ error: 'Payment exceeds remaining balance' });
 
+        const feeAmount = roundMoney(paymentAmount * 0.018);
+        const totalCharged = roundMoney(paymentAmount + feeAmount);
+
         // Stripe Payment Intent
         const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(paymentAmount * 100),
+            amount: Math.round(totalCharged * 100),
             currency: invoice.currency.toLowerCase(),
             metadata: {
                 invoice_id: invoice.id,
                 merchant_user_id: invoice.user_id,
-                guest_email: email || invoice.client_email
+                guest_email: email || invoice.client_email,
+                invoice_amount: paymentAmount.toFixed(2),
+                fee_amount: feeAmount.toFixed(2),
+                total_charged: totalCharged.toFixed(2)
             },
             automatic_payment_methods: { enabled: true }
         });
 
-        res.json({ clientSecret: paymentIntent.client_secret });
+        res.json({
+            clientSecret: paymentIntent.client_secret,
+            feeAmount,
+            totalCharged
+        });
     } catch (err) {
         console.error('Invoice Intent Error:', err);
         res.status(500).json({ error: err.message || 'Payment initiation failed' });
@@ -3315,7 +7012,7 @@ app.post('/v1/public/invoices/:id/intent', async (req, res) => {
 // PUBLIC: Confirm Invoice Payment
 app.post('/v1/public/invoices/:id/confirm', async (req, res) => {
     const { id } = req.params;
-    const { paymentIntentId, amount, paymentMethod } = req.body;
+    const { paymentIntentId, amount, paymentMethod, paymentDetails } = req.body;
     const client = await pool.connect();
 
     try {
@@ -3325,15 +7022,53 @@ app.post('/v1/public/invoices/:id/confirm', async (req, res) => {
         if (invoiceRes.rows.length === 0) throw new Error('Invoice not found');
         const invoice = invoiceRes.rows[0];
 
+        const paymentReference = String(paymentIntentId || paymentDetails?.reference || `INV-PAY-${invoice.id}`).trim();
+        const existingPayment = await client.query(
+            'SELECT amount, fee_amount, total_charged, payment_method, payment_provider, metadata FROM invoice_payments WHERE transaction_reference = $1 LIMIT 1',
+            [paymentReference]
+        );
+        if (existingPayment.rows.length > 0) {
+            const existing = existingPayment.rows[0];
+            await client.query('COMMIT');
+            return res.json({
+                success: true,
+                isFullyPaid: parseFloat(invoice.total_paid || 0) >= parseFloat(invoice.total_amount) - 0.01,
+                feeAmount: parseFloat(existing.fee_amount || 0),
+                totalCharged: parseFloat(existing.total_charged || 0),
+                alreadyRecorded: true
+            });
+        }
+
         const paidAmount = parseFloat(amount);
+        if (!Number.isFinite(paidAmount) || paidAmount <= 0) {
+            throw new Error('Invalid payment amount');
+        }
+
+        const feeAmount = roundMoney(paidAmount * 0.018);
+        const totalCharged = roundMoney(paidAmount + feeAmount);
         const newTotalPaid = parseFloat(invoice.total_paid || 0) + paidAmount;
         const isFullyPaid = newTotalPaid >= parseFloat(invoice.total_amount) - 0.01;
 
         // 1. Record Payment
         await client.query(`
-            INSERT INTO invoice_payments (invoice_id, amount, currency, payment_method, status, transaction_reference)
-            VALUES ($1, $2, $3, $4, 'COMPLETED', $5)
-        `, [id, paidAmount, invoice.currency, paymentMethod || 'card', paymentIntentId]);
+            INSERT INTO invoice_payments (invoice_id, amount, fee_amount, total_charged, currency, payment_method, payment_provider, status, transaction_reference, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'COMPLETED', $8, $9)
+        `, [
+            id,
+            paidAmount,
+            feeAmount,
+            totalCharged,
+            invoice.currency,
+            paymentMethod || 'card',
+            paymentMethod === 'mobile_money' ? 'lenco' : 'stripe',
+            paymentReference,
+            JSON.stringify({
+                paymentIntentId: paymentIntentId || null,
+                paymentDetails: paymentDetails || null,
+                feeAmount,
+                totalCharged
+            })
+        ]);
 
         // 2. Update Invoice
         await client.query(`
@@ -3343,23 +7078,39 @@ app.post('/v1/public/invoices/:id/confirm', async (req, res) => {
         `, [newTotalPaid, isFullyPaid ? 'PAID' : 'SENT', id]);
 
         // 3. Update Merchant Wallet
-        const walletRes = await client.query('SELECT * FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE', [invoice.user_id, invoice.currency]);
+        let walletRes = await client.query(
+            'SELECT * FROM wallets WHERE user_id = $1 AND currency = $2 AND livemode = TRUE FOR UPDATE',
+            [invoice.user_id, invoice.currency]
+        );
+
+        if (walletRes.rows.length === 0) {
+            await client.query(
+                'INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, $2, 0.00, TRUE)',
+                [invoice.user_id, invoice.currency]
+            );
+            walletRes = await client.query(
+                'SELECT * FROM wallets WHERE user_id = $1 AND currency = $2 AND livemode = TRUE FOR UPDATE',
+                [invoice.user_id, invoice.currency]
+            );
+        }
+
         if (walletRes.rows.length > 0) {
             const wallet = walletRes.rows[0];
-            const feeAmount = Math.round(paidAmount * 0.018 * 100) / 100; // 1.8% fee
-            const netAmount = paidAmount - feeAmount;
-
-            const ref = 'INV-PAY-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+            const ref = paymentReference || 'INV-PAY-' + crypto.randomBytes(4).toString('hex').toUpperCase();
             await client.query(`
-                INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status)
-                VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED')
-            `, [ref, wallet.id, netAmount, wallet.currency, `Payment for Invoice #${invoice.invoice_number}`]);
+                INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode)
+                VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED', TRUE)
+            `, [ref, wallet.id, paidAmount, wallet.currency, `Payment for Invoice #${invoice.invoice_number}`]);
 
-            await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [netAmount, wallet.id]);
+            await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [paidAmount, wallet.id]);
+
+            if (feeAmount > 0) {
+                await recordFee(client, ref, feeAmount, wallet.currency, `Invoice Payment Fee #${invoice.invoice_number}`);
+            }
         }
 
         await client.query('COMMIT');
-        res.json({ success: true, isFullyPaid });
+        res.json({ success: true, isFullyPaid, feeAmount, totalCharged });
     } catch (err) {
         await client.query('ROLLBACK');
         console.error('Invoice Confirm Error:', err);
@@ -3369,7 +7120,53 @@ app.post('/v1/public/invoices/:id/confirm', async (req, res) => {
     }
 });
 
-// PUBLIC: Mobile Money Initiation for Invoice (PawaPay)
+const resolveInvoiceMobileMoneyAccount = async ({ phoneNumber, provider, currency }) => {
+    const normalizedCurrency = String(currency || '').trim().toUpperCase();
+    if (normalizedCurrency !== 'ZMW') {
+        throw new Error('Lenco mobile money collections currently support ZMW invoices only');
+    }
+
+    return resolveLencoMobileMoneyAccount({
+        phoneNumber,
+        operator: provider,
+        country: 'zm'
+    });
+};
+
+app.post('/v1/public/invoices/:id/resolve-mobile', async (req, res) => {
+    const { id } = req.params;
+    const { phoneNumber, provider } = req.body;
+
+    try {
+        const invoiceRes = await pool.query('SELECT * FROM invoices WHERE id = $1', [id]);
+        if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+        const invoice = invoiceRes.rows[0];
+
+        const providerData = await resolveInvoiceMobileMoneyAccount({
+            phoneNumber,
+            provider,
+            currency: invoice.currency
+        });
+
+        res.json({
+            success: true,
+            provider: 'lenco',
+            accountName: providerData.accountName || '',
+            phone: providerData.phone || String(phoneNumber || '').replace(/\D/g, ''),
+            operator: providerData.operator || normalizeLencoMobileOperator(provider, 'zm'),
+            country: providerData.country || 'zm',
+            providerData
+        });
+    } catch (error) {
+        console.error('[Invoice Lenco Resolve] Error:', error.response?.data || error.message);
+        res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to resolve mobile money account',
+            details: error.response?.data || null
+        });
+    }
+});
+
+// PUBLIC: Mobile Money Initiation for Invoice (Lenco)
 app.post('/v1/public/invoices/:id/initiate-mobile', async (req, res) => {
     const { id } = req.params;
     const { amount, phoneNumber, provider } = req.body;
@@ -3384,52 +7181,90 @@ app.post('/v1/public/invoices/:id/initiate-mobile', async (req, res) => {
             return res.status(400).json({ error: 'Phone number and provider are required' });
         }
 
-        // Normalize Phone Number (Ensure country code, no +)
-        let normalizedPhone = phoneNumber.replace(/\D/g, '');
-        if (normalizedPhone.startsWith('0')) {
-            normalizedPhone = (invoice.currency === 'ZMW' ? '260' : '234') + normalizedPhone.substring(1);
-        } else if (!normalizedPhone.startsWith('260') && !normalizedPhone.startsWith('234')) {
-            normalizedPhone = (invoice.currency === 'ZMW' ? '260' : '234') + normalizedPhone;
+        if (String(invoice.currency || '').toUpperCase() !== 'ZMW') {
+            return res.status(400).json({ error: 'Lenco mobile money collections currently support ZMW invoices only' });
         }
 
-        const depositId = crypto.randomUUID();
-        const clientReferenceId = `INV-${Date.now()}`;
+        const normalizedOperator = normalizeLencoMobileOperator(provider, 'zm');
+        if (!normalizedOperator) {
+            return res.status(400).json({ error: 'Unsupported mobile money provider for Lenco' });
+        }
 
-        // Truncate and sanitize customer message to max 22 chars (PawaPay requirement, alphanumeric + space only)
-        const customerMessage = `Invoice ${invoice.invoice_number}`.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 22);
+        const requestedAmount = roundMoney(Number(amount));
+        if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+            return res.status(400).json({ error: 'Invalid payment amount' });
+        }
 
-        // CORRECT PawaPay API format for deposits: payer with type MMO
-        const response = await axios.post(`${PAWAPAY_BASE_URL}/v2/deposits`, {
-            depositId: depositId,
-            payer: {
-                type: 'MMO',
-                accountDetails: {
-                    phoneNumber: normalizedPhone,
-                    provider: provider
-                }
-            },
-            amount: parseFloat(amount).toFixed(2),
-            currency: invoice.currency,
-            clientReferenceId: clientReferenceId,
-            customerMessage: customerMessage,
-            metadata: [
-                { invoice_id: invoice.id },
-                { merchant_id: invoice.user_id }
-            ]
+        const feeAmount = roundMoney(requestedAmount * 0.018);
+        const totalCharged = roundMoney(requestedAmount + feeAmount);
+        const reference = `INV-LMM-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        const normalizedPhone = String(phoneNumber || '').replace(/\D/g, '');
+
+        const response = await axios.post(`${LENCO_BASE_URL}/collections/mobile-money`, {
+            amount: totalCharged,
+            reference,
+            phone: normalizedPhone,
+            operator: normalizedOperator,
+            country: 'zm',
+            bearer: 'merchant'
         }, {
             headers: {
-                'Authorization': `Bearer ${PAWAPAY_TOKEN}`,
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
                 'Content-Type': 'application/json'
             }
         });
 
-        console.log('[PawaPay] Invoice deposit initiated:', response.data);
-        res.json(response.data);
+        const providerData = response.data?.data || {};
+        const providerStatus = String(providerData.status || response.data?.status || 'pay-offline').trim().toLowerCase();
+
+        console.log('[Lenco] Invoice collection initiated:', response.data);
+        res.json({
+            success: true,
+            status: providerStatus || 'pay-offline',
+            provider: 'lenco',
+            reference,
+            provider_reference: reference,
+            accountName: providerData.mobileMoneyDetails?.accountName || null,
+            feeAmount,
+            totalCharged,
+            pollUrl: `/v1/public/invoices/${id}/mobile-status/${reference}`,
+            message: 'Payment request sent. Please authorize the prompt on your mobile phone.'
+        });
     } catch (error) {
-        console.error('Invoice PawaPay Error Details:', error.response?.data || error.message);
+        console.error('Invoice Lenco Error Details:', error.response?.data || error.message);
         res.status(error.response?.status || 500).json({
             error: 'Failed to initiate mobile money payment',
             details: error.response?.data || error.message
+        });
+    }
+});
+
+app.get('/v1/public/invoices/:id/mobile-status/:reference', async (req, res) => {
+    const { id, reference } = req.params;
+
+    try {
+        const invoiceRes = await pool.query('SELECT * FROM invoices WHERE id = $1', [id]);
+        if (invoiceRes.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+
+        const providerData = await fetchLencoCollectionByReference(reference);
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+        return res.json({
+            success: true,
+            provider: 'lenco',
+            reference,
+            status: providerStatus || 'pending',
+            localStatus,
+            failureReason: providerData.reasonForFailure || null,
+            providerData,
+            credited: localStatus === 'COMPLETED'
+        });
+    } catch (error) {
+        console.error('[Invoice Lenco Status] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to check mobile money status',
+            details: error.response?.data || null
         });
     }
 });
@@ -4156,6 +7991,7 @@ app.get('/v1/invoices/:id', authenticateToken, async (req, res) => {
 
         res.json({
             ...invoiceRes.rows[0],
+            logo_url: normalizePublicAssetUrl(invoiceRes.rows[0].logo_url),
             items: itemsRes.rows,
             payments: paymentsRes.rows
         });
@@ -4181,12 +8017,17 @@ app.get('/v1/invoices/:id/pdf', async (req, res) => {
 
         // Fetch Merchant Details
         const merchantRes = await pool.query(`
-            SELECT m.business_name, u.email 
+            SELECT m.business_name, m.logo_url, m.registered_address, m.contact_phone, m.brand_color, u.email 
             FROM merchants m 
             JOIN users u ON m.user_id = u.id 
             WHERE u.id = $1
         `, [invoice.user_id]);
-        const merchant = merchantRes.rows[0] || { business_name: 'FlapaPay Merchant' };
+        const merchant = merchantRes.rows[0]
+            ? {
+                ...merchantRes.rows[0],
+                logo_url: normalizePublicAssetUrl(merchantRes.rows[0].logo_url)
+            }
+            : { business_name: 'FlapaPay Merchant' };
         const link = `http://localhost:5173/pay/inv/${invoice.id}`;
 
         // Generate PDF Buffer
@@ -4584,54 +8425,105 @@ app.get('/public/payment-links/:id', async (req, res) => {
     }
 });
 
-// Public Payment Intent Endpoint (For Payment Links)
+// Public Payment Context Endpoint (For Payment Links Card Checkout)
 app.post('/public/payment-links/:id/intent', async (req, res) => {
     const { id } = req.params;
-    const { paymentMethodId, email } = req.body;
 
     try {
         // 1. Fetch Link Details
         const linkRes = await pool.query('SELECT * FROM payment_links WHERE id = $1 AND active = true', [id]);
         if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
         const link = linkRes.rows[0];
-
-        // 2. Create Stripe Payment Intent
-        let customerId = null;
-        if (email) {
-            const customers = await stripe.customers.list({ email: email, limit: 1 });
-            if (customers.data.length > 0) {
-                customerId = customers.data[0].id;
-            } else {
-                const newCustomer = await stripe.customers.create({ email });
-                customerId = newCustomer.id;
-            }
+        const amountToCharge = parseFloat(link.amount);
+        if (!amountToCharge || isNaN(amountToCharge) || amountToCharge <= 0) {
+            return res.status(400).json({ error: 'Valid amount is required' });
         }
 
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: Math.round(Number(link.amount) * 100),
-            currency: link.currency.toLowerCase(),
-            customer: customerId || undefined,
-            metadata: {
-                payment_link_id: link.id,
-                wallet_id: link.wallet_id,
-                merchant_user_id: link.user_id,
-                guest_email: email
-            },
-            automatic_payment_methods: {
-                enabled: true,
-                // allow_redirects: 'never' // Common for card elements but PaymentElement might need it
-            }
-        });
+        // 2. Generate CyberSource Flex capture context
+        const targetOrigin = resolveFlexTargetOrigin(req);
+        const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
 
-        res.json({ clientSecret: paymentIntent.client_secret });
+        res.json({
+            captureContext,
+            amount: amountToCharge,
+            currency: link.currency,
+            linkId: link.id,
+        });
     } catch (err) {
-        console.error('Public Intent Error:', err);
-        res.status(500).json({ error: err.message || 'Payment initiation failed' });
+        console.error('[Payment Link Intent] Error:', err.message);
+        res.status(500).json({ error: 'Failed to generate payment context', details: err.message });
     }
 });
 
-// Public Mobile Money Initiation (PawaPay)
-app.post('/public/payment-links/:id/initiate-mobile', async (req, res) => {
+const resolvePublicPaymentLinkMobileMoneyAccount = async ({ phoneNumber, provider, currency }) => {
+    const normalizedCurrency = String(currency || '').trim().toUpperCase();
+    if (normalizedCurrency !== 'ZMW') {
+        throw new Error('Lenco mobile money collections currently support ZMW payment links only');
+    }
+
+    return resolveLencoMobileMoneyAccount({
+        phoneNumber,
+        operator: provider,
+        country: 'zm'
+    });
+};
+
+const handlePaymentLinkResolveMobile = async (req, res) => {
+    const { id } = req.params;
+    const { phoneNumber, provider } = req.body;
+    const reference = req.body.reference || req.body.depositId || req.body.provider_reference || req.body.collectionReference || req.body.collection_reference;
+
+    try {
+        const linkRes = await pool.query('SELECT * FROM payment_links WHERE id = $1 AND active = true', [id]);
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
+        const link = linkRes.rows[0];
+
+        if (reference) {
+            const providerData = await fetchLencoCollectionByReference(reference);
+            const providerStatus = String(providerData.status || '').trim().toLowerCase();
+            const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+            return res.json({
+                success: true,
+                provider: 'lenco',
+                reference,
+                status: providerStatus || 'pending',
+                localStatus,
+                failureReason: providerData.reasonForFailure || null,
+                providerData,
+                credited: localStatus === 'COMPLETED'
+            });
+        }
+
+        const providerData = await resolvePublicPaymentLinkMobileMoneyAccount({
+            phoneNumber,
+            provider,
+            currency: link.currency
+        });
+
+        return res.json({
+            success: true,
+            provider: 'lenco',
+            accountName: providerData.accountName || '',
+            phone: providerData.phone || String(phoneNumber || '').replace(/\D/g, ''),
+            operator: providerData.operator || normalizeLencoMobileOperator(provider, 'zm'),
+            country: providerData.country || 'zm',
+            providerData
+        });
+    } catch (error) {
+        console.error('[Payment Link Lenco Resolve] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to resolve mobile money account',
+            details: error.response?.data || null
+        });
+    }
+};
+
+app.post('/public/payment-links/:id/resolve-mobile', handlePaymentLinkResolveMobile);
+app.post('/api/public/payment-links/:id/resolve-mobile', handlePaymentLinkResolveMobile);
+
+// Public Mobile Money Initiation (Lenco)
+const handlePaymentLinkInitiateMobile = async (req, res) => {
     const { id } = req.params;
     const { amount, phoneNumber, provider } = req.body;
 
@@ -4645,124 +8537,642 @@ app.post('/public/payment-links/:id/initiate-mobile', async (req, res) => {
             return res.status(400).json({ error: 'Phone number and provider are required' });
         }
 
-        // Normalize Phone Number (Ensure country code, no +)
-        let normalizedPhone = phoneNumber.replace(/\D/g, '');
-        if (normalizedPhone.startsWith('0')) {
-            normalizedPhone = (link.currency === 'ZMW' ? '260' : '234') + normalizedPhone.substring(1);
-        } else if (!normalizedPhone.startsWith('260') && !normalizedPhone.startsWith('234')) {
-            normalizedPhone = (link.currency === 'ZMW' ? '260' : '234') + normalizedPhone;
+        if (String(link.currency || '').toUpperCase() !== 'ZMW') {
+            return res.status(400).json({ error: 'Lenco mobile money collections currently support ZMW payment links only' });
         }
 
-        const depositId = crypto.randomUUID();
-        const clientReferenceId = `LINK-${Date.now()}`;
+        const normalizedPhone = String(phoneNumber || '').replace(/\D/g, '');
+        const normalizedOperator = normalizeLencoMobileOperator(provider, 'zm');
+        if (!normalizedOperator) {
+            return res.status(400).json({ error: 'Unsupported mobile money provider for Lenco' });
+        }
 
-        // CORRECT PawaPay API format for deposits: payer with type MMO
-        const response = await axios.post(`${PAWAPAY_BASE_URL}/v2/deposits`, {
-            depositId: depositId,
-            payer: {
-                type: 'MMO',
-                accountDetails: {
-                    phoneNumber: normalizedPhone,
-                    provider: provider
-                }
-            },
-            amount: amount.toString(),
-            currency: link.currency,
-            clientReferenceId: clientReferenceId,
-            customerMessage: `Payment for ${link.title}`.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 22),
-            metadata: [
-                { paymentLinkId: link.id },
-                { merchantId: link.user_id }
-            ]
+        let resolvedWallet = null;
+        try {
+            resolvedWallet = await resolveLencoMobileMoneyAccount({
+                phoneNumber,
+                operator: provider,
+                country: 'zm'
+            });
+        } catch (resolveErr) {
+            console.error('[Payment Link Lenco Resolve Before Initiate] Error:', resolveErr.response?.data || resolveErr.message);
+            return res.status(resolveErr.response?.status || 400).json({
+                error: resolveErr.response?.data?.message || resolveErr.message || 'Failed to resolve mobile money account',
+                details: resolveErr.response?.data || null
+            });
+        }
+
+        const reference = `LMM-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        const feeRate = 0.018;
+        const feeAmount = roundMoney(Number(amount) * feeRate);
+        const totalCharged = roundMoney(Number(amount) + feeAmount);
+
+        const response = await axios.post(`${LENCO_BASE_URL}/collections/mobile-money`, {
+            amount: totalCharged,
+            reference,
+            phone: normalizedPhone,
+            operator: normalizedOperator,
+            country: 'zm',
+            bearer: 'merchant'
         }, {
             headers: {
-                'Authorization': `Bearer ${PAWAPAY_TOKEN}`,
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
                 'Content-Type': 'application/json'
             }
         });
 
-        console.log('[PawaPay] Payment link deposit initiated:', response.data);
-        res.json(response.data);
+        console.log('[Lenco] Payment link mobile-money collection initiated:', response.data);
+
+        const collectionPayload = response.data?.data || response.data || {};
+        res.json({
+            status: String(collectionPayload.status || 'pay-offline').toLowerCase(),
+            depositId: reference,
+            provider_reference: collectionPayload.reference || reference,
+            lencoReference: collectionPayload.lencoReference || null,
+            provider: 'lenco',
+            accountName: collectionPayload.mobileMoneyDetails?.accountName || resolvedWallet?.accountName || null,
+            phone: collectionPayload.mobileMoneyDetails?.phone || resolvedWallet?.phone || String(phoneNumber || '').trim(),
+            operator: collectionPayload.mobileMoneyDetails?.operator || resolvedWallet?.operator || normalizedOperator,
+            message: 'Please check your phone for the authorization prompt.'
+        });
     } catch (error) {
-        console.error('Public PawaPay Error Details:', error.response?.data || error.message);
+        console.error('Public Lenco Error Details:', error.response?.data || error.message);
         res.status(error.response?.status || 500).json({
             error: 'Failed to initiate mobile money payment',
             details: error.response?.data || error.message
         });
     }
+};
+
+app.post('/public/payment-links/:id/initiate-mobile', handlePaymentLinkInitiateMobile);
+app.post('/api/public/payment-links/:id/initiate-mobile', handlePaymentLinkInitiateMobile);
+
+const handlePaymentLinkOtp = async (req, res) => {
+    const { action, email, code, otp, sessionToken } = req.body || {};
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedCode = String(code || otp || '').trim();
+    const purpose = 'payment_link_fast_checkout';
+
+    try {
+        if (action === 'session') {
+            const token = sessionToken || req.headers['x-flapapay-link-session'];
+            const verifiedLinkSession = getVerifiedPaymentLinkSession(req.params.id, token);
+            if (!verifiedLinkSession?.customerId) {
+                return res.status(401).json({ error: 'Invalid or expired checkout session' });
+            }
+
+            const customerRes = await pool.query(
+                'SELECT id, email, name FROM customers WHERE id = $1',
+                [verifiedLinkSession.customerId]
+            );
+            if (customerRes.rows.length === 0) {
+                return res.status(404).json({ error: 'Customer not found for checkout session' });
+            }
+
+            return res.json(await buildPaymentLinkSessionResponse({
+                paymentLinkId: req.params.id,
+                customer: customerRes.rows[0],
+            }));
+        }
+
+        if (!normalizedEmail) return res.status(400).json({ error: 'email required' });
+
+        await getOrCreatePaymentLinkCustomer({ paymentLinkId: req.params.id, email: normalizedEmail });
+        const otpToken = paymentLinkOtpToken(req.params.id, normalizedEmail);
+
+        if (action === 'send') {
+            const recentRes = await pool.query(
+                `SELECT COUNT(*) FROM otp_verifications
+                 WHERE onboarding_token = $1 AND purpose = $2 AND recipient = $3
+                   AND created_at > NOW() - INTERVAL '10 minutes'`,
+                [otpToken, purpose, normalizedEmail]
+            );
+
+            if (parseInt(recentRes.rows[0].count, 10) >= 3) {
+                return res.status(429).json({ error: 'Too many OTP requests. Please wait 10 minutes.' });
+            }
+
+            const otpCode = EmailService.generateOtpCode().toString();
+            const codeHash = crypto.createHash('sha256').update(otpCode).digest('hex');
+            const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+            const otpInsertRes = await pool.query(
+                `INSERT INTO otp_verifications (onboarding_token, purpose, recipient, code_hash, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING id`,
+                [otpToken, purpose, normalizedEmail, codeHash, expiresAt]
+            );
+
+            try {
+                await EmailService.sendOtp(normalizedEmail, {
+                    code: otpCode,
+                    context: 'FlapaPay Link checkout verification',
+                    expiresIn: 10,
+                });
+            } catch (emailErr) {
+                await pool.query('DELETE FROM otp_verifications WHERE id = $1', [otpInsertRes.rows[0].id]).catch(() => {});
+                console.error('[PaymentLinkLinkOTP][SendFailed]', emailErr.message);
+                if (/only send testing emails to your own email address/i.test(emailErr.message || '')) {
+                    return res.status(503).json({
+                        error: 'Email OTP is not live yet. Resend is still in testing mode for this account.',
+                    });
+                }
+                if (/domain is not verified/i.test(emailErr.message || '')) {
+                    return res.status(503).json({
+                        error: 'Email OTP is not live yet. The sender domain still needs to be verified in Resend.',
+                    });
+                }
+                return res.status(502).json({
+                    error: 'Unable to deliver the verification code right now. Please try again.',
+                });
+            }
+
+            return res.json({
+                sent: true,
+                maskedEmail: maskEmailAddress(normalizedEmail),
+                message: `OTP sent to ${maskEmailAddress(normalizedEmail)}`,
+            });
+        }
+
+        if (action === 'confirm') {
+            if (!normalizedCode) return res.status(400).json({ error: 'code required' });
+
+            const otpRes = await pool.query(
+                `SELECT * FROM otp_verifications
+                 WHERE onboarding_token = $1 AND purpose = $2 AND recipient = $3
+                   AND verified_at IS NULL AND expires_at > NOW() AND attempts < 5
+                 ORDER BY created_at DESC
+                 LIMIT 1`,
+                [otpToken, purpose, normalizedEmail]
+            );
+            if (otpRes.rows.length === 0) {
+                return res.status(400).json({ error: 'No active OTP found or OTP has expired' });
+            }
+
+            const otp = otpRes.rows[0];
+            await pool.query('UPDATE otp_verifications SET attempts = attempts + 1 WHERE id = $1', [otp.id]);
+
+            const codeHash = crypto.createHash('sha256').update(normalizedCode).digest('hex');
+            if (otp.code_hash !== codeHash) {
+                const remaining = Math.max(0, 4 - otp.attempts);
+                return res.status(400).json({ error: `Incorrect code. ${remaining} attempt(s) remaining.` });
+            }
+
+            await pool.query('UPDATE otp_verifications SET verified_at = NOW() WHERE id = $1', [otp.id]);
+
+            const { customer } = await getOrCreatePaymentLinkCustomer({ paymentLinkId: req.params.id, email: normalizedEmail });
+            return res.json(await buildPaymentLinkSessionResponse({
+                paymentLinkId: req.params.id,
+                customer,
+            }));
+        }
+
+        return res.status(400).json({ error: 'action must be "send", "confirm", or "session"' });
+    } catch (err) {
+        console.error('[PaymentLinkLinkOTP]', err.stack || err.message);
+        return res.status(500).json({ error: 'Failed to process FlapaPay Link verification' });
+    }
+};
+
+app.post(/^\/public\/payment-links\/([^/]+)\/link\/otp\/?$/, (req, res, next) => {
+    req.params.id = req.params[0];
+    return handlePaymentLinkOtp(req, res, next);
+});
+app.post('/public/payment-links/:id/link/otp', handlePaymentLinkOtp);
+app.post('/api/public/payment-links/:id/link/otp', handlePaymentLinkOtp);
+
+const handlePaymentLinkSession = async (req, res) => {
+    try {
+        const token = req.headers['x-flapapay-link-session'] || req.query.sessionToken || req.body?.sessionToken;
+        const verifiedLinkSession = getVerifiedPaymentLinkSession(req.params.id, token);
+        if (!verifiedLinkSession?.customerId) {
+            return res.status(401).json({ error: 'Invalid or expired checkout session' });
+        }
+
+        const linkRes = await pool.query('SELECT id FROM payment_links WHERE id = $1 AND active = true', [req.params.id]);
+        if (linkRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Link not found' });
+        }
+
+        const customerRes = await pool.query(
+            'SELECT id, email, name FROM customers WHERE id = $1',
+            [verifiedLinkSession.customerId]
+        );
+        if (customerRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Customer not found for checkout session' });
+        }
+
+        return res.json(await buildPaymentLinkSessionResponse({
+            paymentLinkId: req.params.id,
+            customer: customerRes.rows[0],
+        }));
+    } catch (err) {
+        console.error('[PaymentLinkSession]', err.stack || err.message);
+        return res.status(500).json({ error: 'Failed to load checkout session' });
+    }
+};
+
+app.get(/^\/public\/payment-links\/([^/]+)\/link\/session\/?$/, (req, res, next) => {
+    req.params.id = req.params[0];
+    return handlePaymentLinkSession(req, res, next);
+});
+app.get(/^\/api\/public\/payment-links\/([^/]+)\/link\/session\/?$/, (req, res, next) => {
+    req.params.id = req.params[0];
+    return handlePaymentLinkSession(req, res, next);
+});
+app.post(/^\/public\/payment-links\/([^/]+)\/link\/session\/?$/, (req, res, next) => {
+    req.params.id = req.params[0];
+    return handlePaymentLinkSession(req, res, next);
+});
+app.post(/^\/api\/public\/payment-links\/([^/]+)\/link\/session\/?$/, (req, res, next) => {
+    req.params.id = req.params[0];
+    return handlePaymentLinkSession(req, res, next);
+});
+app.get('/public/payment-links/:id/link/session', handlePaymentLinkSession);
+app.get('/api/public/payment-links/:id/link/session', handlePaymentLinkSession);
+app.post('/public/payment-links/:id/link/session', handlePaymentLinkSession);
+app.post('/api/public/payment-links/:id/link/session', handlePaymentLinkSession);
+
+const handlePaymentLinkMobileStatusRegex = async (req, res) => {
+    const id = req.params[0];
+    const reference = req.params[1];
+
+    try {
+        const linkRes = await pool.query('SELECT * FROM payment_links WHERE id = $1 AND active = true', [id]);
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
+
+        const providerData = await fetchLencoCollectionByReference(reference);
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+        return res.json({
+            success: true,
+            reference,
+            status: providerStatus || 'pending',
+            localStatus,
+            failureReason: providerData.reasonForFailure || null,
+            providerData,
+            credited: localStatus === 'COMPLETED'
+        });
+    } catch (error) {
+        console.error('[Payment Link Lenco Status] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to check mobile money status',
+            details: error.response?.data || null
+        });
+    }
+};
+
+const handlePaymentLinkMobileStatus = async (req, res) => {
+    const { id, reference } = req.params;
+
+    try {
+        const linkRes = await pool.query('SELECT * FROM payment_links WHERE id = $1 AND active = true', [id]);
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
+
+        const providerData = await fetchLencoCollectionByReference(reference);
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+        return res.json({
+            success: true,
+            reference,
+            status: providerStatus || 'pending',
+            localStatus,
+            failureReason: providerData.reasonForFailure || null,
+            providerData,
+            credited: localStatus === 'COMPLETED'
+        });
+    } catch (error) {
+        console.error('[Payment Link Lenco Status] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to check mobile money status',
+            details: error.response?.data || null
+        });
+    }
+};
+
+app.get(/^\/public\/payment-links\/([^/]+)\/mobile-status\/([^/]+)$/, handlePaymentLinkMobileStatusRegex);
+app.get(/^\/api\/public\/payment-links\/([^/]+)\/mobile-status\/([^/]+)$/, handlePaymentLinkMobileStatusRegex);
+
+app.use('/public/payment-links/:id/mobile-status', async (req, res, next) => {
+    if (req.method !== 'GET') return next();
+    const { id } = req.params;
+    const reference = req.path.split('/').filter(Boolean).pop();
+
+    try {
+        const linkRes = await pool.query('SELECT * FROM payment_links WHERE id = $1 AND active = true', [id]);
+        if (linkRes.rows.length === 0) return res.status(404).json({ error: 'Link not found' });
+
+        const providerData = await fetchLencoCollectionByReference(reference);
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+
+        return res.json({
+            success: true,
+            reference,
+            status: providerStatus || 'pending',
+            localStatus,
+            failureReason: providerData.reasonForFailure || null,
+            providerData,
+            credited: localStatus === 'COMPLETED'
+        });
+    } catch (error) {
+        console.error('[Payment Link Lenco Status] Error:', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            error: error.response?.data?.message || error.message || 'Failed to check mobile money status',
+            details: error.response?.data || null
+        });
+    }
 });
 
+app.get('/public/payment-links/:id/mobile-status/:reference', handlePaymentLinkMobileStatus);
+app.get('/api/public/payment-links/:id/mobile-status/:reference', handlePaymentLinkMobileStatus);
+
 // --- Reports Endpoints ---
+
+const normalizeReportStatus = (value) => {
+    const normalized = String(value || 'all').trim().toLowerCase();
+    return ['all', 'completed', 'pending', 'failed'].includes(normalized) ? normalized : 'all';
+};
+
+const getReportDateRange = (startDate, endDate) => {
+    const end = endDate ? new Date(endDate) : new Date();
+    const start = startDate ? new Date(startDate) : new Date(end.getTime() - (29 * 24 * 60 * 60 * 1000));
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        throw new Error('Invalid date range');
+    }
+
+    const normalizedStart = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate(), 0, 0, 0));
+    const normalizedEnd = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 23, 59, 59, 999));
+
+    return { start: normalizedStart, end: normalizedEnd };
+};
+
+const buildLedgerReportFilters = ({
+    userId,
+    walletId,
+    status,
+    start,
+    end,
+    excludeFees = false,
+    excludeInternalTransfers = false,
+    excludeSettlementEntries = false
+}) => {
+    const params = [userId, start, end];
+    const conditions = [
+        `(EXISTS (SELECT 1 FROM wallets cw WHERE cw.id = le.credit_wallet_id AND cw.user_id = $1)
+          OR EXISTS (SELECT 1 FROM wallets dw WHERE dw.id = le.debit_wallet_id AND dw.user_id = $1))`,
+        `le.created_at >= $2`,
+        `le.created_at <= $3`
+    ];
+
+    if (walletId) {
+        params.push(walletId);
+        conditions.push(`(le.credit_wallet_id = $${params.length} OR le.debit_wallet_id = $${params.length})`);
+    }
+
+    if (status !== 'all') {
+        const statusValue = status === 'completed' ? 'COMPLETED' : status === 'pending' ? 'PENDING' : 'FAILED';
+        params.push(statusValue);
+        conditions.push(`UPPER(COALESCE(le.status, '')) = $${params.length}`);
+    }
+
+    if (excludeFees) {
+        conditions.push(`le.transaction_type <> 'FEE'`);
+    }
+
+    if (excludeInternalTransfers) {
+        conditions.push(`le.transaction_type <> 'TRANSFER'`);
+    }
+
+    if (excludeSettlementEntries) {
+        conditions.push(`NOT (
+            UPPER(COALESCE(le.transaction_type, '')) = 'SETTLEMENT'
+            OR LOWER(COALESCE(le.description, '')) LIKE 'settlement from %'
+            OR LOWER(COALESCE(le.description, '')) LIKE 'test settlement%'
+        )`);
+    }
+
+    return { params, whereClause: conditions.join(' AND ') };
+};
+
+const buildWalletWithdrawalFilters = ({ userId, walletId, status, start, end }) => {
+    const params = [userId, start, end];
+    const conditions = [
+        `user_id = $1`,
+        `created_at >= $2`,
+        `created_at <= $3`
+    ];
+
+    if (walletId) {
+        params.push(walletId);
+        conditions.push(`wallet_id = $${params.length}`);
+    }
+
+    if (status !== 'all') {
+        const statusValue = status === 'completed' ? 'COMPLETED' : status === 'pending' ? 'PENDING' : 'FAILED';
+        params.push(statusValue);
+        conditions.push(`UPPER(COALESCE(local_status, '')) = $${params.length}`);
+    }
+
+    return { params, whereClause: conditions.join(' AND ') };
+};
 
 // 1. Get Summary Data for Charts
 app.get('/reports/summary', authenticateToken, async (req, res) => {
     try {
-        // Daily Activity (Last 30 days)
+        const { walletId = '', startDate, endDate, status = 'all' } = req.query;
+        const normalizedStatus = normalizeReportStatus(status);
+        const { start, end } = getReportDateRange(startDate, endDate);
+        const ledgerFilters = buildLedgerReportFilters({
+            userId: req.user.id,
+            walletId: String(walletId || '').trim() || null,
+            status: normalizedStatus,
+            start,
+            end,
+            excludeFees: true,
+            excludeInternalTransfers: true,
+            excludeSettlementEntries: true
+        });
+        const walletWithdrawalFilters = buildWalletWithdrawalFilters({
+            userId: req.user.id,
+            walletId: String(walletId || '').trim() || null,
+            status: normalizedStatus,
+            start,
+            end
+        });
+
         const dailyQuery = `
-            SELECT 
-                DATE_TRUNC('day', created_at) as date,
-                SUM(CASE WHEN credit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1) THEN amount ELSE 0 END) as inflow,
-                SUM(CASE WHEN debit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1) THEN amount ELSE 0 END) as outflow
-            FROM ledger_entries
-            WHERE (credit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1) 
-               OR debit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1))
-              AND created_at >= NOW() - INTERVAL '30 days'
-            GROUP BY date
+            SELECT
+                DATE_TRUNC('day', le.created_at) AS date,
+                SUM(CASE
+                    WHEN ${walletId ? 'le.credit_wallet_id = $4' : 'EXISTS (SELECT 1 FROM wallets cw WHERE cw.id = le.credit_wallet_id AND cw.user_id = $1)'}
+                    THEN le.amount ELSE 0 END) AS inflow,
+                SUM(CASE
+                    WHEN ${walletId ? 'le.debit_wallet_id = $4' : 'EXISTS (SELECT 1 FROM wallets dw WHERE dw.id = le.debit_wallet_id AND dw.user_id = $1)'}
+                    THEN le.amount ELSE 0 END) AS outflow
+            FROM ledger_entries le
+            WHERE ${ledgerFilters.whereClause}
+            GROUP BY DATE_TRUNC('day', le.created_at)
             ORDER BY date ASC
         `;
-        const dailyRes = await pool.query(dailyQuery, [req.user.id]);
+        const dailyRes = await pool.query(dailyQuery, ledgerFilters.params);
 
-        // Asset Distribution (Current Balances)
         const walletRes = await pool.query(
-            'SELECT id, currency, balance FROM wallets WHERE user_id = $1',
-            [req.user.id]
+            `SELECT id, currency, balance
+             FROM wallets
+             WHERE user_id = $1
+             AND livemode = TRUE
+             ${walletId ? 'AND id = $2' : ''}
+             ORDER BY currency ASC`,
+            walletId ? [req.user.id, walletId] : [req.user.id]
         );
 
-        // Transaction Type Distribution
         const typeRes = await pool.query(`
-            SELECT transaction_type as name, COUNT(*) as value
-            FROM ledger_entries
-            WHERE (credit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1) 
-               OR debit_wallet_id IN (SELECT id FROM wallets WHERE user_id = $1))
-            GROUP BY transaction_type
-        `, [req.user.id]);
+            SELECT le.transaction_type AS name, COUNT(*)::int AS value
+            FROM ledger_entries le
+            WHERE ${ledgerFilters.whereClause}
+            GROUP BY le.transaction_type
+            ORDER BY value DESC
+        `, ledgerFilters.params);
+
+        const totalsRes = await pool.query(
+            `SELECT
+                COALESCE(SUM(CASE
+                    WHEN ${walletId ? 'le.credit_wallet_id = $4' : 'EXISTS (SELECT 1 FROM wallets cw WHERE cw.id = le.credit_wallet_id AND cw.user_id = $1)'}
+                    THEN le.amount ELSE 0 END), 0) AS total_inflow,
+                COALESCE(SUM(CASE
+                    WHEN ${walletId ? 'le.debit_wallet_id = $4' : 'EXISTS (SELECT 1 FROM wallets dw WHERE dw.id = le.debit_wallet_id AND dw.user_id = $1)'}
+                    THEN le.amount ELSE 0 END), 0) AS total_outflow
+             FROM ledger_entries le
+             WHERE ${ledgerFilters.whereClause}`,
+            ledgerFilters.params
+        );
+
+        const payoutRes = await pool.query(
+            `SELECT
+                COALESCE(SUM(CASE WHEN UPPER(local_status) = 'COMPLETED' THEN amount ELSE 0 END), 0) AS settled_payout_volume,
+                COALESCE(SUM(CASE WHEN UPPER(local_status) = 'PENDING' THEN amount ELSE 0 END), 0) AS pending_payout_volume,
+                COALESCE(SUM(CASE WHEN UPPER(local_status) = 'FAILED' THEN amount ELSE 0 END), 0) AS failed_payout_volume,
+                COALESCE(SUM(CASE WHEN UPPER(local_status) = 'COMPLETED' THEN fee_amount ELSE 0 END), 0) AS settled_payout_fees,
+                COUNT(*) FILTER (WHERE UPPER(local_status) = 'COMPLETED')::int AS completed_payouts,
+                COUNT(*) FILTER (WHERE UPPER(local_status) = 'PENDING')::int AS pending_payouts,
+                COUNT(*) FILTER (WHERE UPPER(local_status) = 'FAILED')::int AS failed_payouts
+             FROM wallet_withdrawals
+             WHERE ${walletWithdrawalFilters.whereClause}`,
+            walletWithdrawalFilters.params
+        );
+
+        const totals = totalsRes.rows[0] || {};
+        const payouts = payoutRes.rows[0] || {};
 
         res.json({
             dailyActivity: dailyRes.rows,
             assets: walletRes.rows,
-            distribution: typeRes.rows
+            distribution: walletRes.rows.map((wallet) => ({
+                name: wallet.currency,
+                value: Number(wallet.balance || 0)
+            })),
+            transactionTypes: typeRes.rows,
+            kpis: {
+                totalInflow: Number(totals.total_inflow || 0),
+                totalOutflow: Number(totals.total_outflow || 0),
+                netFlow: Number(totals.total_inflow || 0) - Number(totals.total_outflow || 0),
+                settledPayoutFees: Number(payouts.settled_payout_fees || 0)
+            },
+            payouts: {
+                settledVolume: Number(payouts.settled_payout_volume || 0),
+                pendingVolume: Number(payouts.pending_payout_volume || 0),
+                failedVolume: Number(payouts.failed_payout_volume || 0),
+                completedCount: Number(payouts.completed_payouts || 0),
+                pendingCount: Number(payouts.pending_payouts || 0),
+                failedCount: Number(payouts.failed_payouts || 0)
+            },
+            dateRange: { start, end, status: normalizedStatus, walletId: walletId || null }
         });
     } catch (err) {
         console.error('Report Summary Error:', err);
-        res.status(500).json({ error: 'Failed to fetch report summary' });
+        res.status(err.message === 'Invalid date range' ? 400 : 500).json({ error: err.message === 'Invalid date range' ? err.message : 'Failed to fetch report summary' });
     }
 });
 
 // 2. Export CSV (Enhanced with Wallet Filter)
 app.get('/reports/export/csv', authenticateToken, async (req, res) => {
-    const { walletId } = req.query;
+    const { walletId = '', startDate, endDate, status = 'all', type = 'all' } = req.query;
     try {
+        const normalizedStatus = normalizeReportStatus(status);
+        const { start, end } = getReportDateRange(startDate, endDate);
+        const ledgerFilters = buildLedgerReportFilters({
+            userId: req.user.id,
+            walletId: String(walletId || '').trim() || null,
+            status: normalizedStatus,
+            start,
+            end,
+            excludeSettlementEntries: true
+        });
+        const params = [...ledgerFilters.params];
+        let typeClause = '';
+        if (type && String(type).trim().toLowerCase() !== 'all') {
+            params.push(String(type).trim().toUpperCase());
+            typeClause = ` AND UPPER(le.transaction_type) = $${params.length}`;
+        }
+
         let query = `
-            SELECT 
+            SELECT DISTINCT ON (le.id)
                 le.created_at as "Date",
                 le.transaction_reference as "Reference",
                 le.transaction_type as "Type",
                 le.amount as "Amount",
                 le.currency as "Currency",
-                le.description as "Description",
-                le.status as "Status"
+                CASE
+                    WHEN ww.reference IS NOT NULL THEN
+                        CONCAT(
+                            'Wallet ',
+                            CASE
+                                WHEN ww.destination_type = 'bank_account' THEN 'withdrawal'
+                                WHEN ww.destination_type = 'mobile_money' THEN 'mobile money withdrawal'
+                                ELSE 'transaction'
+                            END,
+                            ' to ',
+                            COALESCE(
+                                NULLIF(TRIM(CONCAT(
+                                    COALESCE(ww.destination_details->>'bankName', ''),
+                                    CASE WHEN ww.destination_details ? 'accountName' THEN ' • ' || COALESCE(ww.destination_details->>'accountName', '') ELSE '' END,
+                                    CASE WHEN ww.destination_details ? 'accountNumber' THEN ' ••••' || RIGHT(REGEXP_REPLACE(COALESCE(ww.destination_details->>'accountNumber',''), '\D','','g'), 4) ELSE '' END
+                                )), ''),
+                                NULLIF(TRIM(CONCAT(
+                                    COALESCE(ww.destination_details->>'provider', ''),
+                                    CASE WHEN ww.destination_details ? 'phoneNumber' THEN ' • ' || COALESCE(ww.destination_details->>'phoneNumber', '') ELSE '' END
+                                )), ''),
+                                le.description,
+                                'Wallet transaction'
+                            )
+                        )
+                    ELSE le.description
+                END as "Description",
+                COALESCE(ww.local_status, le.status) as "Status",
+                ww.provider as "Payout Provider",
+                ww.destination_type as "Payout Rail",
+                ww.local_status as "Payout Status",
+                ww.provider_reference as "Provider Reference",
+                COALESCE(fee.amount, 0) as "Fee Amount"
             FROM ledger_entries le
-            JOIN wallets w ON le.credit_wallet_id = w.id OR le.debit_wallet_id = w.id
-            WHERE w.user_id = $1
+            LEFT JOIN wallet_withdrawals ww ON ww.reference = le.transaction_reference
+            LEFT JOIN LATERAL (
+                SELECT amount
+                FROM ledger_entries fee
+                WHERE fee.transaction_reference IN (le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                  AND fee.transaction_type = 'FEE'
+                LIMIT 1
+            ) fee ON TRUE
+            WHERE ${ledgerFilters.whereClause}
+              AND le.transaction_type <> 'FEE'
+              AND le.livemode = TRUE
         `;
-        const params = [req.user.id];
-
-        if (walletId) {
-            query += ` AND (le.credit_wallet_id = $2 OR le.debit_wallet_id = $2)`;
-            params.push(walletId);
-        }
-
-        query += ` ORDER BY le.created_at DESC`;
+        query += typeClause;
+        query += ` ORDER BY le.id, le.created_at DESC`;
 
         const result = await pool.query(query, params);
 
@@ -4782,7 +9192,7 @@ app.get('/reports/export/csv', authenticateToken, async (req, res) => {
         res.send(csv);
     } catch (err) {
         console.error('CSV Export Error:', err);
-        res.status(500).json({ error: 'Failed to export CSV' });
+        res.status(err.message === 'Invalid date range' ? 400 : 500).json({ error: err.message === 'Invalid date range' ? err.message : 'Failed to export CSV' });
     }
 });
 
@@ -4790,44 +9200,169 @@ app.get('/reports/export/csv', authenticateToken, async (req, res) => {
 app.get('/wallets/:id/statement', authenticateToken, async (req, res) => {
     const { id } = req.params;
     try {
+        const { startDate, endDate, status = 'all', type = 'all', limit = '100' } = req.query;
+        const normalizedStatus = normalizeReportStatus(status);
+        const { start, end } = getReportDateRange(startDate, endDate);
+
         // Verify ownership
-        const walletCheck = await pool.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        const walletCheck = await pool.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2 AND livemode = TRUE', [id, req.user.id]);
         if (walletCheck.rows.length === 0) return res.status(404).json({ error: 'Wallet not found' });
         const wallet = walletCheck.rows[0];
 
-        // Fetch transactions specifically for this wallet
+        const params = [id, start, end];
+        let extraConditions = ` AND le.created_at >= $2 AND le.created_at <= $3
+            AND NOT (
+                UPPER(COALESCE(le.transaction_type, '')) = 'SETTLEMENT'
+                OR LOWER(COALESCE(le.description, '')) LIKE 'settlement from %'
+                OR LOWER(COALESCE(le.description, '')) LIKE 'test settlement%'
+            )`;
+        if (normalizedStatus !== 'all') {
+            params.push(normalizedStatus === 'completed' ? 'COMPLETED' : normalizedStatus === 'pending' ? 'PENDING' : 'FAILED');
+            extraConditions += ` AND UPPER(COALESCE(le.status, '')) = $${params.length}`;
+        }
+        if (type && String(type).trim().toLowerCase() !== 'all') {
+            params.push(String(type).trim().toUpperCase());
+            extraConditions += ` AND UPPER(le.transaction_type) = $${params.length}`;
+        }
+        params.push(Math.min(Math.max(parseInt(String(limit), 10) || 100, 1), 500));
+
         const query = `
-            SELECT 
+            SELECT DISTINCT ON (le.id)
                 le.*,
+                ww.provider as withdrawal_provider,
+                ww.destination_type as withdrawal_destination_type,
+                ww.destination_details as withdrawal_destination_details,
+                ww.provider_transfer_id as withdrawal_provider_transfer_id,
+                ww.provider_reference as withdrawal_provider_reference,
+                ww.provider_status as withdrawal_provider_status,
+                ww.local_status as withdrawal_local_status,
+                ww.failure_reason as withdrawal_failure_reason,
+                CASE
+                    WHEN le.transaction_type = 'FEE' THEN le.amount
+                    ELSE (SELECT amount
+                 FROM ledger_entries fee
+                 WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                   AND fee.transaction_type = 'FEE'
+                 LIMIT 1)
+                END as fee_amount,
+                UPPER(COALESCE(ww.local_status, le.status, 'COMPLETED')) as effective_status,
                 CASE 
                     WHEN le.credit_wallet_id = $1 THEN 'CREDIT'
                     WHEN le.debit_wallet_id = $1 THEN 'DEBIT'
                 END as flow_type
             FROM ledger_entries le
-            WHERE le.credit_wallet_id = $1 OR le.debit_wallet_id = $1
-            ORDER BY le.created_at DESC
+            LEFT JOIN wallet_withdrawals ww ON ww.reference = le.transaction_reference
+            WHERE (le.credit_wallet_id = $1 OR le.debit_wallet_id = $1)
+              AND le.transaction_type <> 'FEE'
+              AND le.livemode = TRUE
+              ${extraConditions}
+            ORDER BY le.id, le.created_at ASC
+            LIMIT $${params.length}
         `;
-        const result = await pool.query(query, [id]);
+        const result = await pool.query(query, params);
+
+        const closingAdjustmentsRes = await pool.query(
+            `SELECT COALESCE(SUM(
+                CASE
+                    WHEN UPPER(COALESCE(ww.local_status, le.status, 'COMPLETED')) = 'FAILED' THEN 0
+                    WHEN le.credit_wallet_id = $1 THEN le.amount
+                    WHEN le.debit_wallet_id = $1 THEN -(le.amount + COALESCE(fee.amount, 0))
+                    ELSE 0
+                END
+            ), 0) AS net_after_end
+             FROM ledger_entries le
+             LEFT JOIN wallet_withdrawals ww ON ww.reference = le.transaction_reference
+             LEFT JOIN LATERAL (
+                 SELECT amount
+                 FROM ledger_entries fee
+                 WHERE fee.transaction_reference IN (le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                   AND fee.transaction_type = 'FEE'
+                 LIMIT 1
+             ) fee ON TRUE
+             WHERE (le.credit_wallet_id = $1 OR le.debit_wallet_id = $1)
+               AND le.transaction_type <> 'FEE'
+               AND le.livemode = TRUE
+               AND le.created_at > $2
+               AND NOT (
+                   UPPER(COALESCE(le.transaction_type, '')) = 'SETTLEMENT'
+                   OR LOWER(COALESCE(le.description, '')) LIKE 'settlement from %'
+                   OR LOWER(COALESCE(le.description, '')) LIKE 'test settlement%'
+               )`,
+            [id, end]
+        );
+
+        const currentBalance = Number(wallet.balance || 0);
+        const netAfterEnd = Number(closingAdjustmentsRes.rows[0]?.net_after_end || 0);
+        const closingBalance = currentBalance - netAfterEnd;
+
+        let runningBalance = result.rows.reduce((sum, row) => {
+            const effectiveStatus = String(row.effective_status || 'COMPLETED').toUpperCase();
+            if (effectiveStatus === 'FAILED') return sum;
+            const feeAmount = Number(row.fee_amount || 0);
+            const signedAmount = row.flow_type === 'CREDIT'
+                ? Number(row.amount || 0)
+                : -(Number(row.amount || 0) + feeAmount);
+            return sum + signedAmount;
+        }, 0);
+        const openingBalance = closingBalance - runningBalance;
+        let cursorBalance = openingBalance;
+        const transactionsWithBalances = result.rows.map((row) => {
+            const effectiveStatus = String(row.effective_status || 'COMPLETED').toUpperCase();
+            const feeAmount = Number(row.fee_amount || 0);
+            const signedAmount = effectiveStatus === 'FAILED'
+                ? 0
+                : row.flow_type === 'CREDIT'
+                    ? Number(row.amount || 0)
+                    : -(Number(row.amount || 0) + feeAmount);
+            cursorBalance += signedAmount;
+            return {
+                ...row,
+                signed_amount: signedAmount,
+                statement_amount: Math.abs(signedAmount),
+                running_balance: cursorBalance
+            };
+        });
+
+        const totalCredits = transactionsWithBalances
+            .filter((tx) => tx.flow_type === 'CREDIT' && tx.effective_status !== 'FAILED')
+            .reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+        const totalDebits = transactionsWithBalances
+            .filter((tx) => tx.flow_type === 'DEBIT' && tx.effective_status !== 'FAILED')
+            .reduce((sum, tx) => sum + Number(tx.amount || 0) + Number(tx.fee_amount || 0), 0);
 
         res.json({
             wallet: wallet,
-            transactions: result.rows,
+            transactions: transactionsWithBalances,
             generatedAt: new Date(),
-            user: { fullName: req.user.full_name, email: req.user.email }
+            user: { fullName: req.user.full_name, email: req.user.email },
+            balances: {
+                opening: openingBalance,
+                closing: closingBalance,
+                current: currentBalance,
+                totalCredits,
+                totalDebits,
+                transactionCount: transactionsWithBalances.length
+            },
+            filters: {
+                start,
+                end,
+                status: normalizedStatus,
+                type: type || 'all',
+                limit: Number(limit)
+            }
         });
     } catch (err) {
         console.error('Statement Fetch Error:', err);
-        res.status(500).json({ error: 'Failed to fetch statement data' });
+        res.status(err.message === 'Invalid date range' ? 400 : 500).json({ error: err.message === 'Invalid date range' ? err.message : 'Failed to fetch statement data' });
     }
 });
 
 // Confirm Payment & Credit Wallet
 app.post('/public/payment-links/:id/confirm', async (req, res) => {
     const { id } = req.params;
-    const { paymentIntentId, amount } = req.body;
-
-    // Note: In production, verify paymentIntentId status with Stripe API to ensure it's truly 'succeeded'
-    // For MVP/Demo, we trust the client's success signal but we should at least check existence if possible.
+    const { paymentIntentId, amount, payment_method, payment_details } = req.body;
+    const linkSessionToken = payment_details?.linkSessionToken || req.headers['x-flapapay-link-session'];
+    const verifiedLinkSession = getVerifiedPaymentLinkSession(id, linkSessionToken);
 
     const client = await pool.connect();
     try {
@@ -4837,15 +9372,294 @@ app.post('/public/payment-links/:id/confirm', async (req, res) => {
         const linkRes = await client.query('SELECT * FROM payment_links WHERE id = $1', [id]);
         if (linkRes.rows.length === 0) throw new Error('Link not found');
         const link = linkRes.rows[0];
+        let verifiedCustomer = null;
+        if (verifiedLinkSession?.customerId) {
+            const customerRes = await client.query(
+                `SELECT id, email, name, phone, mobile_money_provider, cybersource_customer_id
+                 FROM customers
+                 WHERE id = $1`,
+                [verifiedLinkSession.customerId]
+            );
+            verifiedCustomer = customerRes.rows[0] || null;
+        }
 
         // 2. Fetch Wallet
         const walletRes = await client.query('SELECT * FROM wallets WHERE id = $1 FOR UPDATE', [link.wallet_id]);
         if (walletRes.rows.length === 0) throw new Error('Target wallet not found');
         const wallet = walletRes.rows[0];
 
+        const amountNum = amount !== undefined && amount !== null
+            ? parseFloat(amount)
+            : parseFloat(link.amount);
+        if (!amountNum || isNaN(amountNum) || amountNum <= 0) {
+            throw new Error('Valid amount is required');
+        }
+
+        // Card payments are verified and charged through CyberSource before wallet credit.
+        if (payment_method === 'card') {
+            const transientToken = payment_details?.transientToken || payment_details?.transient_token;
+            const requestedInstrumentId = String(
+                payment_details?.instrumentId ||
+                payment_details?.paymentInstrumentId ||
+                ''
+            ).trim();
+            let csCustomerId = payment_details?.customerId;
+            const billingDetails = payment_details?.billingDetails || {};
+            const shouldPersistLinkCard = Boolean(
+                verifiedCustomer &&
+                verifiedLinkSession &&
+                payment_details?.saveForLink !== false
+            );
+            let selectedInstrumentId = null;
+            const fullName = String(
+                billingDetails.name ||
+                billingDetails.fullName ||
+                verifiedCustomer?.name ||
+                'Cardholder'
+            ).trim();
+            const nameParts = fullName.split(/\s+/).filter(Boolean);
+            const inferredCountry = String(
+                billingDetails.country ||
+                (wallet.currency?.toUpperCase() === 'ZMW' ? 'ZM' : wallet.currency?.toUpperCase() === 'NGN' ? 'NG' : 'US')
+            ).toUpperCase();
+            const billTo = {
+                firstName: billingDetails.firstName || nameParts[0] || 'Cardholder',
+                lastName: billingDetails.lastName || nameParts.slice(1).join(' ') || 'Customer',
+                address1: billingDetails.address1 || '1 Main St',
+                locality: billingDetails.city || 'Lusaka',
+                administrativeArea: billingDetails.state || billingDetails.city || 'Lusaka',
+                postalCode: billingDetails.postalCode || '10101',
+                country: inferredCountry,
+                email: billingDetails.email || verifiedCustomer?.email || 'checkout@flapapay.com',
+                phoneNumber: billingDetails.phone || verifiedCustomer?.phone || '0000000000',
+            };
+
+            if (verifiedCustomer?.cybersource_customer_id) {
+                csCustomerId = verifiedCustomer.cybersource_customer_id;
+            } else if (verifiedCustomer) {
+                csCustomerId = await getOrCreateCybersourceMerchantCustomer(
+                    verifiedCustomer.id,
+                    verifiedCustomer.email,
+                    verifiedCustomer.name || fullName
+                );
+                verifiedCustomer.cybersource_customer_id = csCustomerId;
+            }
+
+            if (!transientToken && requestedInstrumentId) {
+                const savedInstrumentRes = await client.query(
+                    `SELECT cybersource_instrument_id
+                     FROM customer_payment_instruments
+                     WHERE customer_id = $1
+                       AND id = $2`,
+                    [verifiedCustomer?.id || null, requestedInstrumentId]
+                );
+                if (savedInstrumentRes.rows.length === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ error: 'Saved card not found for this verified email' });
+                }
+                selectedInstrumentId = savedInstrumentRes.rows[0].cybersource_instrument_id;
+            }
+
+            if (shouldPersistLinkCard && transientToken && csCustomerId) {
+                try {
+                    const existingCardsRes = await client.query(
+                        'SELECT COUNT(*) FROM customer_payment_instruments WHERE customer_id = $1',
+                        [verifiedCustomer.id]
+                    );
+                    const isFirstSavedCard = parseInt(existingCardsRes.rows[0].count, 10) === 0;
+                    const savedInstrument = await CybersourceService.tokens.linkCard({
+                        customerId: csCustomerId,
+                        transientToken,
+                        billingAddress: {
+                            firstName: billTo.firstName,
+                            lastName: billTo.lastName,
+                            address1: billTo.address1,
+                            city: billTo.locality,
+                            state: billTo.administrativeArea,
+                            postalCode: billTo.postalCode,
+                            country: billTo.country,
+                            email: billTo.email,
+                            phone: billTo.phoneNumber,
+                        },
+                        userEmail: billTo.email,
+                        expirationMonth: payment_details?.expirationMonth,
+                        expirationYear: payment_details?.expirationYear,
+                        setDefault: isFirstSavedCard,
+                    });
+
+                    await client.query(
+                        `INSERT INTO customer_payment_instruments
+                         (customer_id, cybersource_customer_id, cybersource_instrument_id, cybersource_identifier_id,
+                          last4, brand, exp_month, exp_year, is_default, updated_at)
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+                         ON CONFLICT (cybersource_instrument_id)
+                         DO UPDATE SET
+                            customer_id = EXCLUDED.customer_id,
+                            last4 = EXCLUDED.last4,
+                            brand = EXCLUDED.brand,
+                            exp_month = EXCLUDED.exp_month,
+                            exp_year = EXCLUDED.exp_year,
+                            updated_at = NOW()`,
+                        [
+                            verifiedCustomer.id,
+                            csCustomerId,
+                            savedInstrument.instrumentId,
+                            savedInstrument.identifierId || null,
+                            savedInstrument.last4 || null,
+                            savedInstrument.brand || null,
+                            savedInstrument.expirationMonth || null,
+                            savedInstrument.expirationYear || null,
+                            isFirstSavedCard,
+                        ]
+                    );
+
+                    await client.query(
+                        `UPDATE customers
+                         SET name = COALESCE(NULLIF($1, ''), name),
+                             phone = COALESCE(NULLIF($2, ''), phone),
+                             preferred_payment_method_type = 'card',
+                             updated_at = NOW()
+                         WHERE id = $3`,
+                        [fullName, billTo.phoneNumber, verifiedCustomer.id]
+                    );
+                } catch (linkErr) {
+                    console.error('[Payment Link LinkCard Persist] Error:', linkErr.message);
+                }
+            }
+
+            if (transientToken || selectedInstrumentId || csCustomerId) {
+                try {
+                    const feePreview = Math.round(amountNum * 0.018 * 100) / 100;
+                    const chargeResult = await CybersourceService.payments.sale({
+                        amount: Math.round((amountNum + feePreview) * 100) / 100,
+                        currency: wallet.currency,
+                        instrumentId: selectedInstrumentId || undefined,
+                        transientToken: transientToken || undefined,
+                        customerId: csCustomerId || undefined,
+                        billTo,
+                        metadata: { ref: `CS-LINK-${link.id}`, paymentLinkId: link.id, merchantUserId: link.user_id },
+                    });
+
+                    if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(String(chargeResult.status || '').toUpperCase())) {
+                        await client.query('ROLLBACK');
+                        return res.status(402).json({ error: 'Card declined', code: chargeResult.status });
+                    }
+                } catch (csErr) {
+                    await client.query('ROLLBACK');
+                    console.error('[CyberSource] Payment link confirm error:', csErr.message);
+                    return res.status(402).json({ error: 'Card payment failed', details: csErr.message });
+                }
+            } else if (paymentIntentId) {
+                // Legacy Stripe fallback for older clients still sending paymentIntentId.
+                try {
+                    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+                    if (!paymentIntent || paymentIntent.status !== 'succeeded') {
+                        await client.query('ROLLBACK');
+                        return res.status(402).json({ error: 'Card payment not completed', code: paymentIntent?.status || 'unknown' });
+                    }
+                } catch (stripeErr) {
+                    await client.query('ROLLBACK');
+                    console.error('[Stripe] Payment link confirm error:', stripeErr.message);
+                    return res.status(402).json({ error: 'Card payment verification failed', details: stripeErr.message });
+                }
+            } else {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'Card payment requires transientToken or a saved card' });
+            }
+        }
+
+        // Mobile money payments are only credited after deposit/collection status confirmation.
+        if (payment_method === 'mobile_money') {
+            const depositId = payment_details?.depositId || payment_details?.reference;
+            const provider = String(payment_details?.provider || '').trim().toLowerCase();
+            if (!depositId) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'Mobile money confirmation requires depositId' });
+            }
+
+            try {
+                if (provider === 'lenco' || String(depositId).startsWith('LMM-')) {
+                    const collection = await fetchLencoCollectionByReference(depositId);
+                    const collectionStatus = String(collection?.status || '').trim().toLowerCase();
+                    if (['pending', 'pay-offline'].includes(collectionStatus)) {
+                        await client.query('ROLLBACK');
+                        return res.json({ status: 'PENDING', success: false, depositId });
+                    }
+                    if (collectionStatus !== 'successful') {
+                        await client.query('ROLLBACK');
+                        return res.status(402).json({
+                            error: 'Mobile money payment failed',
+                            status: collectionStatus || 'UNKNOWN',
+                            details: collection
+                        });
+                    }
+                } else {
+                    const depositStatusRes = await axios.get(`${PAWAPAY_BASE_URL}/v2/deposits/${depositId}`, {
+                        headers: { 'Authorization': `Bearer ${PAWAPAY_TOKEN}` }
+                    });
+                    const deposit = depositStatusRes.data?.data || depositStatusRes.data;
+                    const depositStatus = String(deposit?.status || '').toUpperCase();
+
+                    if (['ACCEPTED', 'ENQUEUED', 'SUBMITTED', 'PENDING', 'PROCESSING'].includes(depositStatus)) {
+                        await client.query('ROLLBACK');
+                        return res.json({ status: 'PENDING', success: false, depositId });
+                    }
+
+                    if (!['COMPLETED'].includes(depositStatus)) {
+                        await client.query('ROLLBACK');
+                        return res.status(402).json({
+                            error: 'Mobile money payment failed',
+                            status: depositStatus || 'UNKNOWN',
+                            details: deposit
+                        });
+                    }
+                }
+            } catch (mmErr) {
+                const providerError = mmErr.response?.data;
+                await client.query('ROLLBACK');
+                console.error('[Mobile Money] Payment link confirm error:', providerError || mmErr.message);
+                return res.status(mmErr.response?.status || 500).json({
+                    error: 'Failed to verify mobile money payment',
+                    details: providerError || mmErr.message
+                });
+            }
+        }
+
+        if (
+            verifiedCustomer &&
+            payment_method === 'mobile_money' &&
+            payment_details?.saveForLink !== false
+        ) {
+            const normalizedPhone = String(
+                payment_details?.phoneNumber ||
+                payment_details?.phone ||
+                req.body?.phoneNumber ||
+                ''
+            ).replace(/\D/g, '');
+            const selectedProvider = String(payment_details?.provider || req.body?.provider || '').trim().toUpperCase();
+            const accountName = String(
+                payment_details?.accountName ||
+                payment_details?.resolvedAccountName ||
+                ''
+            ).trim();
+            if (normalizedPhone && selectedProvider) {
+                await client.query(
+                    `UPDATE customers
+                     SET phone = $1,
+                         mobile_money_provider = $2,
+                         mobile_money_account_name = COALESCE(NULLIF($3, ''), mobile_money_account_name),
+                         preferred_payment_method_type = 'mobile_money',
+                         updated_at = NOW()
+                     WHERE id = $4`,
+                    [normalizedPhone, selectedProvider, accountName, verifiedCustomer.id]
+                );
+            }
+        }
+
         // 3. Calculate Fee (1.8% Markup)
-        const feeAmount = Math.round(amount * 0.018 * 100) / 100;
-        const netAmount = amount - feeAmount;
+        const feeAmount = Math.round(amountNum * 0.018 * 100) / 100;
+        const totalCharged = Math.round((amountNum + feeAmount) * 100) / 100;
+        const netAmount = amountNum;
 
         // 4. Create Ledger Entry (Credit)
         // This automatically triggers the notification via the DB trigger we built!
@@ -4867,10 +9681,56 @@ app.post('/public/payment-links/:id/confirm', async (req, res) => {
         // 7. Update Link Stats
         await client.query('UPDATE payment_links SET payments_count = payments_count + 1 WHERE id = $1', [id]);
 
+        let refreshedSavedMethods = null;
+        if (verifiedCustomer?.id) {
+            try {
+                refreshedSavedMethods = await getPaymentLinkSavedMethods(verifiedCustomer.id);
+            } catch (savedErr) {
+                console.error('[Payment Link Saved Methods Reload] Error:', savedErr.message);
+            }
+        }
+
         await client.query('COMMIT');
+        await emitFraudPlatformEvent({
+            eventType: 'payment_link.charge.completed',
+            sourceSystem: 'payment_links',
+            userId: link.user_id,
+            walletId: link.wallet_id,
+            reference: ref,
+            rail: payment_method === 'card' ? 'card' : payment_method === 'mobile_money' ? 'mobile_money' : 'wallet',
+            direction: 'credit',
+            currency: wallet.currency,
+            amount: amountNum,
+            feeAmount,
+            status: 'COMPLETED',
+            livemode: wallet.livemode,
+            counterpartyType: payment_method || 'payment',
+            counterpartyKey: payment_method === 'mobile_money'
+                ? `mobile_money:${String(payment_details?.provider || '').toUpperCase()}:${String(payment_details?.phoneNumber || payment_details?.phone || '').replace(/\D/g, '')}`
+                : payment_method === 'card'
+                    ? `payment_link:${id}`
+                    : null,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                paymentLinkId: id,
+                title: link.title || null,
+                grossAmount: amountNum,
+                totalCharged
+            }
+        });
 
         // Return details for receipt
-        res.json({ success: true, reference: ref });
+        res.json({
+            success: true,
+            reference: ref,
+            savedMethods: refreshedSavedMethods,
+            customer: verifiedCustomer ? {
+                id: verifiedCustomer.id,
+                email: verifiedCustomer.email,
+                name: verifiedCustomer.name,
+            } : null,
+        });
     } catch (err) {
         await client.query('ROLLBACK');
         console.error('Confirmation Error:', err);
@@ -4879,6 +9739,91 @@ app.post('/public/payment-links/:id/confirm', async (req, res) => {
         client.release();
     }
 });
+
+const sendPublicPaymentLinkReceipt = async (req, res, id, reference) => {
+    try {
+        const linkRes = await pool.query(
+            `SELECT pl.*, u.full_name AS merchant_name
+             FROM payment_links pl
+             JOIN users u ON u.id = pl.user_id
+             WHERE pl.id = $1 AND pl.active = true`,
+            [id]
+        );
+        if (linkRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Payment link not found' });
+        }
+
+        const link = linkRes.rows[0];
+        const ledgerRes = await pool.query(
+            `SELECT le.transaction_reference, le.amount, le.currency, le.created_at, le.description,
+                    fee.amount AS fee_amount,
+                    (le.amount + COALESCE(fee.amount, 0)) AS total_charged
+             FROM ledger_entries le
+             LEFT JOIN LATERAL (
+                SELECT amount
+                FROM ledger_entries fee
+                WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                  AND fee.transaction_type = 'FEE'
+                LIMIT 1
+             ) fee ON TRUE
+             WHERE le.transaction_reference = $1
+               AND le.transaction_type = 'DEPOSIT'
+             LIMIT 1`,
+            [reference]
+        );
+
+        if (ledgerRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Receipt not found' });
+        }
+
+        const ledgerEntry = ledgerRes.rows[0];
+        const providerLabel = String(req.query.provider || '').toLowerCase() === 'lenco'
+            ? 'Mobile Money'
+            : 'Card';
+
+        const pdfStream = await ReactPDF.renderToStream(
+            React.createElement(PaymentLinkReceiptDocument, {
+                link,
+                ledgerEntry,
+                feeAmount: ledgerEntry.fee_amount || 0,
+                providerLabel
+            })
+        );
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=Receipt-${reference}.pdf`);
+        pdfStream.pipe(res);
+    } catch (err) {
+        console.error('[Payment Link Receipt] Error:', err);
+        res.status(500).json({ error: 'Failed to generate receipt' });
+    }
+};
+
+const handlePublicPaymentLinkReceipt = async (req, res) => {
+    const { id, reference } = req.params;
+    return sendPublicPaymentLinkReceipt(req, res, id, reference);
+};
+
+const handlePublicPaymentLinkReceiptRegex = async (req, res) => {
+    const id = req.params[0];
+    const reference = req.params[1];
+    return sendPublicPaymentLinkReceipt(req, res, id, reference);
+};
+
+app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    const receiptMatch = String(req.originalUrl || '').match(/^\/(?:api\/)?public\/payment-links\/([^/]+)\/receipt\/([^/?#]+)\/?$/);
+    if (!receiptMatch) return next();
+
+    const id = receiptMatch[1];
+    const reference = receiptMatch[2];
+    return sendPublicPaymentLinkReceipt(req, res, id, reference);
+});
+
+app.get(/^\/(?:api\/)?public\/payment-links\/([^/]+)\/receipt\/([^/?#]+)\/?$/, handlePublicPaymentLinkReceiptRegex);
+app.get('/public/payment-links/:id/receipt/:reference', handlePublicPaymentLinkReceipt);
+app.get('/api/public/payment-links/:id/receipt/:reference', handlePublicPaymentLinkReceipt);
+console.log('[Payment Link Receipt] receipt routes registered');
 
 // --- Merchant Platform Endpoints ---
 
@@ -4926,19 +9871,24 @@ async function refreshMerchantBalance(merchantId) {
 
 // --- Merchant KYC Options & Endpoints ---
 
-app.get('/merchants/status', authenticateToken, async (req, res) => {
+app.get('/merchants/status', authenticateToken, requireMerchantWorkspace, async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (result.rows.length === 0) return res.json({ complianceStatus: null });
-        const m = result.rows[0];
+        const m = req.currentMerchant;
         res.json({
             complianceStatus: m.compliance_status,
             isLiveEnabled: m.is_live_enabled,
             merchant: {
+                id: m.id,
                 account_id: m.account_id,
                 business_name: m.business_name,
+                registered_address: m.registered_address,
+                contact_phone: m.contact_phone,
+                logo_url: m.logo_url,
+                brand_color: m.brand_color,
+                country: m.country,
                 admin_kyc_notes: m.admin_kyc_notes,
-                kyc_submitted_at: m.kyc_submitted_at
+                kyc_submitted_at: m.kyc_submitted_at,
+                workspace_role: m.membership_role
             }
         });
     } catch (err) {
@@ -4947,9 +9897,9 @@ app.get('/merchants/status', authenticateToken, async (req, res) => {
     }
 });
 
-app.get('/merchants/onboarding/draft', authenticateToken, async (req, res) => {
+app.get('/merchants/onboarding/draft', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.onboarding.manage'), async (req, res) => {
     try {
-        const result = await pool.query('SELECT kyc_draft FROM merchants WHERE user_id = $1', [req.user.id]);
+        const result = await pool.query('SELECT kyc_draft FROM merchants WHERE id = $1', [req.currentMerchant.id]);
         if (result.rows.length === 0) return res.json({});
         res.json(result.rows[0].kyc_draft || {});
     } catch (err) {
@@ -4958,23 +9908,53 @@ app.get('/merchants/onboarding/draft', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/merchants/onboarding/draft', authenticateToken, async (req, res) => {
+app.put('/merchants/profile', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.onboarding.manage'), async (req, res) => {
     try {
-        // Ensure merchant exists first before attempting to update draft
-        const exists = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (exists.rows.length === 0) {
-            // Give them a shadow entry if they haven't explicitly created one
-            const merchantId = crypto.randomUUID();
-            await pool.query(
-                'INSERT INTO merchants (id, user_id, business_name, compliance_status) VALUES ($1, $2, $3, $4)',
-                [merchantId, req.user.id, 'Draft', 'SANDBOX_ONLY']
-            );
-            // Provision API keys for the new merchant
-            if (typeof provisionApiKeys === 'function') {
-                try { await provisionApiKeys(pool, merchantId); } catch (_) {}
+        const {
+            businessName,
+            registeredAddress,
+            contactPhone,
+            logoUrl,
+            brandColor
+        } = req.body || {};
+
+        await pool.query(
+            `UPDATE merchants SET
+                business_name = COALESCE(NULLIF($1, ''), business_name),
+                registered_address = COALESCE(NULLIF($2, ''), registered_address),
+                contact_phone = COALESCE(NULLIF($3, ''), contact_phone),
+                logo_url = COALESCE(NULLIF($4, ''), logo_url),
+                brand_color = COALESCE(NULLIF($5, ''), brand_color)
+             WHERE id = $6`,
+            [businessName, registeredAddress, contactPhone, logoUrl, brandColor, req.currentMerchant.id]
+        );
+
+        const result = await pool.query(
+            `SELECT id, account_id, business_name, registered_address, contact_phone, logo_url, brand_color, country, compliance_status, is_live_enabled, admin_kyc_notes, kyc_submitted_at
+             FROM merchants
+             WHERE id = $1`,
+            [req.currentMerchant.id]
+        );
+
+        res.json({
+            success: true,
+            merchant: {
+                ...(result.rows[0] ? {
+                    ...result.rows[0],
+                    logo_url: normalizePublicAssetUrl(result.rows[0].logo_url)
+                } : {}),
+                workspace_role: req.currentMerchant.membership_role
             }
-        }
-        await pool.query('UPDATE merchants SET kyc_draft = $1 WHERE user_id = $2', [JSON.stringify(req.body.payload || {}), req.user.id]);
+        });
+    } catch (err) {
+        console.error('Merchant profile update error:', err);
+        res.status(500).json({ error: 'Failed to update merchant profile' });
+    }
+});
+
+app.post('/merchants/onboarding/draft', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.onboarding.manage'), async (req, res) => {
+    try {
+        await pool.query('UPDATE merchants SET kyc_draft = $1 WHERE id = $2', [JSON.stringify(req.body.payload || {}), req.currentMerchant.id]);
         res.json({ success: true });
     } catch (err) {
         console.error('Draft save error:', err);
@@ -4982,7 +9962,7 @@ app.post('/merchants/onboarding/draft', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/merchants/onboarding', authenticateToken, uploadKyc.any(), async (req, res) => {
+app.post('/merchants/onboarding', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.onboarding.manage'), uploadKyc.any(), async (req, res) => {
     try {
         const {
             industry, subIndustry, legalName, tradingName, registeredAddress,
@@ -5027,8 +10007,8 @@ app.post('/merchants/onboarding', authenticateToken, uploadKyc.any(), async (req
                 compliance_status = 'PENDING', 
                 kyc_submitted_at = NOW(),
                 kyc_draft = '{}'::jsonb
-             WHERE user_id = $6`,
-            [legalName, pacraNumber, tpin, registeredAddress, JSON.stringify(kycPayload), req.user.id]
+             WHERE id = $6`,
+            [legalName, pacraNumber, tpin, registeredAddress, JSON.stringify(kycPayload), req.currentMerchant.id]
         );
 
         res.json({ success: true, message: 'Onboarding submitted for review' });
@@ -5268,13 +10248,26 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
     }
 
     try {
+        const merchantId = req.merchant?.merchant_id || req.apiKey?.merchant_id || req.merchant?.id;
+        const guardClient = await pool.connect();
+        try {
+            await guardClient.query('BEGIN');
+            await loadMerchantForCharge(guardClient, { merchantId });
+            await guardClient.query('COMMIT');
+        } catch (guardErr) {
+            await guardClient.query('ROLLBACK').catch(() => {});
+            const message = guardErr.message || 'Charge acceptance is paused pending fraud review.';
+            const statusCode = /not found/i.test(message) ? 404 : 403;
+            return res.status(statusCode).json({ error: message, code: 'charge_hold_active' });
+        } finally {
+            guardClient.release();
+        }
+
         // ─── Risk Evaluation ──────────────────────────────────────────────────
-        const transfer_data_prelim = req.body.transfer_data;
-        const subMerchantIdPrelim = transfer_data_prelim?.destination || null;
         const tempChargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
         const riskResult = await evaluateRisk({
-            merchantId: req.merchant?.merchant_id || req.apiKey?.merchant_id,
-            accountId: subMerchantIdPrelim,
+            merchantId,
+            accountId: null,
             amount,
             currency,
             country: req.body.billing_country || null,
@@ -5323,98 +10316,29 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
                 livemode: false
             };
 
-            // D. Split Payment Orchestration (Marketplace)
-            const transfer_data = req.body.transfer_data;
-            const application_fee_amount = req.body.application_fee_amount;
-
-            let platformFee = 0;
-            let merchantAmount = amount;
-            let subMerchantId = null;
-
-            // Fetch settlement delay from platform config (default T+1)
-            const cfgRes = await pool.query(
-                `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
-                [req.merchant.merchant_id]
-            );
-            const settlementDays = cfgRes.rows[0]?.settlement_delay_days ?? 1;
-            const availableAt = new Date();
-            availableAt.setDate(availableAt.getDate() + settlementDays);
-
-            // Start atomic transaction — charge + balances + ledger all commit together
             const txClient = await pool.connect();
             try {
                 await txClient.query('BEGIN');
+                await creditCheckoutToMerchantWallet(txClient, {
+                    merchantId: req.merchant.merchant_id,
+                    amount,
+                    currency: currency.toUpperCase(),
+                    transactionReference: `CHG_${chargeId}`,
+                    description: description || `Charge ${chargeId}`,
+                    livemode: false,
+                });
 
-                if (transfer_data && transfer_data.destination) {
-                    subMerchantId = transfer_data.destination;
-
-                    if (application_fee_amount != null) {
-                        platformFee = application_fee_amount;
-                    } else {
-                        platformFee = Math.round(amount * 0.05);
-                    }
-                    merchantAmount = amount - platformFee;
-
-                    console.log(`[Connect] Split: ${merchantAmount} to ${subMerchantId}, ${platformFee} to Platform (T+${settlementDays})`);
-
-                    // 1. Credit Sub-merchant (Pending — held until available_at)
-                    await txClient.query(
-                        `INSERT INTO balances (merchant_id, pending_amount, currency)
-                         VALUES ($1, $2, $3)
-                         ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                        [subMerchantId, merchantAmount, currency.toUpperCase()]
-                    );
-
-                    // 2. Credit Platform Commission (Pending)
-                    await txClient.query(
-                        `INSERT INTO balances (merchant_id, pending_amount, currency)
-                         VALUES ($1, $2, $3)
-                         ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                        [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
-                    );
-
-                    // 3. Record Internal Transfer
-                    await txClient.query(
-                        `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
-                         VALUES ($1, $2, $3, $4, 'SPLIT_PAYMENT', 'COMPLETED')`,
-                        [req.merchant.merchant_id, subMerchantId, merchantAmount, currency.toUpperCase()]
-                    );
-
-                    responseData.application_fee = platformFee;
-                    responseData.transfer_data = { destination: subMerchantId, amount: merchantAmount };
-
-                    // 4. Ledger entry — INSIDE transaction (atomic)
-                    if (platformFee > 0) {
-                        await txClient.query(
-                            `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                             VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
-                            [req.merchant.merchant_id, chargeId, subMerchantId,
-                             platformFee, currency.toUpperCase(),
-                             `Platform fee on ${currency.toUpperCase()} ${amount} charge`, false]
-                        );
-                    }
-                    // 5. Ledger entry for sub-merchant earnings
-                    await txClient.query(
-                        `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                         VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
-                        [req.merchant.merchant_id, chargeId, subMerchantId,
-                         merchantAmount, currency.toUpperCase(),
-                         `Net earnings on ${currency.toUpperCase()} ${amount} charge (T+${settlementDays})`, false]
-                    );
-                }
-
-                // 6. Record Charge with available_at populated
                 await txClient.query(
                     `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
                                          description, metadata, livemode, destination_merchant_id, application_fee_amount,
                                          available_at, is_settled)
-                     VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)`,
+                     VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)`,
                     [
                         chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
                         source.startsWith('tok_') ? 'card' : 'mobile_money',
                         JSON.stringify(responseData.source.details),
                         description, JSON.stringify(req.body.metadata || {}), false,
-                        subMerchantId || null, platformFee || null, availableAt
+                        null, null
                     ]
                 );
 
@@ -5428,19 +10352,30 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
 
             // E. Dispatch Webhooks (Background — after commit)
             dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
-            if (subMerchantId) {
-                dispatchWebhook(req.merchant.merchant_id, 'transaction.split.created', {
-                    charge_id: chargeId,
-                    total_amount: amount,
-                    currency: currency.toUpperCase(),
-                    platform_fee: platformFee,
-                    sub_merchant_amount: merchantAmount,
-                    sub_merchant_id: subMerchantId,
-                    available_at: availableAt.toISOString(),
-                    settlement_days: settlementDays
-                });
-            }
-
+            await emitFraudPlatformEvent({
+                eventType: 'charge.succeeded',
+                sourceSystem: 'charges_api',
+                merchantId: req.merchant.merchant_id,
+                reference: chargeId,
+                rail: source.startsWith('tok_') ? 'card' : 'mobile_money',
+                direction: 'credit',
+                currency: currency.toUpperCase(),
+                amount: Number(amount),
+                feeAmount: 0,
+                status: 'COMPLETED',
+                livemode: false,
+                connectedAccountId: null,
+                counterpartyType: source.startsWith('tok_') ? 'card' : 'mobile_money',
+                counterpartyKey: source.startsWith('tok_') ? `card:${source}` : `mobile_money:${String(provider || 'UNKNOWN').toUpperCase()}:${String(mobile_number || '').replace(/\D/g, '')}`,
+                country: req.body.billing_country || null,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent'] || null,
+                metadata: {
+                    paymentMethod: responseData.source.type,
+                    description,
+                    destinationMerchantId: null
+                }
+            });
             return res.json(responseData);
         }
 
@@ -5465,134 +10400,29 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
             livemode: true
         };
 
-        const transfer_data = req.body.transfer_data;
-        const application_fee_amount = req.body.application_fee_amount;
-
-        let platformFee = 0;
-        let merchantAmount = amount;
-        let subMerchantId = null;
-
-        // Fetch settlement delay from platform config (default T+1)
-        const cfgResLive = await pool.query(
-            `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
-            [req.merchant.merchant_id]
-        );
-        const settlementDaysLive = cfgResLive.rows[0]?.settlement_delay_days ?? 1;
-        const availableAtLive = new Date();
-        availableAtLive.setDate(availableAtLive.getDate() + settlementDaysLive);
-
-        // Start atomic transaction — charge + balances + ledger all commit together
         const txClientLive = await pool.connect();
         try {
             await txClientLive.query('BEGIN');
+            await creditCheckoutToMerchantWallet(txClientLive, {
+                merchantId: req.merchant.merchant_id,
+                amount,
+                currency: currency.toUpperCase(),
+                transactionReference: `CHG_${chargeId}`,
+                description: description || `Charge ${chargeId}`,
+                livemode: true,
+            });
 
-            if (transfer_data && transfer_data.destination) {
-                subMerchantId = transfer_data.destination;
-                // Phase 3/4: per-account override → tiered schedule → platform config → 5% default
-                if (application_fee_amount != null) {
-                    platformFee = application_fee_amount;
-                } else {
-                    const overrideRes = await pool.query(
-                        `SELECT fee_percent FROM connected_account_fee_overrides WHERE account_id = $1`,
-                        [subMerchantId]
-                    );
-                    if (overrideRes.rows.length > 0) {
-                        platformFee = Math.round(amount * (parseFloat(overrideRes.rows[0].fee_percent) / 100) * 100) / 100;
-                    } else {
-                        // Phase 4: tiered fee — get sub-merchant's cumulative volume
-                        const tiersRes = await pool.query(
-                            `SELECT * FROM connect_fee_tiers WHERE platform_merchant_id = $1 ORDER BY min_volume ASC`,
-                            [req.merchant?.merchant_id || null]
-                        );
-                        if (tiersRes.rows.length > 0) {
-                            const volRes = await pool.query(
-                                `SELECT COALESCE(SUM(amount),0) as vol FROM charges WHERE destination_merchant_id = $1 AND status='succeeded'`,
-                                [subMerchantId]
-                            );
-                            const cumVol = parseFloat(volRes.rows[0].vol);
-                            const tier = tiersRes.rows.slice().reverse().find(t => cumVol >= parseFloat(t.min_volume));
-                            const feeRate = tier ? parseFloat(tier.fee_percent) / 100 : 0.05;
-                            platformFee = Math.round(amount * feeRate * 100) / 100;
-                        } else {
-                            const configRes = await pool.query(
-                                `SELECT platform_fee_percent FROM connect_config WHERE merchant_id = $1`,
-                                [req.merchant?.merchant_id || null]
-                            );
-                            const feeRate = configRes.rows.length > 0 ? parseFloat(configRes.rows[0].platform_fee_percent) / 100 : 0.05;
-                            platformFee = Math.round(amount * feeRate * 100) / 100;
-                        }
-                    }
-                }
-                merchantAmount = amount - platformFee;
-
-                console.log(`[Connect Live] Split: ${merchantAmount} to ${subMerchantId}, ${platformFee} to Platform (T+${settlementDaysLive})`);
-
-                // 1. Credit Sub-merchant (Pending — held until available_at)
-                await txClientLive.query(
-                    `INSERT INTO balances (merchant_id, pending_amount, currency)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                    [subMerchantId, merchantAmount, currency.toUpperCase()]
-                );
-
-                // 2. Credit Platform Commission (Pending)
-                await txClientLive.query(
-                    `INSERT INTO balances (merchant_id, pending_amount, currency)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (merchant_id) DO UPDATE SET pending_amount = balances.pending_amount + $2`,
-                    [req.merchant.merchant_id, platformFee, currency.toUpperCase()]
-                );
-
-                // 3. Record Internal Transfer
-                await txClientLive.query(
-                    `INSERT INTO transfers (source_merchant_id, destination_merchant_id, amount, currency, type, status)
-                     VALUES ($1, $2, $3, $4, 'SPLIT_PAYMENT', 'COMPLETED')`,
-                    [req.merchant.merchant_id, subMerchantId, merchantAmount, currency.toUpperCase()]
-                );
-
-                responseData.application_fee = platformFee;
-                responseData.transfer_data = { destination: subMerchantId, amount: merchantAmount };
-
-                // 4. Ledger entry for platform fee — INSIDE transaction (atomic)
-                if (platformFee > 0) {
-                    await txClientLive.query(
-                        `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                         VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
-                        [req.merchant.merchant_id, chargeId, subMerchantId,
-                         platformFee, currency.toUpperCase(),
-                         `Platform fee on ${currency.toUpperCase()} ${amount} charge`, true]
-                    );
-                }
-                // 5. Ledger entry for sub-merchant earnings
-                await txClientLive.query(
-                    `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                     VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
-                    [req.merchant.merchant_id, chargeId, subMerchantId,
-                     merchantAmount, currency.toUpperCase(),
-                     `Net earnings on ${currency.toUpperCase()} ${amount} charge (T+${settlementDaysLive})`, true]
-                );
-            } else {
-                // Direct Credit (no split) — credit available immediately
-                await txClientLive.query(
-                    `INSERT INTO balances (merchant_id, available_amount, currency)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (merchant_id) DO UPDATE SET available_amount = balances.available_amount + $2`,
-                    [req.merchant.merchant_id, amount, currency.toUpperCase()]
-                );
-            }
-
-            // 6. Record Charge with available_at populated
             await txClientLive.query(
                 `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
                                      description, metadata, livemode, destination_merchant_id, application_fee_amount,
                                      available_at, is_settled)
-                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)`,
+                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)`,
                 [
                     chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
                     source.startsWith('tok_') ? 'card' : 'mobile_money',
                     JSON.stringify(responseData.source.details),
                     description, JSON.stringify(req.body.metadata || {}), true,
-                    subMerchantId || null, platformFee || null, availableAtLive
+                    null, null
                 ]
             );
 
@@ -5606,18 +10436,30 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
 
         // Dispatch Webhooks (Background — after commit)
         dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
-        if (subMerchantId) {
-            dispatchWebhook(req.merchant.merchant_id, 'transaction.split.created', {
-                charge_id: chargeId,
-                total_amount: amount,
-                currency: currency.toUpperCase(),
-                platform_fee: platformFee,
-                sub_merchant_amount: merchantAmount,
-                sub_merchant_id: subMerchantId,
-                available_at: availableAtLive.toISOString(),
-                settlement_days: settlementDaysLive
-            });
-        }
+        await emitFraudPlatformEvent({
+            eventType: 'charge.succeeded',
+            sourceSystem: 'charges_api',
+            merchantId: req.merchant.merchant_id,
+            reference: chargeId,
+            rail: source.startsWith('tok_') ? 'card' : 'mobile_money',
+            direction: 'credit',
+            currency: currency.toUpperCase(),
+            amount: Number(amount),
+            feeAmount: 0,
+            status: 'COMPLETED',
+            livemode: true,
+            connectedAccountId: null,
+            counterpartyType: source.startsWith('tok_') ? 'card' : 'mobile_money',
+            counterpartyKey: source.startsWith('tok_') ? `card:${source}` : `mobile_money:${String(provider || 'UNKNOWN').toUpperCase()}:${String(mobile_number || '').replace(/\D/g, '')}`,
+            country: req.body.billing_country || null,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                paymentMethod: responseData.source.type,
+                description,
+                destinationMerchantId: null
+            }
+        });
         return res.json(responseData);
 
     } catch (err) {
@@ -5627,7 +10469,7 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
 });
 
 // Submit Compliance Documents (Mock Upload)
-app.post('/merchants/compliance', authenticateToken, async (req, res) => {
+app.post('/merchants/compliance', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.compliance.manage'), async (req, res) => {
     const {
         legalName,
         pacraNumber,
@@ -5639,9 +10481,7 @@ app.post('/merchants/compliance', authenticateToken, async (req, res) => {
     } = req.body;
 
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
 
         // Update Merchant Details with comprehensive KYC
         await pool.query(
@@ -5691,14 +10531,11 @@ const FX_RATES = {
 };
 
 // Settlement API (Pending -> Available)
-app.post('/merchants/settle', authenticateToken, async (req, res) => {
+app.post('/merchants/settle', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.settlements.manage'), async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-
-        const merchantRes = await client.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) throw new Error('Merchant not found');
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
 
         const balanceRes = await client.query('SELECT * FROM balances WHERE merchant_id = $1 FOR UPDATE', [merchantId]);
         if (balanceRes.rows.length === 0) throw new Error('Balance record not found');
@@ -5724,15 +10561,18 @@ app.post('/merchants/settle', authenticateToken, async (req, res) => {
 });
 
 // Transfer to Personal Wallet (no fee, test/live wallet separation)
-app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) => {
-    const { amount, walletId, applyFX, fxRate, isTestMode } = req.body;
+app.post('/merchants/transfer-to-wallet', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.settlements.manage'), async (req, res) => {
+    const { amount, walletId, applyFX, fxRate, isTestMode, pin } = req.body;
+    const isPinValid = await verifyUserPin(req.user.id, pin);
+    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
         const merchantRes = await client.query(
-            'SELECT id, compliance_status FROM merchants WHERE user_id = $1',
-            [req.user.id]
+            'SELECT id, compliance_status FROM merchants WHERE id = $1',
+            [req.currentMerchant.id]
         );
         if (merchantRes.rows.length === 0) throw new Error('Merchant not found');
         const merchant = merchantRes.rows[0];
@@ -5749,7 +10589,14 @@ app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) =>
         // amount sent from frontend is in ZMW; balances table stores ngwe (× 100)
         const amountZMW = parseFloat(amount);
         const amountNgwe = Math.round(amountZMW * 100);
-        const targetAmount = applyFX ? amountZMW / fxRate : amountZMW;
+        let targetAmount = amountZMW;
+        let appliedRate = applyFX ? Number(fxRate || 0) : 1;
+
+        if (applyFX) {
+            const marketRate = await getCrossCurrencyRate('ZMW', targetWallet.currency);
+            appliedRate = marketRate * (1 - FX_SPREAD);
+            targetAmount = amountZMW * appliedRate;
+        }
 
         if (isLive) {
             // Deduct ngwe from platform balance
@@ -5772,14 +10619,39 @@ app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) =>
 
         // Record ledger entry — livemode flag keeps test entries out of live ledger
         const ref = (isLive ? 'SETTLE-' : 'TEST-SETTLE-') + crypto.randomBytes(6).toString('hex').toUpperCase();
+        const settlementDescription = applyFX
+            ? `${isLive ? 'Settlement from Platform Balance' : 'Test Settlement'} • ${amountZMW.toFixed(2)} ZMW to ${targetAmount.toFixed(2)} ${targetWallet.currency}`
+            : `${isLive ? 'Settlement from Platform Balance' : 'Test Settlement'} • ${targetAmount.toFixed(2)} ${targetWallet.currency}`;
+
         await client.query(
             `INSERT INTO ledger_entries (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode)
              VALUES ($1, $2, $3, $4, $5, 'SETTLEMENT', 'COMPLETED', $6)`,
-            [ref, walletId, targetAmount, targetWallet.currency, isLive ? 'Settlement from Platform Balance' : 'Test Settlement (Simulated)', isLive]
+            [ref, walletId, targetAmount, targetWallet.currency, settlementDescription, isLive]
+        );
+
+        await client.query(
+            `INSERT INTO merchant_wallet_settlements (
+                merchant_id, user_id, wallet_id, transaction_reference, livemode,
+                source_currency, source_amount, destination_currency, destination_amount, applied_rate
+            )
+            VALUES ($1, $2, $3, $4, $5, 'ZMW', $6, $7, $8, $9)`,
+            [merchant.id, req.user.id, walletId, ref, isLive, amountZMW, targetWallet.currency, targetAmount, appliedRate]
         );
 
         await client.query('COMMIT');
-        res.json({ success: true, transferred: targetAmount, currency: targetWallet.currency, ref });
+        res.json({
+            success: true,
+            transferred: targetAmount,
+            currency: targetWallet.currency,
+            ref,
+            fx: applyFX ? {
+                from_currency: 'ZMW',
+                to_currency: targetWallet.currency,
+                source_amount: amountZMW,
+                destination_amount: targetAmount,
+                applied_rate: appliedRate
+            } : null
+        });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(400).json({ error: err.message });
@@ -5789,13 +10661,14 @@ app.post('/merchants/transfer-to-wallet', authenticateToken, async (req, res) =>
 });
 
 // ---- GET /merchants/test-ledger ----
-// Returns test wallet ledger entries (livemode=false) for the merchant user — never mingles with live funds
-app.get('/merchants/test-ledger', authenticateToken, async (req, res) => {
+// Returns test merchant activity (charges + settlements) for the merchant user — never mingles with live funds
+app.get('/merchants/test-ledger', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.activity.read'), async (req, res) => {
     try {
         const limit = parseInt(req.query.limit) || 20;
         const offset = parseInt(req.query.offset) || 0;
+        const merchantId = req.currentMerchant.id;
 
-        const result = await pool.query(
+        const ledgerResult = await pool.query(
             `SELECT le.id, le.transaction_reference, le.amount, le.currency,
                     le.description, le.transaction_type, le.status, le.created_at,
                     le.credit_wallet_id, le.debit_wallet_id,
@@ -5814,6 +10687,26 @@ app.get('/merchants/test-ledger', authenticateToken, async (req, res) => {
             [req.user.id, limit, offset]
         );
 
+        const chargeResult = merchantId ? await pool.query(
+            `SELECT
+                id,
+                charge_reference,
+                amount,
+                currency,
+                description,
+                status,
+                payment_method,
+                created_at,
+                destination_merchant_id IS NOT NULL AS is_split,
+                application_fee_amount
+             FROM charges
+             WHERE merchant_id = $1
+               AND livemode = FALSE
+             ORDER BY created_at DESC
+             LIMIT $2 OFFSET $3`,
+            [merchantId, limit, offset]
+        ) : { rows: [] };
+
         const summaryRes = await pool.query(
             `SELECT COALESCE(SUM(le.amount), 0) AS total_credited
              FROM ledger_entries le
@@ -5822,14 +10715,45 @@ app.get('/merchants/test-ledger', authenticateToken, async (req, res) => {
             [req.user.id]
         );
 
+        const entries = [
+            ...chargeResult.rows.map(row => ({
+                id: `charge-${row.id}`,
+                source_type: 'charge',
+                transaction_reference: row.charge_reference || `charge-${row.id}`,
+                amount: row.amount,
+                currency: row.currency,
+                description: row.description || (row.is_split ? 'Marketplace test charge' : 'Direct test charge'),
+                transaction_type: 'CHARGE',
+                status: row.status,
+                created_at: row.created_at,
+                payment_method: row.payment_method,
+                is_split: row.is_split,
+                application_fee_amount: row.application_fee_amount,
+                credit_wallet_id: null,
+                debit_wallet_id: null
+            })),
+            ...ledgerResult.rows.map(row => ({
+                ...row,
+                id: `ledger-${row.id}`,
+                source_type: 'ledger'
+            }))
+        ]
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .slice(offset, offset + limit);
+
         res.json({
-            entries: result.rows,
+            entries,
             total_credited: parseFloat(summaryRes.rows[0]?.total_credited || 0),
-            count: result.rowCount
+            count: entries.length
         });
     } catch (err) {
         console.error('[Test Ledger] Error:', err);
-        res.status(500).json({ error: 'Failed to fetch test ledger' });
+        res.json({
+            entries: [],
+            total_credited: 0,
+            count: 0,
+            warning: 'Failed to fetch test ledger'
+        });
     }
 });
 
@@ -5880,12 +10804,10 @@ app.post('/merchants/lenco/resolve', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/merchants/lenco/accounts', authenticateToken, async (req, res) => {
+app.post('/merchants/lenco/accounts', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.settlements.manage'), async (req, res) => {
     const { accountName, accountNumber, bankId, bankName, country } = req.body;
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
 
         const result = await pool.query(
             `INSERT INTO merchant_bank_accounts (merchant_id, account_name, account_number, bank_id, bank_name, country)
@@ -5899,11 +10821,9 @@ app.post('/merchants/lenco/accounts', authenticateToken, async (req, res) => {
     }
 });
 
-app.get('/merchants/lenco/accounts', authenticateToken, async (req, res) => {
+app.get('/merchants/lenco/accounts', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
 
         const result = await pool.query('SELECT * FROM merchant_bank_accounts WHERE merchant_id = $1 ORDER BY created_at DESC', [merchantId]);
         res.json(result.rows);
@@ -5913,18 +10833,1593 @@ app.get('/merchants/lenco/accounts', authenticateToken, async (req, res) => {
     }
 });
 
-app.delete('/merchants/lenco/accounts/:id', authenticateToken, async (req, res) => {
+app.delete('/merchants/lenco/accounts/:id', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.settlements.manage'), async (req, res) => {
     const { id } = req.params;
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
 
         await pool.query('DELETE FROM merchant_bank_accounts WHERE id = $1 AND merchant_id = $2', [id, merchantId]);
         res.json({ success: true });
     } catch (error) {
         console.error('Lenco Account Delete Error:', error);
         res.status(500).json({ error: 'Failed to delete bank account' });
+    }
+});
+
+// --- FlapaPay Merchant API (Provider-agnostic surface) ---
+
+const mapCollectionRecordToApiResponse = (collection) => ({
+    id: collection.provider_collection_id || collection.reference,
+    initiatedAt: collection.created_at,
+    completedAt: collection.credited_at || null,
+    amount: Number(collection.requested_amount || 0).toFixed(2),
+    fee: Number(collection.fee_amount || 0).toFixed(2),
+    bearer: 'merchant',
+    currency: collection.currency,
+    reference: collection.reference,
+    type: 'mobile-money',
+    status: String(collection.provider_status || collection.local_status || 'pending').toLowerCase(),
+    source: 'api',
+    reasonForFailure: collection.failure_reason || null,
+    settlementStatus: collection.credited_at ? 'settled' : 'pending',
+    walletId: collection.wallet_id,
+    mobileMoneyDetails: {
+        country: String(collection.country || 'zm').toLowerCase(),
+        phone: collection.phone_number,
+        operator: String(collection.operator || '').toLowerCase(),
+        accountName: collection.account_name || null,
+        operatorTransactionId: collection.provider_reference || null
+    },
+    ledgerReference: collection.credited_transaction_reference || null
+});
+
+const mapCardCollectionRecordToApiResponse = (collection) => ({
+    id: collection.processor_payment_id || collection.reference,
+    initiatedAt: collection.created_at,
+    completedAt: collection.credited_at || null,
+    amount: Number(collection.requested_amount || 0).toFixed(2),
+    fee: Number(collection.fee_amount || 0).toFixed(2),
+    bearer: 'merchant',
+    currency: collection.currency,
+    reference: collection.reference,
+    type: 'card',
+    status: String(collection.processor_status || collection.local_status || 'pending').toLowerCase(),
+    source: 'api',
+    reasonForFailure: collection.failure_reason || null,
+    settlementStatus: collection.credited_at ? 'settled' : 'pending',
+    walletId: collection.wallet_id,
+    cardDetails: {
+        brand: collection.card_brand || null,
+        last4: collection.card_last4 || null
+    },
+    ledgerReference: collection.credited_transaction_reference || null
+});
+
+const mapTransferRecipientToApiResponse = (recipient) => ({
+    id: recipient.id,
+    type: 'bank-account',
+    accountName: recipient.account_name,
+    accountNumber: recipient.account_number,
+    bank: {
+        id: recipient.bank_id,
+        name: recipient.bank_name,
+        country: String(recipient.country || 'zm').toLowerCase()
+    },
+    isDefault: Boolean(recipient.is_default),
+    createdAt: recipient.created_at
+});
+
+const mapWithdrawalRecordToApiResponse = (withdrawal) => {
+    const destination = withdrawal.destination_details && typeof withdrawal.destination_details === 'string'
+        ? JSON.parse(withdrawal.destination_details)
+        : (withdrawal.destination_details || {});
+    const normalizedStatus = String(withdrawal.local_status || withdrawal.provider_status || 'pending').toLowerCase();
+    const destinationType = String(withdrawal.destination_type || '').toLowerCase();
+
+    return {
+        id: withdrawal.provider_transfer_id || withdrawal.reference,
+        amount: Number(withdrawal.amount || 0).toFixed(2),
+        fee: Number(withdrawal.fee_amount || 0).toFixed(2),
+        currency: withdrawal.currency,
+        narration: destination.narration || 'Transfer',
+        initiatedAt: withdrawal.created_at,
+        completedAt: normalizedStatus === 'completed' ? withdrawal.updated_at : null,
+        walletId: withdrawal.wallet_id,
+        creditAccount: destinationType === 'mobile_money'
+            ? {
+                type: 'mobile-money',
+                accountName: destination.accountName || null,
+                phone: destination.phoneNumber || destination.phone || null,
+                operator: String(destination.provider || destination.operator || '').toLowerCase(),
+                country: String(destination.country || 'zm').toLowerCase()
+            }
+            : {
+                type: 'bank-account',
+                accountName: destination.accountName || '',
+                accountNumber: destination.accountNumber || null,
+                bank: {
+                    id: destination.bankId || null,
+                    name: destination.bankName || '',
+                    country: String(destination.country || 'zm').toLowerCase()
+                }
+            },
+        status: normalizedStatus,
+        reasonForFailure: withdrawal.failure_reason || null,
+        reference: withdrawal.reference,
+        settlementStatus: normalizedStatus === 'completed' ? 'settled' : 'pending',
+        providerReference: withdrawal.provider_reference || withdrawal.provider_transfer_id || null,
+        source: 'api'
+    };
+};
+
+app.get('/v1/banks', authenticateApiKey, async (req, res) => {
+    const country = normalizeLencoCountry(req.query.country || 'zm');
+    try {
+        const response = await axios.get(`${LENCO_BASE_URL}/banks`, {
+            params: { country },
+            headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+        });
+
+        const banks = Array.isArray(response.data?.data) ? response.data.data : [];
+        return res.json({
+            status: true,
+            message: '',
+            data: banks.map((bank) => ({
+                id: bank.id,
+                name: bank.name,
+                country: String(bank.country || country).toLowerCase()
+            }))
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Banks]', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            status: false,
+            message: error.response?.data?.message || 'Failed to fetch banks',
+            data: null
+        });
+    }
+});
+
+app.post('/v1/resolve/bank-account', authenticateApiKey, async (req, res) => {
+    const accountNumber = String(req.body.accountNumber || req.body.account_number || '').trim();
+    const bankId = String(req.body.bankId || req.body.bank_id || '').trim();
+    const country = normalizeLencoCountry(req.body.country || 'zm');
+
+    if (!accountNumber || !bankId) {
+        return res.status(400).json({
+            status: false,
+            message: 'accountNumber and bankId are required',
+            data: null
+        });
+    }
+
+    try {
+        const response = await axios.post(`${LENCO_BASE_URL}/resolve/bank-account`, {
+            accountNumber,
+            bankId,
+            country
+        }, {
+            headers: {
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const resolved = response.data?.data || response.data || {};
+        return res.json({
+            status: true,
+            message: response.data?.message || '',
+            data: {
+                type: 'bank-account',
+                accountName: resolved.accountName || '',
+                accountNumber: resolved.accountNumber || accountNumber,
+                bank: {
+                    id: resolved.bank?.id || bankId,
+                    name: resolved.bank?.name || '',
+                    country: String(resolved.bank?.country || country).toLowerCase()
+                }
+            }
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Resolve Bank Account]', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            status: false,
+            message: error.response?.data?.message || 'Failed to resolve bank account',
+            data: null
+        });
+    }
+});
+
+app.post('/v1/resolve/mobile-money', authenticateApiKey, async (req, res) => {
+    try {
+        const resolved = await resolveLencoMobileMoneyAccount({
+            phoneNumber: req.body.phone || req.body.phoneNumber,
+            operator: req.body.operator,
+            country: req.body.country || 'zm'
+        });
+
+        return res.json({
+            status: true,
+            message: '',
+            data: {
+                type: 'mobile-money',
+                accountName: resolved.accountName || '',
+                phone: resolved.phone || String(req.body.phone || req.body.phoneNumber || '').trim(),
+                operator: String(resolved.operator || req.body.operator || '').toLowerCase(),
+                country: String(resolved.country || req.body.country || 'zm').toLowerCase()
+            }
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Resolve Mobile Money]', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            status: false,
+            message: error.response?.data?.message || error.message || 'Failed to resolve mobile money account',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/transfer-recipients', authenticateApiKey, async (req, res) => {
+    try {
+        const rows = await pool.query(
+            `SELECT id, account_name, account_number, bank_id, bank_name, country, is_default, created_at
+             FROM merchant_bank_accounts
+             WHERE merchant_id = $1
+             ORDER BY is_default DESC, created_at DESC`,
+            [req.merchant.merchant_id]
+        );
+
+        return res.json({
+            status: true,
+            message: '',
+            data: rows.rows.map(mapTransferRecipientToApiResponse)
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Transfer Recipients][List]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch transfer recipients',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/transfer-recipients/:id', authenticateApiKey, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, account_name, account_number, bank_id, bank_name, country, is_default, created_at
+             FROM merchant_bank_accounts
+             WHERE id = $1 AND merchant_id = $2
+             LIMIT 1`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: 'Transfer recipient not found',
+                data: null
+            });
+        }
+
+        return res.json({
+            status: true,
+            message: '',
+            data: mapTransferRecipientToApiResponse(result.rows[0])
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Transfer Recipients][Get]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch transfer recipient',
+            data: null
+        });
+    }
+});
+
+app.post('/v1/transfer-recipients', authenticateApiKey, async (req, res) => {
+    const accountNumber = String(req.body.accountNumber || req.body.account_number || '').trim();
+    const bankId = String(req.body.bankId || req.body.bank_id || '').trim();
+    const bankName = String(req.body.bankName || req.body.bank_name || '').trim();
+    const country = normalizeLencoCountry(req.body.country || 'zm');
+    const isDefault = req.body.isDefault === true;
+
+    if (!accountNumber || !bankId) {
+        return res.status(400).json({
+            status: false,
+            message: 'accountNumber and bankId are required',
+            data: null
+        });
+    }
+
+    try {
+        const resolvedResponse = await axios.post(`${LENCO_BASE_URL}/resolve/bank-account`, {
+            accountNumber,
+            bankId,
+            country
+        }, {
+            headers: {
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const resolved = resolvedResponse.data?.data || {};
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            if (isDefault) {
+                await client.query(
+                    'UPDATE merchant_bank_accounts SET is_default = FALSE WHERE merchant_id = $1',
+                    [req.merchant.merchant_id]
+                );
+            }
+
+            const inserted = await client.query(
+                `INSERT INTO merchant_bank_accounts (merchant_id, account_name, account_number, bank_id, bank_name, country, is_default)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 RETURNING id, account_name, account_number, bank_id, bank_name, country, is_default, created_at`,
+                [
+                    req.merchant.merchant_id,
+                    resolved.accountName || '',
+                    resolved.accountNumber || accountNumber,
+                    resolved.bank?.id || bankId,
+                    resolved.bank?.name || bankName,
+                    String(resolved.bank?.country || country).toLowerCase(),
+                    isDefault
+                ]
+            );
+
+            await client.query('COMMIT');
+
+            return res.status(201).json({
+                status: true,
+                message: '',
+                data: mapTransferRecipientToApiResponse(inserted.rows[0])
+            });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('[FlapaPay API][Transfer Recipients][Create]', error.response?.data || error.message);
+        return res.status(error.response?.status || 400).json({
+            status: false,
+            message: error.response?.data?.message || 'Failed to create transfer recipient',
+            data: null
+        });
+    }
+});
+
+app.delete('/v1/transfer-recipients/:id', authenticateApiKey, async (req, res) => {
+    try {
+        const deleted = await pool.query(
+            `DELETE FROM merchant_bank_accounts
+             WHERE id = $1 AND merchant_id = $2
+             RETURNING id`,
+            [req.params.id, req.merchant.merchant_id]
+        );
+
+        if (deleted.rows.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: 'Transfer recipient not found',
+                data: null
+            });
+        }
+
+        return res.json({
+            status: true,
+            message: '',
+            data: { id: deleted.rows[0].id, deleted: true }
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Transfer Recipients][Delete]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to delete transfer recipient',
+            data: null
+        });
+    }
+});
+
+app.post('/v1/transfers/bank-account', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.body.wallet_id || req.body.walletId || '').trim();
+    const accountNumber = String(req.body.accountNumber || req.body.account_number || '').trim();
+    const bankId = String(req.body.bankId || req.body.bank_id || '').trim();
+    const bankName = String(req.body.bankName || req.body.bank_name || '').trim();
+    const reference = String(req.body.reference || '').trim();
+    const narration = String(req.body.narration || 'Bank transfer').trim();
+    const country = normalizeLencoCountry(req.body.country || 'zm');
+    const amount = Number(req.body.amount);
+
+    if (!walletId || !accountNumber || !bankId || !reference || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'wallet_id, amount, reference, accountNumber, and bankId are required',
+            data: null
+        });
+    }
+
+    const duplicateRes = await pool.query('SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1', [reference]);
+    if (duplicateRes.rows.length > 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'Duplicate reference',
+            data: null
+        });
+    }
+
+    const client = await pool.connect();
+    let walletCurrency = 'ZMW';
+    let feeAmount = 0;
+    let totalDebited = 0;
+    try {
+        await client.query('BEGIN');
+
+        const wallet = await loadWalletForWithdrawal(client, {
+            walletId,
+            userId: req.merchant.merchant_user_id,
+            ignoreWithdrawalPause: true
+        });
+        walletCurrency = wallet.currency;
+
+        if (!['ZMW', 'USD'].includes(String(wallet.currency || '').toUpperCase())) {
+            throw new Error('Bank transfers currently support ZMW and USD wallets only');
+        }
+
+        const lencoSourceAccountId = getLencoAccountIdForCurrency(wallet.currency);
+        if (!lencoSourceAccountId) {
+            throw new Error(`No source account configured for ${wallet.currency} transfers`);
+        }
+
+        const quote = getWithdrawalFeeQuote({
+            destinationType: 'bank_account',
+            amount,
+            currency: wallet.currency
+        });
+        feeAmount = quote.feeAmount;
+        totalDebited = quote.totalDebited;
+
+        if (Number(wallet.balance) < totalDebited) {
+            throw new Error(`Insufficient wallet balance. Total debit is ${totalDebited.toFixed(2)} ${wallet.currency}`);
+        }
+
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalDebited, walletId]);
+
+        await client.query(
+            `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+             VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING')`,
+            [
+                reference,
+                walletId,
+                amount,
+                wallet.currency,
+                buildWithdrawalLedgerDescription('bank_account', {
+                    accountNumber,
+                    bankId,
+                    bankName,
+                    country
+                }, {
+                    provider: 'flapapay',
+                    reference
+                })
+            ]
+        );
+
+        if (feeAmount > 0) {
+            await client.query(
+                `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                 VALUES ($1, $2, $3, $4, $5, 'FEE', 'PENDING')`,
+                [
+                    `${reference}-FEE`,
+                    walletId,
+                    feeAmount,
+                    wallet.currency,
+                    'Transfer fee for bank_account'
+                ]
+            );
+        }
+
+        await client.query(
+            `INSERT INTO wallet_withdrawals
+                (user_id, wallet_id, provider, destination_type, destination_details, amount, fee_amount, total_debited, currency, reference, provider_status, local_status, livemode)
+             VALUES ($1, $2, 'lenco', 'bank_account', $3, $4, $5, $6, $7, $8, 'initiated', 'PENDING', $9)`,
+            [
+                req.merchant.merchant_user_id,
+                walletId,
+                JSON.stringify({
+                    accountNumber,
+                    bankId,
+                    bankName,
+                    country
+                }),
+                amount,
+                feeAmount,
+                totalDebited,
+                wallet.currency,
+                reference,
+                wallet.livemode
+            ]
+        );
+
+        await client.query('COMMIT');
+
+        const transferRes = await axios.post(`${LENCO_BASE_URL}/transfers/bank-account`, {
+            accountId: lencoSourceAccountId,
+            amount,
+            reference,
+            narration,
+            accountNumber,
+            bankId,
+            country
+        }, {
+            headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+        });
+
+        const providerData = transferRes.data?.data || transferRes.data || {};
+        const localStatus = mapLencoStatusToLocal(providerData.status);
+
+        if (localStatus === 'COMPLETED') {
+            await completeWalletWithdrawal(reference, providerData);
+        } else if (localStatus === 'FAILED') {
+            await failWalletWithdrawal(reference, providerData.reasonForFailure || 'Bank transfer failed', providerData);
+        } else {
+            const pendingClient = await pool.connect();
+            try {
+                await pendingClient.query('BEGIN');
+                await updateWalletWithdrawalRecord(pendingClient, reference, {
+                    provider_transfer_id: providerData.id || null,
+                    provider_reference: providerData.lencoReference || null,
+                    provider_status: String(providerData.status || 'pending').toLowerCase(),
+                    local_status: 'PENDING',
+                    provider_response: JSON.stringify(providerData)
+                });
+                await pendingClient.query('COMMIT');
+            } catch (err) {
+                await pendingClient.query('ROLLBACK');
+                throw err;
+            } finally {
+                pendingClient.release();
+            }
+        }
+
+        return res.json({
+            status: true,
+            message: '',
+            data: {
+                id: providerData.id || reference,
+                amount: amount.toFixed(2),
+                fee: feeAmount.toFixed(2),
+                currency: walletCurrency,
+                narration,
+                initiatedAt: providerData.initiatedAt || new Date().toISOString(),
+                completedAt: providerData.completedAt || null,
+                walletId,
+                creditAccount: {
+                    type: 'bank-account',
+                    accountName: providerData.creditAccount?.accountName || '',
+                    accountNumber,
+                    bank: {
+                        id: providerData.creditAccount?.bank?.id || bankId,
+                        name: providerData.creditAccount?.bank?.name || bankName,
+                        country: String(providerData.creditAccount?.bank?.country || country).toLowerCase()
+                    }
+                },
+                status: localStatus.toLowerCase(),
+                reasonForFailure: providerData.reasonForFailure || null,
+                reference,
+                settlementStatus: localStatus === 'COMPLETED' ? 'settled' : 'pending',
+                source: 'api'
+            }
+        });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[FlapaPay API][Transfer Bank Account]', error.response?.data || error.message);
+        if (reference) {
+            try {
+                const existing = await pool.query('SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1', [reference]);
+                if (existing.rows.length > 0) {
+                    await failWalletWithdrawal(reference, error.response?.data?.message || error.message || 'Bank transfer failed', error.response?.data?.data || {});
+                }
+            } catch (syncErr) {
+                console.error('[FlapaPay API][Transfer Bank Account][Compensation]', syncErr.message);
+            }
+        }
+        return res.status(error.response?.status || 400).json({
+            status: false,
+            message: error.response?.data?.message || error.message || 'Failed to initiate transfer',
+            data: null
+        });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/v1/transfers/mobile-money', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.body.wallet_id || req.body.walletId || '').trim();
+    const phoneNumber = String(req.body.phone || req.body.phoneNumber || '').trim();
+    const operator = String(req.body.operator || '').trim();
+    const country = normalizeLencoCountry(req.body.country || 'zm');
+    const reference = String(req.body.reference || '').trim();
+    const narration = String(req.body.narration || 'Mobile money transfer').trim();
+    const amount = Number(req.body.amount);
+
+    if (!walletId || !phoneNumber || !operator || !reference || !Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'wallet_id, amount, reference, phone, and operator are required',
+            data: null
+        });
+    }
+
+    const duplicateRes = await pool.query('SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1', [reference]);
+    if (duplicateRes.rows.length > 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'Duplicate reference',
+            data: null
+        });
+    }
+
+    const normalizedOperator = normalizeLencoMobileOperator(operator, country);
+    const normalizedPhone = normalizeLencoMobilePhone(phoneNumber, country);
+    if (!normalizedOperator) {
+        return res.status(400).json({
+            status: false,
+            message: 'Unsupported mobile money operator',
+            data: null
+        });
+    }
+
+    const client = await pool.connect();
+    let feeAmount = 0;
+    let totalDebited = 0;
+    try {
+        await client.query('BEGIN');
+
+        const wallet = await loadWalletForWithdrawal(client, {
+            walletId,
+            userId: req.merchant.merchant_user_id,
+            ignoreWithdrawalPause: true
+        });
+
+        const lencoSourceAccountId = getLencoAccountIdForCurrency(wallet.currency);
+        if (!lencoSourceAccountId) {
+            throw new Error(`No source account configured for ${wallet.currency} transfers`);
+        }
+
+        const quote = getWithdrawalFeeQuote({
+            destinationType: 'mobile_money',
+            amount,
+            currency: wallet.currency
+        });
+        feeAmount = quote.feeAmount;
+        totalDebited = quote.totalDebited;
+
+        if (Number(wallet.balance) < totalDebited) {
+            throw new Error(`Insufficient wallet balance. Total debit is ${totalDebited.toFixed(2)} ${wallet.currency}`);
+        }
+
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalDebited, walletId]);
+
+        await client.query(
+            `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+             VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING')`,
+            [
+                reference,
+                walletId,
+                amount,
+                wallet.currency,
+                buildWithdrawalLedgerDescription('mobile_money', {
+                    phoneNumber: normalizedPhone,
+                    provider: normalizedOperator,
+                    country
+                }, {
+                    provider: 'flapapay',
+                    reference
+                })
+            ]
+        );
+
+        if (feeAmount > 0) {
+            await client.query(
+                `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                 VALUES ($1, $2, $3, $4, $5, 'FEE', 'PENDING')`,
+                [
+                    `${reference}-FEE`,
+                    walletId,
+                    feeAmount,
+                    wallet.currency,
+                    'Transfer fee for mobile_money'
+                ]
+            );
+        }
+
+        await client.query(
+            `INSERT INTO wallet_withdrawals
+                (user_id, wallet_id, provider, destination_type, destination_details, amount, fee_amount, total_debited, currency, reference, provider_status, local_status, livemode)
+             VALUES ($1, $2, 'lenco', 'mobile_money', $3, $4, $5, $6, $7, $8, 'initiated', 'PENDING', $9)`,
+            [
+                req.merchant.merchant_user_id,
+                walletId,
+                JSON.stringify({
+                    phoneNumber: normalizedPhone,
+                    provider: normalizedOperator,
+                    country,
+                    narration
+                }),
+                amount,
+                feeAmount,
+                totalDebited,
+                wallet.currency,
+                reference,
+                wallet.livemode
+            ]
+        );
+
+        await client.query('COMMIT');
+
+        const transferResult = await initiateLencoMobileMoneyTransfer({
+            accountId: lencoSourceAccountId,
+            amount,
+            reference,
+            phoneNumber: normalizedPhone,
+            operator: normalizedOperator,
+            country,
+            narration
+        });
+
+        const providerData = transferResult.transferData || {};
+        const localStatus = mapLencoStatusToLocal(providerData.status);
+
+        const syncClient = await pool.connect();
+        try {
+            await syncClient.query('BEGIN');
+            await updateWalletWithdrawalRecord(syncClient, reference, {
+                provider_transfer_id: providerData.id || null,
+                provider_reference: providerData.lencoReference || null,
+                provider_status: String(providerData.status || 'pending').toLowerCase(),
+                local_status: localStatus,
+                provider_response: JSON.stringify(providerData)
+            });
+            await syncClient.query('COMMIT');
+        } catch (err) {
+            await syncClient.query('ROLLBACK');
+            throw err;
+        } finally {
+            syncClient.release();
+        }
+
+        if (localStatus === 'COMPLETED') {
+            await completeWalletWithdrawal(reference, providerData);
+        } else if (localStatus === 'FAILED') {
+            await failWalletWithdrawal(reference, providerData.reasonForFailure || providerData.message || 'Mobile money transfer failed', providerData);
+        }
+
+        const withdrawalRes = await pool.query(
+            'SELECT * FROM wallet_withdrawals WHERE reference = $1 AND user_id = $2 LIMIT 1',
+            [reference, req.merchant.merchant_user_id]
+        );
+
+        return res.status(201).json({
+            status: true,
+            message: '',
+            data: mapWithdrawalRecordToApiResponse(withdrawalRes.rows[0] || {
+                wallet_id: walletId,
+                amount,
+                fee_amount: feeAmount,
+                currency: wallet.currency,
+                reference,
+                destination_type: 'mobile_money',
+                destination_details: {
+                    phoneNumber: normalizedPhone,
+                    provider: normalizedOperator,
+                    country,
+                    narration
+                },
+                local_status: localStatus,
+                provider_reference: providerData.lencoReference || null,
+                provider_transfer_id: providerData.id || null,
+                created_at: new Date().toISOString(),
+                updated_at: providerData.completedAt || null,
+                failure_reason: providerData.reasonForFailure || null
+            })
+        });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[FlapaPay API][Transfer Mobile Money]', error.response?.data || error.message);
+        if (reference) {
+            try {
+                const existing = await pool.query('SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1', [reference]);
+                if (existing.rows.length > 0) {
+                    await failWalletWithdrawal(reference, error.response?.data?.message || error.message || 'Mobile money transfer failed', error.response?.data?.data || {});
+                }
+            } catch (syncErr) {
+                console.error('[FlapaPay API][Transfer Mobile Money][Compensation]', syncErr.message);
+            }
+        }
+        return res.status(error.response?.status || 400).json({
+            status: false,
+            message: error.response?.data?.message || error.message || 'Failed to initiate transfer',
+            data: null
+        });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/v1/transfers', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.query.wallet_id || '').trim();
+    const status = String(req.query.status || '').trim().toUpperCase();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 100);
+    const params = [req.merchant.merchant_user_id];
+    const conditions = ['user_id = $1'];
+
+    if (walletId) {
+        params.push(walletId);
+        conditions.push(`wallet_id = $${params.length}`);
+    }
+    if (status) {
+        params.push(status);
+        conditions.push(`UPPER(local_status) = $${params.length}`);
+    }
+
+    try {
+        await syncPendingLencoWithdrawalsForUser(req.merchant.merchant_user_id, 10);
+        const result = await pool.query(
+            `SELECT *
+             FROM wallet_withdrawals
+             WHERE ${conditions.join(' AND ')}
+             ORDER BY created_at DESC
+             LIMIT $${params.push(limit)}`,
+            params
+        );
+
+        return res.json({
+            status: true,
+            message: '',
+            data: result.rows.map(mapWithdrawalRecordToApiResponse)
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Transfers][List]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch transfers',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/transfers/:reference', authenticateApiKey, async (req, res) => {
+    const { reference } = req.params;
+
+    try {
+        let withdrawalRes = await pool.query(
+            'SELECT * FROM wallet_withdrawals WHERE reference = $1 AND user_id = $2 LIMIT 1',
+            [reference, req.merchant.merchant_user_id]
+        );
+        if (withdrawalRes.rows.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: 'Transfer not found',
+                data: null
+            });
+        }
+
+        const withdrawal = withdrawalRes.rows[0];
+        if (withdrawal.provider === 'lenco' && String(withdrawal.local_status || '').toUpperCase() === 'PENDING') {
+            try {
+                await syncLencoWithdrawalReference(reference);
+            } catch (error) {
+                console.error('[FlapaPay API][Transfers][Get][Sync]', error.response?.data || error.message);
+            }
+            withdrawalRes = await pool.query(
+                'SELECT * FROM wallet_withdrawals WHERE reference = $1 AND user_id = $2 LIMIT 1',
+                [reference, req.merchant.merchant_user_id]
+            );
+        }
+
+        return res.json({
+            status: true,
+            message: '',
+            data: mapWithdrawalRecordToApiResponse(withdrawalRes.rows[0])
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Transfers][Get]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch transfer',
+            data: null
+        });
+    }
+});
+
+app.post('/v1/collections/card', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.body.wallet_id || req.body.walletId || '').trim();
+    const reference = String(req.body.reference || '').trim();
+    const description = String(req.body.description || 'Card collection').trim();
+    const transientToken = String(req.body.transientToken || req.body.transient_token || '').trim();
+    const customerId = String(req.body.customerId || req.body.customer_id || '').trim();
+    const amount = Number(req.body.amount);
+    const currency = String(req.body.currency || 'ZMW').trim().toUpperCase();
+    const billingDetails = req.body.billingDetails || req.body.billing_details || {};
+
+    if (!walletId || !reference || !Number.isFinite(amount) || amount <= 0 || !currency) {
+        return res.status(400).json({
+            status: false,
+            message: 'wallet_id, amount, currency, and reference are required',
+            data: null
+        });
+    }
+
+    if (!transientToken && !customerId) {
+        return res.status(400).json({
+            status: false,
+            message: 'Card collection requires transientToken or customerId',
+            data: null
+        });
+    }
+
+    const duplicateRes = await pool.query(
+        'SELECT reference FROM wallet_card_collections WHERE reference = $1 LIMIT 1',
+        [reference]
+    );
+    if (duplicateRes.rows.length > 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'Duplicate reference',
+            data: null
+        });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const walletRes = await client.query(
+            'SELECT id, currency, livemode FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [walletId, req.merchant.merchant_user_id]
+        );
+        if (walletRes.rows.length === 0) {
+            throw new Error('Wallet not found');
+        }
+
+        const wallet = walletRes.rows[0];
+        if (String(wallet.currency || '').toUpperCase() !== currency) {
+            throw new Error(`Wallet currency mismatch. Expected ${wallet.currency}`);
+        }
+
+        const fullName = String(
+            billingDetails.name ||
+            billingDetails.fullName ||
+            req.body.customer_name ||
+            'Cardholder'
+        ).trim();
+        const nameParts = fullName.split(/\s+/).filter(Boolean);
+        const inferredCountry = String(
+            billingDetails.country ||
+            (currency === 'ZMW' ? 'ZM' : currency === 'NGN' ? 'NG' : 'US')
+        ).toUpperCase();
+        const billTo = {
+            firstName: billingDetails.firstName || nameParts[0] || 'Cardholder',
+            lastName: billingDetails.lastName || nameParts.slice(1).join(' ') || 'Customer',
+            address1: billingDetails.address1 || '1 Main St',
+            locality: billingDetails.city || 'Lusaka',
+            administrativeArea: billingDetails.state || billingDetails.city || 'Lusaka',
+            postalCode: billingDetails.postalCode || '10101',
+            country: inferredCountry,
+            email: billingDetails.email || req.body.email || 'api@flapapay.com',
+            phoneNumber: billingDetails.phone || req.body.phone || '0000000000',
+        };
+
+        let processorResult;
+        if (req.isTestMode && !transientToken && customerId === 'test_customer') {
+            processorResult = {
+                id: `card_test_${Date.now()}`,
+                transactionId: `txn_test_${Date.now()}`,
+                status: 'AUTHORIZED',
+                card: {
+                    brand: 'card',
+                    last4: '4242'
+                }
+            };
+        } else {
+            processorResult = await CybersourceService.payments.sale({
+                amount,
+                currency,
+                transientToken: transientToken || undefined,
+                customerId: customerId || undefined,
+                billTo,
+                metadata: {
+                    ref: `COL-CARD-${reference}`,
+                    merchantId: req.merchant.merchant_id,
+                    walletId
+                },
+            });
+        }
+
+        if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(String(processorResult.status || '').toUpperCase())) {
+            throw new Error('Card payment failed');
+        }
+
+        const processorPaymentId = processorResult.id || `card_${Date.now()}`;
+        const processorTransactionId = processorResult.transactionId || null;
+        const cardBrand = processorResult.card?.brand || processorResult.brand || null;
+        const cardLast4 = processorResult.card?.last4 || processorResult.last4 || null;
+        const ledgerReference = `COLCARD-${reference}`;
+
+        await client.query(
+            `INSERT INTO ledger_entries
+              (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode, funding_source_type, funding_source_brand, funding_source_last4)
+             VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'COMPLETED', $6, 'card', $7, $8)`,
+            [
+                ledgerReference,
+                walletId,
+                amount,
+                currency,
+                description,
+                wallet.livemode,
+                cardBrand,
+                cardLast4
+            ]
+        );
+
+        await client.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [amount, walletId]);
+
+        const inserted = await client.query(
+            `INSERT INTO wallet_card_collections
+                (user_id, wallet_id, provider, requested_amount, fee_amount, total_charged, currency, reference,
+                 processor_payment_id, processor_transaction_id, processor_status, local_status, card_brand, card_last4,
+                 credited_transaction_reference, credited_at, processor_response, livemode)
+             VALUES ($1, $2, 'card_processor', $3, 0.00, $3, $4, $5, $6, $7, $8, 'COMPLETED', $9, $10, $11, CURRENT_TIMESTAMP, $12, $13)
+             RETURNING *`,
+            [
+                req.merchant.merchant_user_id,
+                walletId,
+                amount,
+                currency,
+                reference,
+                processorPaymentId,
+                processorTransactionId,
+                String(processorResult.status || 'completed').toLowerCase(),
+                cardBrand,
+                cardLast4,
+                ledgerReference,
+                JSON.stringify(processorResult),
+                wallet.livemode
+            ]
+        );
+
+        await client.query(
+            `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
+                                 description, metadata, livemode, destination_merchant_id, application_fee_amount,
+                                 available_at, is_settled)
+             VALUES ($1,$2,$3,$4,'succeeded','card',$5,$6,$7,$8,$9,$10,NOW(),true)`,
+            [
+                processorPaymentId,
+                req.merchant.merchant_id,
+                amount,
+                currency,
+                JSON.stringify({
+                    brand: cardBrand,
+                    last4: cardLast4,
+                    transactionId: processorTransactionId,
+                    collectionReference: reference
+                }),
+                description,
+                JSON.stringify(req.body.metadata || {}),
+                wallet.livemode,
+                null,
+                null
+            ]
+        );
+
+        await client.query('COMMIT');
+
+        return res.status(201).json({
+            status: true,
+            message: '',
+            data: mapCardCollectionRecordToApiResponse(inserted.rows[0])
+        });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[FlapaPay API][Collections][Card]', error.response?.data || error.message);
+        return res.status(error.response?.status || 400).json({
+            status: false,
+            message: error.response?.data?.message || error.message || 'Failed to create card collection',
+            data: null
+        });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/v1/collections/mobile-money', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.body.wallet_id || req.body.walletId || '').trim();
+    const reference = String(req.body.reference || '').trim();
+    const phoneNumber = String(req.body.phone || req.body.phoneNumber || '').trim();
+    const operator = String(req.body.operator || '').trim();
+    const country = normalizeLencoCountry(req.body.country || 'zm');
+    const requestedAmount = Number(req.body.amount);
+
+    if (!walletId || !reference || !phoneNumber || !operator || !Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'wallet_id, amount, reference, phone, and operator are required',
+            data: null
+        });
+    }
+
+    const duplicateRes = await pool.query(
+        'SELECT reference FROM wallet_mobile_money_collections WHERE reference = $1 LIMIT 1',
+        [reference]
+    );
+    if (duplicateRes.rows.length > 0) {
+        return res.status(400).json({
+            status: false,
+            message: 'Duplicate reference',
+            data: null
+        });
+    }
+
+    const normalizedOperator = normalizeLencoMobileOperator(operator, country);
+    if (!normalizedOperator) {
+        return res.status(400).json({
+            status: false,
+            message: 'Unsupported mobile money operator',
+            data: null
+        });
+    }
+
+    const normalizedPhone = normalizeLencoMobilePhone(phoneNumber, country);
+    const feeRate = 0.018;
+    const feeAmount = roundMoney(requestedAmount * feeRate);
+    const totalCharged = roundMoney(requestedAmount + feeAmount);
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const walletRes = await client.query(
+            'SELECT id, currency, livemode FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE',
+            [walletId, req.merchant.merchant_user_id]
+        );
+        if (walletRes.rows.length === 0) {
+            throw new Error('Wallet not found');
+        }
+
+        const wallet = walletRes.rows[0];
+        if (wallet.currency !== 'ZMW') {
+            throw new Error('Mobile money collections currently support ZMW wallets only');
+        }
+
+        const response = await axios.post(`${LENCO_BASE_URL}/collections/mobile-money`, {
+            amount: totalCharged,
+            reference,
+            phone: normalizedPhone,
+            operator: normalizedOperator,
+            country,
+            bearer: 'merchant'
+        }, {
+            headers: {
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const providerData = response.data?.data || {};
+        const providerStatus = String(providerData.status || '').trim().toLowerCase();
+        const localStatus = mapLencoCollectionStatusToLocal(providerStatus);
+        const inserted = await client.query(
+            `INSERT INTO wallet_mobile_money_collections
+                (user_id, wallet_id, provider, phone_number, operator, country, requested_amount, fee_amount, total_charged, currency, reference, provider_collection_id, provider_reference, provider_status, local_status, provider_response, livemode)
+             VALUES ($1, $2, 'lenco', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             RETURNING *`,
+            [
+                req.merchant.merchant_user_id,
+                wallet.id,
+                normalizedPhone,
+                normalizedOperator,
+                country,
+                requestedAmount,
+                feeAmount,
+                totalCharged,
+                wallet.currency,
+                reference,
+                providerData.id || null,
+                providerData.lencoReference || null,
+                providerStatus || null,
+                localStatus,
+                JSON.stringify(providerData),
+                wallet.livemode
+            ]
+        );
+
+        await insertDepositNotification(client, {
+            userId: req.merchant.merchant_user_id,
+            status: 'PENDING',
+            amount: requestedAmount,
+            currency: wallet.currency,
+            reference,
+            phoneNumber: normalizedPhone,
+            operator: normalizedOperator
+        });
+
+        await client.query('COMMIT');
+
+        let collection = inserted.rows[0];
+        if (localStatus === 'COMPLETED') {
+            collection = await finalizeLencoMobileMoneyCollection(reference, providerData);
+        }
+
+        return res.status(201).json({
+            status: true,
+            message: response.data?.message || '',
+            data: mapCollectionRecordToApiResponse({
+                ...collection,
+                account_name: providerData.mobileMoneyDetails?.accountName || null
+            })
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('[FlapaPay API][Collections][Mobile Money]', error.response?.data || error.message);
+        return res.status(error.response?.status || 400).json({
+            status: false,
+            message: error.response?.data?.message || error.message || 'Failed to initiate mobile money collection',
+            data: null
+        });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/v1/collections', authenticateApiKey, async (req, res) => {
+    const walletId = String(req.query.wallet_id || '').trim();
+    const status = String(req.query.status || '').trim().toUpperCase();
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 100);
+    const params = [req.merchant.merchant_user_id];
+    const conditions = ['wmc.user_id = $1'];
+
+    if (walletId) {
+        params.push(walletId);
+        conditions.push(`wmc.wallet_id = $${params.length}`);
+    }
+    if (status) {
+        params.push(status);
+        conditions.push(`UPPER(wmc.local_status) = $${params.length}`);
+    }
+
+    params.push(limit);
+    const cardConditions = conditions.map((condition) => condition.replaceAll('wmc.', 'wcc.'));
+
+    try {
+        const [mobileMoneyRes, cardRes] = await Promise.all([
+            pool.query(
+                `SELECT wmc.*
+                 FROM wallet_mobile_money_collections wmc
+                 JOIN wallets w ON w.id = wmc.wallet_id
+                 WHERE ${conditions.join(' AND ')}
+                 ORDER BY wmc.created_at DESC
+                 LIMIT $${params.length}`,
+                params
+            ),
+            pool.query(
+                `SELECT wcc.*
+                 FROM wallet_card_collections wcc
+                 JOIN wallets w ON w.id = wcc.wallet_id
+                 WHERE ${cardConditions.join(' AND ')}
+                 ORDER BY wcc.created_at DESC
+                 LIMIT $${params.length}`,
+                params
+            )
+        ]);
+
+        const collections = [
+            ...mobileMoneyRes.rows.map((row) => ({
+                createdAt: row.created_at,
+                payload: mapCollectionRecordToApiResponse(row)
+            })),
+            ...cardRes.rows.map((row) => ({
+                createdAt: row.created_at,
+                payload: mapCardCollectionRecordToApiResponse(row)
+            }))
+        ]
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, limit)
+            .map((item) => item.payload);
+
+        return res.json({
+            status: true,
+            message: '',
+            data: collections
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Collections][List]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch collections',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/collections/:reference', authenticateApiKey, async (req, res) => {
+    const { reference } = req.params;
+
+    try {
+        const cardCollectionRes = await pool.query(
+            `SELECT wcc.*
+             FROM wallet_card_collections wcc
+             JOIN wallets w ON w.id = wcc.wallet_id
+             WHERE wcc.reference = $1 AND wcc.user_id = $2
+             LIMIT 1`,
+            [reference, req.merchant.merchant_user_id]
+        );
+        if (cardCollectionRes.rows.length > 0) {
+            return res.json({
+                status: true,
+                message: '',
+                data: mapCardCollectionRecordToApiResponse(cardCollectionRes.rows[0])
+            });
+        }
+
+        const collectionRes = await pool.query(
+            `SELECT wmc.*
+             FROM wallet_mobile_money_collections wmc
+             JOIN wallets w ON w.id = wmc.wallet_id
+             WHERE wmc.reference = $1 AND wmc.user_id = $2
+             LIMIT 1`,
+            [reference, req.merchant.merchant_user_id]
+        );
+        if (collectionRes.rows.length === 0) {
+            return res.status(404).json({
+                status: false,
+                message: 'Collection not found',
+                data: null
+            });
+        }
+
+        let collection = collectionRes.rows[0];
+        const localStatus = String(collection.local_status || '').toUpperCase();
+        if (!['COMPLETED', 'FAILED'].includes(localStatus)) {
+            const providerData = await fetchLencoCollectionByReference(reference);
+            collection = await finalizeLencoMobileMoneyCollection(reference, providerData);
+            collection.account_name = providerData.mobileMoneyDetails?.accountName || null;
+        }
+
+        return res.json({
+            status: true,
+            message: '',
+            data: mapCollectionRecordToApiResponse(collection)
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Collections][Get]', error.response?.data || error.message);
+        return res.status(error.response?.status || 500).json({
+            status: false,
+            message: error.response?.data?.message || 'Failed to fetch collection',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/settlements', authenticateApiKey, async (req, res) => {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 100);
+
+    try {
+        const [mobileMoneyCollectionsRes, cardCollectionsRes, withdrawalsRes] = await Promise.all([
+            pool.query(
+                `SELECT reference, wallet_id, requested_amount, fee_amount, total_charged, currency, local_status,
+                        provider_status, failure_reason, credited_transaction_reference, created_at, credited_at
+                 FROM wallet_mobile_money_collections
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2`,
+                [req.merchant.merchant_user_id, limit]
+            ),
+            pool.query(
+                `SELECT reference, wallet_id, requested_amount, fee_amount, total_charged, currency, local_status,
+                        processor_status, failure_reason, credited_transaction_reference, created_at, credited_at
+                 FROM wallet_card_collections
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2`,
+                [req.merchant.merchant_user_id, limit]
+            ),
+            pool.query(
+                `SELECT reference, wallet_id, destination_type, amount, fee_amount, total_debited, currency,
+                        local_status, provider_status, failure_reason, provider_reference, provider_transfer_id,
+                        created_at, updated_at
+                 FROM wallet_withdrawals
+                 WHERE user_id = $1
+                 ORDER BY created_at DESC
+                 LIMIT $2`,
+                [req.merchant.merchant_user_id, limit]
+            )
+        ]);
+
+        const settlements = [
+            ...mobileMoneyCollectionsRes.rows.map((row) => ({
+                type: 'collection',
+                reference: row.reference,
+                walletId: row.wallet_id,
+                amount: Number(row.requested_amount || 0).toFixed(2),
+                fee: Number(row.fee_amount || 0).toFixed(2),
+                grossAmount: Number(row.total_charged || 0).toFixed(2),
+                currency: row.currency,
+                status: String(row.local_status || row.provider_status || 'pending').toLowerCase(),
+                settlementStatus: row.credited_at ? 'settled' : 'pending',
+                ledgerReference: row.credited_transaction_reference || null,
+                reasonForFailure: row.failure_reason || null,
+                createdAt: row.created_at,
+                settledAt: row.credited_at || null
+            })),
+            ...cardCollectionsRes.rows.map((row) => ({
+                type: 'collection',
+                reference: row.reference,
+                walletId: row.wallet_id,
+                amount: Number(row.requested_amount || 0).toFixed(2),
+                fee: Number(row.fee_amount || 0).toFixed(2),
+                grossAmount: Number(row.total_charged || 0).toFixed(2),
+                currency: row.currency,
+                status: String(row.local_status || row.processor_status || 'pending').toLowerCase(),
+                settlementStatus: row.credited_at ? 'settled' : 'pending',
+                ledgerReference: row.credited_transaction_reference || null,
+                reasonForFailure: row.failure_reason || null,
+                createdAt: row.created_at,
+                settledAt: row.credited_at || null
+            })),
+            ...withdrawalsRes.rows.map((row) => ({
+                type: 'transfer',
+                reference: row.reference,
+                walletId: row.wallet_id,
+                amount: Number(row.amount || 0).toFixed(2),
+                fee: Number(row.fee_amount || 0).toFixed(2),
+                grossAmount: Number(row.total_debited || 0).toFixed(2),
+                currency: row.currency,
+                status: String(row.local_status || row.provider_status || 'pending').toLowerCase(),
+                settlementStatus: String(row.local_status || '').toUpperCase() === 'COMPLETED' ? 'settled' : 'pending',
+                ledgerReference: row.reference,
+                reasonForFailure: row.failure_reason || null,
+                destinationType: row.destination_type,
+                providerReference: row.provider_reference || row.provider_transfer_id || null,
+                createdAt: row.created_at,
+                settledAt: String(row.local_status || '').toUpperCase() === 'COMPLETED' ? row.updated_at : null
+            }))
+        ]
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, limit);
+
+        return res.json({
+            status: true,
+            message: '',
+            data: settlements
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Settlements]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch settlements',
+            data: null
+        });
+    }
+});
+
+app.get('/v1/settlements/:reference', authenticateApiKey, async (req, res) => {
+    const { reference } = req.params;
+
+    try {
+        const cardCollectionRes = await pool.query(
+            `SELECT reference, wallet_id, requested_amount, fee_amount, total_charged, currency, local_status,
+                    processor_status, failure_reason, credited_transaction_reference, created_at, credited_at
+             FROM wallet_card_collections
+             WHERE user_id = $1 AND reference = $2
+             LIMIT 1`,
+            [req.merchant.merchant_user_id, reference]
+        );
+        if (cardCollectionRes.rows.length > 0) {
+            const row = cardCollectionRes.rows[0];
+            return res.json({
+                status: true,
+                message: '',
+                data: {
+                    type: 'collection',
+                    reference: row.reference,
+                    walletId: row.wallet_id,
+                    amount: Number(row.requested_amount || 0).toFixed(2),
+                    fee: Number(row.fee_amount || 0).toFixed(2),
+                    grossAmount: Number(row.total_charged || 0).toFixed(2),
+                    currency: row.currency,
+                    status: String(row.local_status || row.processor_status || 'pending').toLowerCase(),
+                    settlementStatus: row.credited_at ? 'settled' : 'pending',
+                    ledgerReference: row.credited_transaction_reference || null,
+                    reasonForFailure: row.failure_reason || null,
+                    createdAt: row.created_at,
+                    settledAt: row.credited_at || null
+                }
+            });
+        }
+
+        const collectionRes = await pool.query(
+            `SELECT reference, wallet_id, requested_amount, fee_amount, total_charged, currency, local_status,
+                    provider_status, failure_reason, credited_transaction_reference, created_at, credited_at
+             FROM wallet_mobile_money_collections
+             WHERE user_id = $1 AND reference = $2
+             LIMIT 1`,
+            [req.merchant.merchant_user_id, reference]
+        );
+        if (collectionRes.rows.length > 0) {
+            const row = collectionRes.rows[0];
+            return res.json({
+                status: true,
+                message: '',
+                data: {
+                    type: 'collection',
+                    reference: row.reference,
+                    walletId: row.wallet_id,
+                    amount: Number(row.requested_amount || 0).toFixed(2),
+                    fee: Number(row.fee_amount || 0).toFixed(2),
+                    grossAmount: Number(row.total_charged || 0).toFixed(2),
+                    currency: row.currency,
+                    status: String(row.local_status || row.provider_status || 'pending').toLowerCase(),
+                    settlementStatus: row.credited_at ? 'settled' : 'pending',
+                    ledgerReference: row.credited_transaction_reference || null,
+                    reasonForFailure: row.failure_reason || null,
+                    createdAt: row.created_at,
+                    settledAt: row.credited_at || null
+                }
+            });
+        }
+
+        const transferRes = await pool.query(
+            `SELECT reference, wallet_id, destination_type, amount, fee_amount, total_debited, currency,
+                    local_status, provider_status, failure_reason, provider_reference, provider_transfer_id,
+                    created_at, updated_at
+             FROM wallet_withdrawals
+             WHERE user_id = $1 AND reference = $2
+             LIMIT 1`,
+            [req.merchant.merchant_user_id, reference]
+        );
+        if (transferRes.rows.length > 0) {
+            const row = transferRes.rows[0];
+            return res.json({
+                status: true,
+                message: '',
+                data: {
+                    type: 'transfer',
+                    reference: row.reference,
+                    walletId: row.wallet_id,
+                    amount: Number(row.amount || 0).toFixed(2),
+                    fee: Number(row.fee_amount || 0).toFixed(2),
+                    grossAmount: Number(row.total_debited || 0).toFixed(2),
+                    currency: row.currency,
+                    status: String(row.local_status || row.provider_status || 'pending').toLowerCase(),
+                    settlementStatus: String(row.local_status || '').toUpperCase() === 'COMPLETED' ? 'settled' : 'pending',
+                    ledgerReference: row.reference,
+                    reasonForFailure: row.failure_reason || null,
+                    destinationType: row.destination_type,
+                    providerReference: row.provider_reference || row.provider_transfer_id || null,
+                    createdAt: row.created_at,
+                    settledAt: String(row.local_status || '').toUpperCase() === 'COMPLETED' ? row.updated_at : null
+                }
+            });
+        }
+
+        return res.status(404).json({
+            status: false,
+            message: 'Settlement not found',
+            data: null
+        });
+    } catch (error) {
+        console.error('[FlapaPay API][Settlements][Get]', error.message);
+        return res.status(500).json({
+            status: false,
+            message: 'Failed to fetch settlement',
+            data: null
+        });
     }
 });
 
@@ -5941,108 +12436,1038 @@ app.get('/wallets', authenticateToken, async (req, res) => {
     }
 });
 
-// Wallet Withdrawal (To Bank/Mobile Money)
-app.post('/wallets/withdraw', authenticateToken, async (req, res) => {
-    const { walletId, amount, destinationType, destinationDetails, pin } = req.body;
-
-    // Verify PIN
-    const isPinValid = await verifyUserPin(req.user.id, pin);
-    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
-    const client = await pool.connect();
+app.get('/bill-payments/categories', authenticateToken, async (_req, res) => {
     try {
-        await client.query('BEGIN');
-
-        // 1. Fetch Wallet
-        const walletRes = await client.query('SELECT * FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE', [walletId, req.user.id]);
-        if (walletRes.rows.length === 0) throw new Error('Wallet not found');
-        const wallet = walletRes.rows[0];
-
-        if (Number(wallet.balance) < Number(amount)) throw new Error('Insufficient wallet balance');
-
-        // 2. Deduct Balance (no fee — withdrawals are free)
-        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [amount, walletId]);
-
-        // 3. Record Payout
-        const payoutRef = 'WTH-' + crypto.randomBytes(6).toString('hex').toUpperCase();
-        await client.query(`
-            INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
-            VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'COMPLETED')`,
-            [payoutRef, walletId, amount, wallet.currency, `Withdrawal to ${destinationType} (${JSON.stringify(destinationDetails)})`]
+        const cached = await pool.query(
+            `SELECT category_code, display_name, is_active
+             FROM bill_payment_categories
+             WHERE is_active = TRUE
+             ORDER BY display_name ASC`
         );
 
-        // Real External Transfer Logic
-        if (destinationType === 'bank_account') {
-            const systemAccountId = "e24f5dee-3b7b-4fbd-835f-b75365a7c4cd";
-            console.log(`[Lenco] Checking system balance for account ${systemAccountId}...`);
+        const items = cached.rows.length
+            ? cached.rows.map((row) => ({
+                code: row.category_code,
+                display_name: row.display_name,
+                accent: BILL_PAYMENT_CATEGORIES.find((item) => item.code === row.category_code)?.accent || 'from-orange-500 to-amber-500'
+            }))
+            : BILL_PAYMENT_CATEGORIES;
 
-            try {
-                // Pre-flight balance check
-                const balanceRes = await axios.get(`${LENCO_BASE_URL}/accounts/${systemAccountId}/balance`, {
-                    headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
-                });
+        res.json(items);
+    } catch (err) {
+        console.error('[BillPaymentCategories]', err);
+        res.status(500).json({ error: 'Failed to fetch bill categories' });
+    }
+});
 
-                const availableBalance = parseFloat(balanceRes.data.data.availableBalance);
-                if (availableBalance < Number(amount)) {
-                    console.error(`[Lenco] Insufficient system funds: Required ${amount}, Available ${availableBalance}`);
-                    throw new Error('Withdrawal temporarily unavailable due to system liquidity. Please try again later.');
-                }
-
-                console.log(`[Lenco] Initiating bank transfer for ${amount} ${wallet.currency} to ${destinationDetails.accountNumber}`);
-                await axios.post(`${LENCO_BASE_URL}/transfers/bank-account`, {
-                    accountId: systemAccountId,
-                    amount: Number(amount),
-                    reference: payoutRef,
-                    narration: `Withdrawal from FlapaPay Wallet`,
-                    accountNumber: destinationDetails.accountNumber,
-                    bankId: destinationDetails.bankId,
-                    country: destinationDetails.country || 'ZM'
-                }, {
-                    headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
-                });
-            } catch (error) {
-                console.error('[Lenco] Transfer Error:', error.response?.data || error.message);
-                throw new Error(error.response?.data?.message || 'Bank transfer failed');
-            }
-        } else if (destinationType === 'mobile_money') {
-            console.log(`[PawaPay] Initiating mobile payout for ${amount} ${wallet.currency} to ${destinationDetails.phoneNumber}`);
-            // PawaPay payouts are handled by /pawapay/payout but we log here too
+app.get('/bill-payments/vendors', authenticateToken, async (req, res) => {
+    const category = String(req.query.category || '').trim().toLowerCase();
+    const client = await pool.connect();
+    try {
+        let vendors = [];
+        let providerFetchFailed = false;
+        let providerErrorMessage = '';
+        try {
+            vendors = category
+                ? await LencoBillPaymentService.listVendorsByCategory(category)
+                : await LencoBillPaymentService.listVendors();
+            await upsertBillPaymentVendors(client, vendors);
+        } catch (providerErr) {
+            providerFetchFailed = true;
+            providerErrorMessage = providerErr.response?.data?.message || providerErr.message || 'Provider catalog unavailable';
+            console.error('[BillPaymentVendors] Provider fetch failed, falling back to cache:', providerErr.response?.data || providerErr.message);
         }
 
-        await client.query('COMMIT');
-        res.json({ success: true, reference: payoutRef, amount, currency: wallet.currency });
+        const cached = await client.query(
+            `SELECT provider_vendor_id, category_code, name
+             FROM bill_payment_vendors
+             WHERE is_active = TRUE
+               AND ($1 = '' OR category_code = $1)
+             ORDER BY name ASC`,
+            [category]
+        );
+
+        if (providerFetchFailed && cached.rows.length === 0) {
+            return res.status(503).json({
+                error: `Lenco bill payment catalog is currently unavailable: ${providerErrorMessage}`
+            });
+        }
+
+        res.json(cached.rows.map((row) => ({
+            id: row.provider_vendor_id,
+            category_code: row.category_code,
+            name: row.name
+        })));
     } catch (err) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ error: err.message });
+        console.error('[BillPaymentVendors]', err);
+        res.status(500).json({ error: 'Failed to fetch bill vendors' });
     } finally {
         client.release();
     }
 });
 
+app.get('/bill-payments/products', authenticateToken, async (req, res) => {
+    const category = String(req.query.category || '').trim().toLowerCase();
+    const vendorId = String(req.query.vendorId || '').trim();
+    const client = await pool.connect();
+    try {
+        let products = [];
+        let providerFetchFailed = false;
+        let providerErrorMessage = '';
+        try {
+            if (vendorId) {
+                products = await LencoBillPaymentService.listProductsByVendor(vendorId);
+            } else if (category) {
+                products = await LencoBillPaymentService.listProductsByCategory(category);
+            } else {
+                products = await LencoBillPaymentService.listProducts();
+            }
+            await upsertBillPaymentProducts(client, products);
+        } catch (providerErr) {
+            providerFetchFailed = true;
+            providerErrorMessage = providerErr.response?.data?.message || providerErr.message || 'Provider catalog unavailable';
+            console.error('[BillPaymentProducts] Provider fetch failed, falling back to cache:', providerErr.response?.data || providerErr.message);
+        }
+
+        const cached = await client.query(
+            `SELECT provider_product_id, provider_vendor_id, category_code, name, customer_id_label,
+                    amount_type, fixed_amount, minimum_amount, maximum_amount, commission_percentage
+             FROM bill_payment_products
+             WHERE is_active = TRUE
+               AND ($1 = '' OR category_code = $1)
+               AND ($2 = '' OR provider_vendor_id = $2)
+             ORDER BY name ASC`,
+            [category, vendorId]
+        );
+
+        if (providerFetchFailed && cached.rows.length === 0) {
+            return res.status(503).json({
+                error: `Lenco bill payment products are currently unavailable: ${providerErrorMessage}`
+            });
+        }
+
+        res.json(cached.rows.map((row) => ({
+            id: row.provider_product_id,
+            vendor_id: row.provider_vendor_id,
+            category_code: row.category_code,
+            name: row.name,
+            customer_id_label: row.customer_id_label,
+            amount_type: row.amount_type,
+            fixed_amount: Number(row.fixed_amount || 0),
+            minimum_amount: Number(row.minimum_amount || 0),
+            maximum_amount: Number(row.maximum_amount || 0),
+            commission_percentage: Number(row.commission_percentage || 0)
+        })));
+    } catch (err) {
+        console.error('[BillPaymentProducts]', err);
+        res.status(500).json({ error: 'Failed to fetch bill products' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/bill-payments/lookup', authenticateToken, async (req, res) => {
+    try {
+        const { customerId, productId, vendorId } = req.body || {};
+        if (!customerId || (!productId && !vendorId)) {
+            return res.status(400).json({ error: 'customerId and productId or vendorId are required' });
+        }
+
+        const lookup = await LencoBillPaymentService.lookupAccount({ customerId, productId, vendorId });
+        res.json(lookup);
+    } catch (err) {
+        console.error('[BillPaymentLookup]', err.response?.data || err.message);
+        res.status(err.response?.status || 500).json({
+            error: err.response?.data?.message || 'Failed to validate bill account'
+        });
+    }
+});
+
+app.post('/bill-payments/quote', authenticateToken, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { walletId, productId, amount } = req.body || {};
+        const requestedAmount = Number(amount);
+        if (!walletId || !productId) {
+            return res.status(400).json({ error: 'walletId and productId are required' });
+        }
+
+        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id });
+        if (String(wallet.currency || '').toUpperCase() !== 'ZMW') {
+            return res.status(400).json({ error: 'Bill payments currently support ZMW wallets only' });
+        }
+
+        let product = await getBillPaymentProductByProviderId(client, productId);
+        if (!product) {
+            const liveProduct = await LencoBillPaymentService.getProduct(productId);
+            await upsertBillPaymentProducts(client, [liveProduct]);
+            product = await getBillPaymentProductByProviderId(client, productId);
+        }
+        if (!product) {
+            return res.status(404).json({ error: 'Bill payment product not found' });
+        }
+
+        const effective = validateBillPaymentAmount({
+            amount: Number.isFinite(requestedAmount) ? requestedAmount : Number(product.fixed_amount || 0),
+            product
+        });
+        const quote = getBillPaymentFeeQuote({ amount: effective.amount, currency: wallet.currency });
+
+        res.json({
+            wallet_id: wallet.id,
+            currency: wallet.currency,
+            product_id: product.provider_product_id,
+            product_name: product.name,
+            amount_type: product.amount_type,
+            amount: effective.amount,
+            fee_amount: quote.feeAmount,
+            total_debited: quote.totalDebited,
+            fee_policy: quote.feePolicy,
+            fee_label: quote.feeLabel
+        });
+    } catch (err) {
+        console.error('[BillPaymentQuote]', err);
+        res.status(400).json({ error: err.message || 'Failed to prepare bill payment quote' });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/bill-payments', authenticateToken, async (req, res) => {
+    try {
+        await syncPendingBillPaymentsForUser(req.user.id, 10);
+        const limit = Math.min(Math.max(parseInt(String(req.query.limit || '10'), 10) || 10, 1), 50);
+        const result = await pool.query(
+            `SELECT id, client_reference, category_code, provider_vendor_id, provider_product_id, vendor_name,
+                    product_name, customer_id, customer_name, customer_id_label, amount, fee_amount, total_debited,
+                    currency, local_status, provider_status, reason_for_failure, provider_transaction_reference,
+                    instructions, created_at, updated_at
+             FROM bill_payments
+             WHERE user_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [req.user.id, limit]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error('[BillPaymentsList]', err);
+        res.status(500).json({ error: 'Failed to fetch bill payments' });
+    }
+});
+
+app.get('/bill-payments/:id', authenticateToken, async (req, res) => {
+    try {
+        const reference = String(req.params.id || '').trim();
+        const result = await pool.query(
+            `SELECT *
+             FROM bill_payments
+             WHERE user_id = $1
+               AND (id::text = $2 OR client_reference = $2)
+             LIMIT 1`,
+            [req.user.id, reference]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Bill payment not found' });
+        }
+
+        if (result.rows[0].local_status === 'PENDING') {
+            try {
+                await syncBillPaymentReference(result.rows[0].client_reference);
+            } catch (syncErr) {
+                console.error('[BillPaymentsDetail] Sync error:', syncErr.response?.data || syncErr.message);
+            }
+        }
+
+        const refreshed = await pool.query(
+            `SELECT *
+             FROM bill_payments
+             WHERE user_id = $1
+               AND id = $2`,
+            [req.user.id, result.rows[0].id]
+        );
+        res.json(refreshed.rows[0]);
+    } catch (err) {
+        console.error('[BillPaymentsDetail]', err);
+        res.status(500).json({ error: 'Failed to fetch bill payment' });
+    }
+});
+
+app.post('/bill-payments', authenticateToken, async (req, res) => {
+    const {
+        walletId,
+        productId,
+        vendorId,
+        customerId,
+        amount,
+        pin
+    } = req.body || {};
+
+    const isPinValid = await verifyUserPin(req.user.id, pin);
+    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+
+    const client = await pool.connect();
+    let reference = null;
+    let responseSummary = null;
+    let clientReleased = false;
+    let preparedPayment = null;
+    try {
+        await client.query('BEGIN');
+
+        if (!walletId || !productId || !customerId) {
+            throw new Error('walletId, productId, and customerId are required');
+        }
+
+        const wallet = await loadWalletForDebit(client, { walletId, userId: req.user.id });
+        if (String(wallet.currency || '').toUpperCase() !== 'ZMW') {
+            throw new Error('Bill payments currently support ZMW wallets only');
+        }
+        const debitAccountId = getLencoAccountIdForCurrency(wallet.currency);
+        if (!debitAccountId) {
+            throw new Error(`No Lenco source account configured for ${wallet.currency} bill payments`);
+        }
+
+        let product = await getBillPaymentProductByProviderId(client, productId);
+        if (!product) {
+            const liveProduct = await LencoBillPaymentService.getProduct(productId);
+            await upsertBillPaymentProducts(client, [liveProduct]);
+            product = await getBillPaymentProductByProviderId(client, productId);
+        }
+        if (!product) {
+            throw new Error('Bill payment product not found');
+        }
+
+        const vendor = await getBillPaymentVendorByProviderId(client, vendorId || product.provider_vendor_id || null);
+
+        const effective = validateBillPaymentAmount({
+            amount: Number.isFinite(Number(amount)) ? Number(amount) : Number(product.fixed_amount || 0),
+            product
+        });
+        const quote = getBillPaymentFeeQuote({ amount: effective.amount, currency: wallet.currency });
+        if (Number(wallet.balance) < quote.totalDebited) {
+            throw new Error(`Insufficient wallet balance. Total debit is ${quote.totalDebited.toFixed(2)} ${wallet.currency}`);
+        }
+
+        let lookup = null;
+        const categoryCode = String(product.category_code || '').toLowerCase();
+        if (['cable-tv', 'electricity'].includes(categoryCode)) {
+            lookup = await LencoBillPaymentService.lookupAccount({
+                customerId,
+                productId,
+                vendorId: vendorId || product.provider_vendor_id || null
+            });
+            if (lookup.verified === false) {
+                throw new Error(lookup.message || 'Could not validate bill account');
+            }
+        }
+
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [quote.totalDebited, wallet.id]);
+
+        reference = generateBillPaymentReference();
+        await client.query(
+            `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+             VALUES ($1, $2, $3, $4, $5, 'BILL_PAYMENT', 'PENDING')`,
+            [
+                reference,
+                wallet.id,
+                effective.amount,
+                wallet.currency,
+                buildBillPaymentLedgerDescription({
+                    categoryCode,
+                    productName: product.name,
+                    customerId
+                })
+            ]
+        );
+
+        if (quote.feeAmount > 0) {
+            await client.query(
+                `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                 VALUES ($1, $2, $3, $4, $5, 'FEE', 'PENDING')`,
+                [
+                    `${reference}-FEE`,
+                    wallet.id,
+                    quote.feeAmount,
+                    wallet.currency,
+                    `Bill payment fee for ${product.name}`
+                ]
+            );
+        }
+
+        await client.query(
+            `INSERT INTO bill_payments
+                (user_id, wallet_id, currency, provider, client_reference, category_code, provider_vendor_id, provider_product_id,
+                 vendor_name, product_name, customer_id, customer_name, customer_id_label, debit_account_id, amount, fee_amount,
+                 total_debited, provider_commission_percentage, local_status, provider_status, lookup_payload, livemode)
+             VALUES
+                ($1, $2, $3, 'lenco', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'PENDING', 'initiated', $18::jsonb, $19)`,
+            [
+                req.user.id,
+                wallet.id,
+                wallet.currency,
+                reference,
+                categoryCode || null,
+                vendorId || product.provider_vendor_id || null,
+                product.provider_product_id,
+                vendor?.name || null,
+                product.name,
+                customerId,
+                lookup?.customerName || null,
+                product.customer_id_label || 'Customer ID',
+                debitAccountId,
+                effective.amount,
+                quote.feeAmount,
+                quote.totalDebited,
+                Number(product.commission_percentage || 0),
+                lookup ? JSON.stringify(lookup.rawPayload || lookup) : null,
+                wallet.livemode
+            ]
+        );
+
+        await insertBillPaymentNotification(client, {
+            userId: req.user.id,
+            status: 'PENDING',
+            amount: effective.amount,
+            currency: wallet.currency,
+            reference,
+            categoryCode,
+            productName: product.name,
+            vendorName: vendor?.name || null,
+            customerId,
+            customerName: lookup?.customerName || null
+        });
+
+        await client.query('COMMIT');
+        preparedPayment = {
+            productId: product.provider_product_id,
+            customerId,
+            debitAccountId,
+            amount: effective.amount
+        };
+    } catch (err) {
+        try {
+            await client.query('ROLLBACK');
+        } catch (_rollbackErr) {}
+        client.release();
+        clientReleased = true;
+        console.error('[BillPaymentCreate]', err.response?.data || err.message || err);
+        return res.status(err.response?.status || 400).json({
+            error: err.response?.data?.message || err.message || 'Failed to initiate bill payment'
+        });
+    } finally {
+        if (!clientReleased) {
+            client.release();
+        }
+    }
+
+    try {
+        const providerPayment = await LencoBillPaymentService.createBill({
+            ...preparedPayment,
+            reference
+        });
+
+        const localStatus = mapLencoBillStatusToLocal(providerPayment.providerStatus);
+        if (localStatus === 'COMPLETED') {
+            await completeBillPayment(reference, providerPayment);
+        } else if (localStatus === 'FAILED') {
+            await failBillPayment(reference, providerPayment.rawPayload?.message || 'Bill payment failed', providerPayment);
+        } else {
+            await pool.query(
+                `UPDATE bill_payments
+                 SET provider_bill_payment_id = $2,
+                     provider_transaction_reference = $3,
+                     provider_status = $4,
+                     provider_payload = $5::jsonb,
+                     instructions = COALESCE($6::jsonb, instructions),
+                     customer_name = COALESCE($7, customer_name),
+                     updated_at = NOW()
+                 WHERE client_reference = $1`,
+                [
+                    reference,
+                    providerPayment.providerBillPaymentId || null,
+                    providerPayment.providerReference || reference,
+                    String(providerPayment.providerStatus || 'pending').toLowerCase(),
+                    JSON.stringify(providerPayment.rawPayload || providerPayment),
+                    providerPayment.instructions ? JSON.stringify(providerPayment.instructions) : null,
+                    providerPayment.customerName || null
+                ]
+            );
+        }
+    } catch (err) {
+        console.error('[BillPaymentProviderCall]', err.response?.data || err.message || err);
+        if (reference) {
+            try {
+                await failBillPayment(reference, err.response?.data?.message || err.message || 'Bill payment failed', err.response?.data?.data || {});
+            } catch (syncErr) {
+                console.error('[BillPaymentProviderCall] Compensation failed:', syncErr.message);
+            }
+        }
+        return res.status(err.response?.status || 502).json({
+            error: err.response?.data?.message || err.message || 'Failed to initiate bill payment',
+            reference
+        });
+    }
+
+    const refreshed = await pool.query(
+        `SELECT id, client_reference, category_code, vendor_name, product_name, customer_id, customer_name,
+                amount, fee_amount, total_debited, currency, local_status, provider_status, reason_for_failure,
+                provider_transaction_reference, instructions, created_at, updated_at
+         FROM bill_payments
+         WHERE client_reference = $1`,
+        [reference]
+    );
+    responseSummary = refreshed.rows[0];
+
+    return res.json({
+        success: true,
+        bill_payment: responseSummary
+    });
+});
+
+app.post('/webhooks/lenco/bills', async (req, res) => {
+    const rawBody = req.rawBody || JSON.stringify(req.body || {});
+    const signature = req.headers['x-lenco-signature'];
+    const payload = req.body || {};
+    const eventType = String(payload?.event || payload?.type || payload?.eventType || '').trim() || null;
+    const providerReference = String(
+        payload?.data?.reference ||
+        payload?.reference ||
+        payload?.data?.transactionReference ||
+        ''
+    ).trim() || null;
+
+    try {
+        const isValid = LencoBillPaymentService.verifyWebhookSignature(rawBody, signature);
+        if (!isValid) {
+            return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+
+        await pool.query(
+            `INSERT INTO bill_payment_webhooks (provider, event_type, provider_reference, signature, payload)
+             VALUES ('lenco', $1, $2, $3, $4::jsonb)`,
+            [eventType, providerReference, String(signature || ''), JSON.stringify(payload || {})]
+        );
+
+        if (providerReference) {
+            try {
+                await syncBillPaymentReference(providerReference);
+            } catch (syncErr) {
+                console.error('[Lenco Bill Webhook] Sync error:', providerReference, syncErr.response?.data || syncErr.message);
+            }
+        }
+
+        await pool.query(
+            `UPDATE bill_payment_webhooks
+             SET processed = TRUE, processed_at = NOW()
+             WHERE provider = 'lenco'
+               AND provider_reference IS NOT DISTINCT FROM $1
+               AND processed = FALSE`,
+            [providerReference]
+        ).catch(() => null);
+
+        return res.json({ received: true });
+    } catch (err) {
+        console.error('[Lenco Bill Webhook]', err);
+        return res.status(500).json({ error: 'Failed to process webhook' });
+    }
+});
+
+app.post('/wallets/withdraw/quote', authenticateToken, async (req, res) => {
+    try {
+        const { walletId, amount, destinationType } = req.body;
+        const requestedAmount = Number(amount);
+
+        if (!walletId || !Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+            return res.status(400).json({ error: 'Valid wallet and amount are required' });
+        }
+
+        const walletRes = await pool.query(
+            'SELECT id, currency FROM wallets WHERE id = $1 AND user_id = $2',
+            [walletId, req.user.id]
+        );
+        if (walletRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+
+        const wallet = walletRes.rows[0];
+        const quote = getWithdrawalFeeQuote({
+            destinationType,
+            amount: requestedAmount,
+            currency: wallet.currency
+        });
+
+        return res.json({
+            amount: roundMoney(requestedAmount),
+            currency: wallet.currency,
+            destination_type: destinationType,
+            fee_amount: quote.feeAmount,
+            total_debited: quote.totalDebited,
+            fee_policy: quote.feePolicy,
+            fee_label: quote.feeLabel
+        });
+    } catch (err) {
+        console.error('[WalletWithdrawQuote]', err);
+        return res.status(500).json({ error: 'Failed to calculate withdrawal fee' });
+    }
+});
+
+app.get('/v1/wallet-withdrawals', authenticateToken, async (req, res) => {
+    try {
+        await syncPendingLencoWithdrawalsForUser(req.user.id, 10);
+        await syncPendingPawaPayPayoutsForUser(req.user.id, 10);
+        const limit = Math.min(Math.max(parseInt(String(req.query.limit || '12'), 10) || 12, 1), 50);
+        const result = await pool.query(
+            `SELECT id, provider, destination_type, destination_details, amount, fee_amount, total_debited, currency, reference,
+                    provider_transfer_id, provider_reference, provider_status, local_status,
+                    failure_reason, created_at, updated_at
+             FROM wallet_withdrawals
+             WHERE user_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [req.user.id, limit]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error('[WalletWithdrawalsList]', err);
+        res.status(500).json({ error: 'Failed to fetch withdrawals' });
+    }
+});
+
+// Wallet Withdrawal (To Bank/Mobile Money)
+app.post('/wallets/withdraw', authenticateToken, async (req, res) => {
+    const { walletId, amount, destinationType, destinationDetails, pin } = req.body;
+    const requestedAmount = Number(amount);
+    let feeAmount = 0;
+    let totalDebited = requestedAmount;
+    const normalizedDestinationType = String(destinationType || '').trim().toLowerCase();
+    const isMobileMoneyWithdrawal = normalizedDestinationType === 'mobile_money';
+    const normalizedMobilePhone = isMobileMoneyWithdrawal
+        ? String(destinationDetails?.phoneNumber || destinationDetails?.phone || '').replace(/\D/g, '')
+        : null;
+    const normalizedMobileProvider = isMobileMoneyWithdrawal
+        ? normalizeLencoMobileOperator(destinationDetails?.provider, 'zm') || String(destinationDetails?.provider || '').trim().toLowerCase()
+        : null;
+    const normalizedMobileCountry = isMobileMoneyWithdrawal ? normalizeLencoCountry(destinationDetails?.country || 'zm') : null;
+    const normalizedMobileAccountName = isMobileMoneyWithdrawal
+        ? String(destinationDetails?.accountName || destinationDetails?.resolvedAccountName || '').trim() || null
+        : null;
+
+    // Verify PIN
+    const isPinValid = await verifyUserPin(req.user.id, pin);
+    if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+    if (!walletId || !Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+        return res.status(400).json({ error: 'Valid wallet and amount are required' });
+    }
+    if (!['bank_account', 'mobile_money'].includes(normalizedDestinationType)) {
+        return res.status(400).json({ error: 'Unsupported withdrawal destination type' });
+    }
+    if (isMobileMoneyWithdrawal) {
+        if (!normalizedMobilePhone) {
+            return res.status(400).json({ error: 'Mobile money phone number is required' });
+        }
+        if (!normalizedMobileProvider) {
+            return res.status(400).json({ error: 'Mobile money operator is required' });
+        }
+    }
+
+    const client = await pool.connect();
+    let payoutRef = null;
+    let walletCurrency = null;
+    let walletLiveMode = true;
+    try {
+        await client.query('BEGIN');
+
+        // 1. Fetch Wallet
+        const wallet = await loadWalletForWithdrawal(client, {
+            walletId,
+            userId: req.user.id,
+            ignoreWithdrawalPause: true
+        });
+        walletCurrency = wallet.currency;
+        walletLiveMode = wallet.livemode;
+
+        const quote = getWithdrawalFeeQuote({
+            destinationType: normalizedDestinationType,
+            amount: requestedAmount,
+            currency: wallet.currency
+        });
+        feeAmount = quote.feeAmount;
+        totalDebited = quote.totalDebited;
+
+        if (Number(wallet.balance) < totalDebited) throw new Error(`Insufficient wallet balance. Total debit is ${totalDebited.toFixed(2)} ${wallet.currency}`);
+        if (normalizedDestinationType === 'bank_account') {
+            if (!['ZMW', 'USD'].includes(String(wallet.currency || '').toUpperCase())) {
+                throw new Error('Bank withdrawals currently support ZMW and USD wallets only');
+            }
+            if (!getLencoAccountIdForCurrency(wallet.currency)) {
+                throw new Error(`No Lenco source account configured for ${wallet.currency} withdrawals`);
+            }
+        }
+
+        // 2. Deduct Balance
+        await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalDebited, walletId]);
+
+        // 3. Record Payout
+        payoutRef = 'WTH-' + crypto.randomBytes(6).toString('hex').toUpperCase();
+        await client.query(`
+            INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+            VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING')`,
+            [
+                payoutRef,
+                walletId,
+                requestedAmount,
+                wallet.currency,
+                buildWithdrawalLedgerDescription(normalizedDestinationType, isMobileMoneyWithdrawal ? {
+                    phoneNumber: normalizedMobilePhone,
+                    provider: normalizedMobileProvider,
+                    country: normalizedMobileCountry,
+                    accountName: normalizedMobileAccountName
+                } : destinationDetails, {
+                    provider: 'lenco',
+                    reference: payoutRef
+                })
+            ]
+        );
+        if (feeAmount > 0) {
+            await client.query(
+                `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                 VALUES ($1, $2, $3, $4, $5, 'FEE', 'PENDING')`,
+                [
+                    `${payoutRef}-FEE`,
+                    walletId,
+                    feeAmount,
+                    wallet.currency,
+                    `Withdrawal fee for ${normalizedDestinationType}`
+                ]
+            );
+        }
+
+        await client.query(
+            `INSERT INTO wallet_withdrawals
+                (user_id, wallet_id, provider, destination_type, destination_details, amount, fee_amount, total_debited, currency, reference, provider_status, local_status, livemode)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'initiated', 'PENDING', $11)`,
+            [
+                req.user.id,
+                walletId,
+                'lenco',
+                normalizedDestinationType,
+                JSON.stringify(isMobileMoneyWithdrawal ? {
+                    phoneNumber: normalizedMobilePhone,
+                    provider: normalizedMobileProvider,
+                    country: normalizedMobileCountry,
+                    accountName: normalizedMobileAccountName
+                } : (destinationDetails || {})),
+                requestedAmount,
+                feeAmount,
+                totalDebited,
+                wallet.currency,
+                payoutRef,
+                wallet.livemode
+            ]
+        );
+        await insertWithdrawalNotification(client, {
+            userId: req.user.id,
+            status: 'PENDING',
+            amount: requestedAmount,
+            currency: wallet.currency,
+            reference: payoutRef,
+            destinationType: normalizedDestinationType,
+            destinationDetails: isMobileMoneyWithdrawal ? {
+                phoneNumber: normalizedMobilePhone,
+                provider: normalizedMobileProvider,
+                country: normalizedMobileCountry,
+                accountName: normalizedMobileAccountName
+            } : destinationDetails
+        });
+
+        if (isMobileMoneyWithdrawal) {
+            console.log(`[Lenco] Initiating mobile money withdrawal for ${amount} ${wallet.currency} to ${normalizedMobilePhone} (${normalizedMobileProvider})`);
+        }
+
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: err.message });
+    } finally {
+        client.release();
+    }
+
+    if (!payoutRef) return;
+
+    await emitFraudWithdrawalEvent({
+        eventType: 'wallet.withdrawal.initiated',
+        sourceSystem: 'lenco',
+        userId: req.user.id,
+        walletId,
+        reference: payoutRef,
+        provider: 'lenco',
+        destinationType: normalizedDestinationType,
+        destinationDetails: isMobileMoneyWithdrawal ? {
+            phoneNumber: normalizedMobilePhone,
+            provider: normalizedMobileProvider,
+            country: normalizedMobileCountry,
+            accountName: normalizedMobileAccountName
+        } : destinationDetails,
+        amount: requestedAmount,
+        feeAmount,
+        currency: walletCurrency,
+        status: 'PENDING',
+        livemode: walletLiveMode,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'] || null
+    });
+
+    try {
+        const lencoSourceAccountId = getLencoAccountIdForCurrency(walletCurrency);
+        if (!lencoSourceAccountId) {
+            throw new Error(`No Lenco source account configured for ${walletCurrency} withdrawals`);
+        }
+
+        if (isMobileMoneyWithdrawal) {
+            const transferResult = await initiateLencoMobileMoneyTransfer({
+                accountId: lencoSourceAccountId,
+                amount: requestedAmount,
+                reference: payoutRef,
+                phoneNumber: normalizedMobilePhone,
+                operator: normalizedMobileProvider,
+                country: normalizedMobileCountry || 'zm',
+                narration: 'Withdrawal from FlapaPay Wallet'
+            });
+
+            const providerData = transferResult.transferData || {};
+            const localStatus = mapLencoStatusToLocal(providerData.status);
+
+            const syncClient = await pool.connect();
+            try {
+                await syncClient.query('BEGIN');
+                await updateWalletWithdrawalRecord(syncClient, payoutRef, {
+                    provider_transfer_id: providerData.id || null,
+                    provider_reference: providerData.lencoReference || null,
+                    provider_status: String(providerData.status || 'pending').toLowerCase(),
+                    local_status: localStatus,
+                    provider_response: JSON.stringify(providerData)
+                });
+                await syncClient.query('COMMIT');
+            } catch (err) {
+                await syncClient.query('ROLLBACK');
+                throw err;
+            } finally {
+                syncClient.release();
+            }
+
+            if (localStatus === 'COMPLETED') {
+                await completeWalletWithdrawal(payoutRef, providerData);
+            } else if (localStatus === 'FAILED') {
+                await failWalletWithdrawal(payoutRef, providerData.reasonForFailure || providerData.message || 'Mobile money transfer failed', providerData);
+            }
+
+            return res.json({
+                success: true,
+                reference: payoutRef,
+                amount: requestedAmount,
+                fee_amount: feeAmount,
+                total_debited: totalDebited,
+                currency: walletCurrency,
+                status: localStatus.toLowerCase(),
+                provider: 'lenco',
+                provider_status: String(providerData.status || 'pending').toLowerCase(),
+                transfer_id: providerData.id || null,
+                recipient_id: transferResult.transferRecipient?.id || null,
+                poll_url: `/v1/wallet-withdrawals/${payoutRef}/status`
+            });
+        }
+
+        console.log(`[Lenco] Checking system balance for account ${lencoSourceAccountId} (${walletCurrency})...`);
+        const balanceRes = await axios.get(`${LENCO_BASE_URL}/accounts/${lencoSourceAccountId}/balance`, {
+            headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+        });
+
+        const availableBalance = parseFloat(balanceRes.data?.data?.availableBalance || '0');
+        if (availableBalance < requestedAmount) {
+            const reason = 'Withdrawal temporarily unavailable due to system liquidity. Please try again later.';
+            console.error(`[Lenco] Insufficient system funds: Required ${requestedAmount}, Available ${availableBalance}`);
+            await failWalletWithdrawal(payoutRef, reason, { status: 'failed', availableBalance });
+            return res.status(409).json({ error: reason, reference: payoutRef });
+        }
+
+        console.log(`[Lenco] Initiating bank transfer for ${requestedAmount} ${walletCurrency} to ${destinationDetails.accountNumber}`);
+        const transferRes = await axios.post(`${LENCO_BASE_URL}/transfers/bank-account`, {
+            accountId: lencoSourceAccountId,
+            amount: requestedAmount,
+            reference: payoutRef,
+            narration: `Withdrawal from FlapaPay Wallet`,
+            accountNumber: destinationDetails.accountNumber,
+            bankId: destinationDetails.bankId,
+            country: normalizeLencoCountry(destinationDetails.country)
+        }, {
+            headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+        });
+
+        const providerData = transferRes.data?.data || transferRes.data || {};
+        const localStatus = mapLencoStatusToLocal(providerData.status);
+
+        if (localStatus === 'COMPLETED') {
+            await completeWalletWithdrawal(payoutRef, providerData);
+        } else if (localStatus === 'FAILED') {
+            await failWalletWithdrawal(payoutRef, providerData.reasonForFailure || 'Bank transfer failed', providerData);
+        } else {
+            const pendingClient = await pool.connect();
+            try {
+                await pendingClient.query('BEGIN');
+                await updateWalletWithdrawalRecord(pendingClient, payoutRef, {
+                    provider_transfer_id: providerData.id || null,
+                    provider_reference: providerData.lencoReference || null,
+                    provider_status: String(providerData.status || 'pending').toLowerCase(),
+                    local_status: 'PENDING',
+                    provider_response: JSON.stringify(providerData)
+                });
+                await pendingClient.query('COMMIT');
+            } catch (err) {
+                await pendingClient.query('ROLLBACK');
+                throw err;
+            } finally {
+                pendingClient.release();
+            }
+        }
+
+        return res.json({
+            success: true,
+            reference: payoutRef,
+            amount: requestedAmount,
+            fee_amount: feeAmount,
+            total_debited: totalDebited,
+            currency: walletCurrency,
+            status: localStatus.toLowerCase(),
+            provider: 'lenco',
+            provider_status: String(providerData.status || 'pending').toLowerCase(),
+            transfer_id: providerData.id || null,
+            poll_url: `/v1/wallet-withdrawals/${payoutRef}/status`
+        });
+    } catch (error) {
+        console.error('[Lenco] Transfer Error:', error.response?.data || error.message);
+        try {
+            await failWalletWithdrawal(payoutRef, error.response?.data?.message || error.message || 'Withdrawal failed', error.response?.data?.data || {});
+        } catch (syncErr) {
+            console.error('[Lenco] Failed payout compensation error:', syncErr.message);
+        }
+        return res.status(error.response?.status || 502).json({
+            error: error.response?.data?.message || 'Withdrawal failed',
+            reference: payoutRef
+        });
+    }
+});
+
+app.get('/v1/wallet-withdrawals/:reference/status', authenticateToken, handleWalletWithdrawalStatus);
+app.get('/wallets/withdraw/:reference/status', authenticateToken, handleWalletWithdrawalStatus);
+
 // --- PawaPay Payouts (Direct) ---
 app.post('/pawapay/payout', authenticateToken, async (req, res) => {
-    const { amount, phoneNumber, provider, currency, walletId, customerMessage } = req.body;
+    const { amount, phoneNumber, provider, currency, walletId, customerMessage, pin } = req.body;
     let payoutId;
+    let payoutRef = null;
+    let walletLiveMode = true;
+    let feeAmount = 0;
+    let totalDebited = 0;
+    let requestedAmount = 0;
     try {
-        payoutId = crypto.randomUUID();
+        console.log('[PawaPay Payout] Request received:', {
+            userId: req.user.id,
+            walletId,
+            amount,
+            currency,
+            provider,
+            phoneNumber
+        });
+        const isPinValid = await verifyUserPin(req.user.id, pin);
+        if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
+        requestedAmount = Number(amount);
+        if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return res.status(400).json({ error: 'Missing amount' });
+        if (!phoneNumber) return res.status(400).json({ error: 'Missing phoneNumber' });
+        if (!provider) return res.status(400).json({ error: 'Missing provider' });
+        if (!currency) return res.status(400).json({ error: 'Missing currency' });
+        if (!walletId) return res.status(400).json({ error: 'Missing walletId' });
 
-        // 1. Deduct from wallet first (atomically)
-        const payoutRef = 'WTH-MM-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+        payoutId = crypto.randomUUID();
+        payoutRef = 'WTH-MM-' + crypto.randomBytes(4).toString('hex').toUpperCase();
 
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            const walletRes = await client.query('SELECT balance FROM wallets WHERE id = $1 AND user_id = $2 FOR UPDATE', [walletId, req.user.id]);
-            if (walletRes.rows.length === 0) throw new Error('Wallet not found');
-            if (Number(walletRes.rows[0].balance) < Number(amount)) throw new Error('Insufficient balance');
+            const wallet = await loadWalletForWithdrawal(client, {
+                walletId,
+                userId: req.user.id,
+                ignoreWithdrawalPause: true
+            });
+            const quote = getWithdrawalFeeQuote({
+                destinationType: 'mobile_money',
+                amount: requestedAmount,
+                currency: wallet.currency
+            });
+            feeAmount = quote.feeAmount;
+            totalDebited = quote.totalDebited;
+            walletLiveMode = wallet.livemode;
 
-            await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [amount, walletId]);
+            if (wallet.currency !== 'ZMW') throw new Error('Mobile money withdrawals currently support ZMW wallets only');
+            if (Number(wallet.balance) < totalDebited) throw new Error(`Insufficient balance. Total debit is ${totalDebited.toFixed(2)} ${wallet.currency}`);
 
-            // Insert ledger with PENDING status - include payoutId in description for easy lookup
+            await client.query('UPDATE wallets SET balance = balance - $1 WHERE id = $2', [totalDebited, walletId]);
+
             await client.query(`
-                INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status, metadata)
-                VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING', $6)`,
-                [payoutRef, walletId, amount, currency, `PawaPay Payout to ${phoneNumber} (ID: ${payoutId})`, { payoutId, phoneNumber, provider }]
+                INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                VALUES ($1, $2, $3, $4, $5, 'WITHDRAWAL', 'PENDING')`,
+                [
+                    payoutRef,
+                    walletId,
+                    requestedAmount,
+                    wallet.currency,
+                    buildWithdrawalLedgerDescription('mobile_money', { phoneNumber, provider }, { payoutId, reference: payoutRef })
+                ]
             );
+            if (feeAmount > 0) {
+                await client.query(
+                    `INSERT INTO ledger_entries (transaction_reference, debit_wallet_id, amount, currency, description, transaction_type, status)
+                     VALUES ($1, $2, $3, $4, $5, 'FEE', 'PENDING')`,
+                    [
+                        `${payoutRef}-FEE`,
+                        walletId,
+                        feeAmount,
+                        wallet.currency,
+                        'Withdrawal fee for mobile_money'
+                    ]
+                );
+            }
+
+            await client.query(
+                `INSERT INTO payouts (id, user_id, wallet_id, amount, currency, phone_number, provider, status, client_reference_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)`,
+                [payoutId, req.user.id, walletId, requestedAmount, wallet.currency, phoneNumber, provider, payoutRef]
+            );
+
+            await client.query(
+                `INSERT INTO wallet_withdrawals
+                    (user_id, wallet_id, provider, destination_type, destination_details, amount, fee_amount, total_debited, currency, reference, provider_transfer_id, provider_status, local_status, livemode)
+                 VALUES ($1, $2, 'pawapay', 'mobile_money', $3, $4, $5, $6, $7, $8, $9, 'initiated', 'PENDING', $10)`,
+                [
+                    req.user.id,
+                    walletId,
+                    JSON.stringify({ phoneNumber, provider }),
+                    requestedAmount,
+                    feeAmount,
+                    totalDebited,
+                    wallet.currency,
+                    payoutRef,
+                    payoutId,
+                    wallet.livemode
+                ]
+            );
+            await insertWithdrawalNotification(client, {
+                userId: req.user.id,
+                status: 'PENDING',
+                amount: requestedAmount,
+                currency: wallet.currency,
+                reference: payoutRef,
+                destinationType: 'mobile_money',
+                destinationDetails: { phoneNumber, provider }
+            });
 
             await client.query('COMMIT');
         } catch (err) {
@@ -6051,6 +13476,28 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
         } finally {
             client.release();
         }
+
+        await emitFraudWithdrawalEvent({
+            eventType: 'wallet.withdrawal.initiated',
+            sourceSystem: 'pawapay',
+            userId: req.user.id,
+            walletId,
+            reference: payoutRef,
+            providerReference: payoutId,
+            provider: 'pawapay',
+            destinationType: 'mobile_money',
+            destinationDetails: { phoneNumber, provider },
+            amount: requestedAmount,
+            feeAmount,
+            currency: currency || 'ZMW',
+            status: 'PENDING',
+            livemode: walletLiveMode,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                customerMessage: customerMessage || null
+            }
+        });
 
         // 2. Call PawaPay API
         // Normalize phone number: remove +, remove leading 0, ensure 260 prefix
@@ -6061,13 +13508,10 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
             normalizedPhone = '260' + normalizedPhone; // e.g. 260 + 968554...
         }
 
-        // Generate client reference ID
-        const clientReferenceId = `WTH-${Date.now()}`;
-
         // CORRECT PawaPay API format: recipient with type MMO
         const payload = {
             payoutId: payoutId,
-            amount: amount.toString(),
+            amount: requestedAmount.toString(),
             currency: currency || 'ZMW',
             recipient: {
                 type: 'MMO',
@@ -6088,10 +13532,34 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
         });
 
         console.log('[PawaPay] Payout response:', response.data);
-        res.json({ ...response.data, payoutId, clientReferenceId });
+        const providerStatus = String(response.data?.status || 'PENDING').toUpperCase();
+        await pool.query(
+            'UPDATE payouts SET status = $1 WHERE id = $2',
+            [providerStatus, payoutId]
+        );
+        await pool.query(
+            `UPDATE wallet_withdrawals
+             SET provider_status = $1, provider_response = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE reference = $3`,
+            [String(response.data?.status || 'pending').toLowerCase(), JSON.stringify(response.data), payoutRef]
+        );
+        const quote = getWithdrawalFeeQuote({
+            destinationType: 'mobile_money',
+            amount: requestedAmount,
+            currency: currency || 'ZMW'
+        });
+        res.json({
+            ...response.data,
+            payoutId,
+            reference: payoutRef,
+            fee_amount: quote.feeAmount,
+            total_debited: quote.totalDebited
+        });
     } catch (error) {
+        const providerMessage = extractPawaPayErrorMessage(error.response?.data);
+        const errorMessage = providerMessage || error.message || 'Failed to initiate payout';
         console.error('PawaPay Payout Error Details:', {
-            message: error.message,
+            message: errorMessage,
             status: error.response?.status,
             data: error.response?.data,
             config: {
@@ -6102,45 +13570,34 @@ app.post('/pawapay/payout', authenticateToken, async (req, res) => {
             }
         });
 
-        if (payoutId) {
-            const refundClient = await pool.connect();
+        if (payoutRef) {
             try {
-                await refundClient.query('BEGIN');
-                const ledgerRes = await refundClient.query(
-                    "SELECT debit_wallet_id, amount FROM ledger_entries WHERE transaction_type = 'WITHDRAWAL' AND status = 'PENDING' AND (metadata->>'payoutId' = $1 OR description LIKE $2) FOR UPDATE",
-                    [String(payoutId), `%${payoutId}%`]
+                await pool.query('UPDATE payouts SET status = $1 WHERE id = $2', ['FAILED', payoutId]);
+                await failWalletWithdrawal(
+                    payoutRef,
+                    errorMessage,
+                    {
+                        id: payoutId,
+                        providerTransactionId: error.response?.data?.providerTransactionId || null,
+                        status: 'FAILED',
+                        ...error.response?.data
+                    }
                 );
-                if (ledgerRes.rows.length > 0) {
-                    const { debit_wallet_id, amount: origAmount } = ledgerRes.rows[0];
-                    // No fee — refund the exact amount deducted
-                    const totalRefund = Number(origAmount);
-
-                    await refundClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [totalRefund, debit_wallet_id]);
-                    await refundClient.query(
-                        "UPDATE ledger_entries SET status = 'FAILED' WHERE transaction_type = 'WITHDRAWAL' AND status = 'PENDING' AND (metadata->>'payoutId' = $1 OR description LIKE $2)",
-                        [String(payoutId), `%${payoutId}%`]
-                    );
-                    console.log(`[Ledger] Updated to FAILED and Refunded ${totalRefund} to wallet ${debit_wallet_id} for payoutId:`, payoutId);
-                }
-                await refundClient.query('COMMIT');
             } catch (refundErr) {
-                await refundClient.query('ROLLBACK');
                 console.error('Failed to process refund during initiation failure:', refundErr);
-            } finally {
-                refundClient.release();
             }
         }
 
         res.status(error.response?.status || 500).json({
-            error: 'Failed to initiate payout',
+            error: errorMessage,
             details: error.response?.data
         });
     }
 });
 
-app.get('/pawapay/payout/:id', authenticateToken, async (req, res) => {
+app.get('/pawapay/payout/:payoutId', authenticateToken, async (req, res) => {
     const startTime = Date.now();
-    const payoutId = req.params.id;
+    const payoutId = req.params.payoutId;
 
     try {
         console.log(`[PawaPay] Checking status for payout: ${payoutId}`);
@@ -6154,43 +13611,88 @@ app.get('/pawapay/payout/:id', authenticateToken, async (req, res) => {
         // PawaPay returns: { status: "FOUND", data: { payoutId, status, ... } }
         const payoutData = response.data.data || response.data;
         const payoutStatus = payoutData.status;
+        const payoutRecordRes = await pool.query(
+            'SELECT id, wallet_id, amount, currency, status, client_reference_id FROM payouts WHERE id = $1 AND user_id = $2',
+            [payoutId, req.user.id]
+        );
+        if (payoutRecordRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Payout not found' });
+        }
+
+        const payoutRecord = payoutRecordRes.rows[0];
+        const ledgerReference = payoutRecord.client_reference_id;
+
+        await pool.query(
+            'UPDATE payouts SET status = $1 WHERE id = $2',
+            [payoutStatus, payoutId]
+        );
+
+        const walletWithdrawalRes = await pool.query(
+            'SELECT reference FROM wallet_withdrawals WHERE reference = $1 LIMIT 1',
+            [ledgerReference]
+        );
+        const hasWalletWithdrawal = walletWithdrawalRes.rows.length > 0;
 
         // If completed, update ledger status from PENDING to COMPLETED
         if (payoutStatus === 'COMPLETED') {
             const updateStart = Date.now();
-            // Update by finding ledger entry with payoutId in metadata or description
-            await pool.query(
-                "UPDATE ledger_entries SET status = 'COMPLETED' WHERE transaction_type = 'WITHDRAWAL' AND status = 'PENDING' AND (metadata->>'payoutId' = $1 OR description LIKE $2)",
-                [payoutId, `%${payoutId}%`]
-            );
+            if (hasWalletWithdrawal) {
+                await completeWalletWithdrawal(ledgerReference, {
+                    id: payoutId,
+                    providerTransactionId: payoutData.providerTransactionId || null,
+                    status: payoutStatus,
+                    ...payoutData
+                });
+            } else {
+                await pool.query(
+                    "UPDATE ledger_entries SET status = 'COMPLETED' WHERE transaction_reference IN ($1, $2) AND transaction_type IN ('WITHDRAWAL', 'FEE') AND status = 'PENDING'",
+                    [ledgerReference, `${ledgerReference}-FEE`]
+                );
+            }
             console.log(`[Ledger] Updated to COMPLETED in ${Date.now() - updateStart}ms for:`, payoutId);
         } else if (['FAILED', 'REJECTED', 'CANCELLED'].includes(payoutStatus)) {
             const updateStart = Date.now();
-            const refundClient = await pool.connect();
-            try {
-                await refundClient.query('BEGIN');
-                const ledgerRes = await refundClient.query(
-                    "SELECT debit_wallet_id, amount FROM ledger_entries WHERE transaction_type = 'WITHDRAWAL' AND status = 'PENDING' AND (metadata->>'payoutId' = $1 OR description LIKE $2) FOR UPDATE",
-                    [payoutId, `%${payoutId}%`]
+            if (hasWalletWithdrawal) {
+                await failWalletWithdrawal(
+                    ledgerReference,
+                    payoutData.failureReason || payoutData.statusDescription || 'Mobile money payout failed',
+                    {
+                        id: payoutId,
+                        providerTransactionId: payoutData.providerTransactionId || null,
+                        status: payoutStatus,
+                        ...payoutData
+                    }
                 );
-                if (ledgerRes.rows.length > 0) {
-                    const { debit_wallet_id, amount: origAmount } = ledgerRes.rows[0];
-                    // No fee — refund the exact amount deducted
-                    const totalRefund = Number(origAmount);
-
-                    await refundClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [totalRefund, debit_wallet_id]);
-                    await refundClient.query(
-                        "UPDATE ledger_entries SET status = 'FAILED' WHERE transaction_type = 'WITHDRAWAL' AND status = 'PENDING' AND (metadata->>'payoutId' = $1 OR description LIKE $2)",
-                        [payoutId, `%${payoutId}%`]
+            } else {
+                const refundClient = await pool.connect();
+                try {
+                    await refundClient.query('BEGIN');
+                    const ledgerRes = await refundClient.query(
+                        "SELECT debit_wallet_id, amount FROM ledger_entries WHERE transaction_reference = $1 AND transaction_type = 'WITHDRAWAL' AND status = 'PENDING' FOR UPDATE",
+                        [ledgerReference]
                     );
-                    console.log(`[Ledger] Updated to FAILED and Refunded ${totalRefund} to wallet ${debit_wallet_id} for payoutId:`, payoutId);
+                    if (ledgerRes.rows.length > 0) {
+                        const { debit_wallet_id, amount: origAmount } = ledgerRes.rows[0];
+                        const feeRes = await refundClient.query(
+                            "SELECT COALESCE(SUM(amount), 0) AS fee_amount FROM ledger_entries WHERE transaction_reference IN ($1, $2) AND transaction_type = 'FEE'",
+                            [ledgerReference, `${ledgerReference}-FEE`]
+                        );
+                        const totalRefund = Number(origAmount) + Number(feeRes.rows[0]?.fee_amount || 0);
+
+                        await refundClient.query('UPDATE wallets SET balance = balance + $1 WHERE id = $2', [totalRefund, debit_wallet_id]);
+                        await refundClient.query(
+                            "UPDATE ledger_entries SET status = 'FAILED' WHERE transaction_reference IN ($1, $2) AND transaction_type IN ('WITHDRAWAL', 'FEE') AND status IN ('PENDING', 'COMPLETED')",
+                            [ledgerReference, `${ledgerReference}-FEE`]
+                        );
+                        console.log(`[Ledger] Updated to FAILED and Refunded ${totalRefund} to wallet ${debit_wallet_id} for payoutId:`, payoutId);
+                    }
+                    await refundClient.query('COMMIT');
+                } catch (refundErr) {
+                    await refundClient.query('ROLLBACK');
+                    console.error('Failed to process refund during status check:', refundErr);
+                } finally {
+                    refundClient.release();
                 }
-                await refundClient.query('COMMIT');
-            } catch (refundErr) {
-                await refundClient.query('ROLLBACK');
-                console.error('Failed to process refund during status check:', refundErr);
-            } finally {
-                refundClient.release();
             }
             console.log(`[Ledger] Processed FAILED status in ${Date.now() - updateStart}ms for:`, payoutId);
         }
@@ -6209,6 +13711,23 @@ app.get('/pawapay/payout/:id', authenticateToken, async (req, res) => {
 
 
 // --- Connect / Marketplace APIs (V2 Style) ---
+
+app.use('/v1/connect', (req, res, next) => {
+    const allowedPrefixes = [
+        '/invite/',
+        '/onboarding/',
+        '/portal/'
+    ];
+    const allowedExactPaths = new Set([
+        '/banks'
+    ]);
+
+    if (allowedExactPaths.has(req.path) || allowedPrefixes.some(prefix => req.path.startsWith(prefix))) {
+        return next();
+    }
+
+    return sendDeprecatedProductResponse(res, 'Connect', 'checkout sessions and direct wallet settlement');
+});
 
 // 1. Create Connected Account (Unified Identity)
 app.post('/v1/connect/accounts', authenticateMerchant, async (req, res) => {
@@ -6282,25 +13801,29 @@ app.post('/v1/connect/accounts', authenticateMerchant, async (req, res) => {
 
 // 2. Create Account Session (For Embedded UI)
 app.post('/v1/connect/account_sessions', authenticateMerchant, async (req, res) => {
-    const { account } = req.body;
+    const { account, components } = req.body || {};
     try {
         if (!account) return res.status(400).json({ error: 'Account ID is required' });
 
         // Generate Client Secret (Mock JWT-like token)
         const client_secret = 'cass_' + crypto.randomBytes(24).toString('hex');
         const expires_at = new Date(Date.now() + 3600 * 1000); // 1 hour expiry
+        const requestedComponents = (components && typeof components === 'object' && !Array.isArray(components))
+            ? components
+            : { onboarding: { enabled: true } };
 
         await pool.query(
             `INSERT INTO account_sessions (account_id, client_secret, components, expires_at)
              VALUES ($1, $2, $3, $4)`,
-            [account, client_secret, JSON.stringify({ onboarding: { enabled: true } }), expires_at]
+            [account, client_secret, JSON.stringify(requestedComponents), expires_at]
         );
 
         res.json({
             object: 'account_session',
             client_secret: client_secret,
             expires_at: Math.floor(expires_at.getTime() / 1000),
-            account: account
+            account: account,
+            components: requestedComponents
         });
     } catch (err) {
         console.error(err);
@@ -6661,8 +14184,14 @@ app.post('/v1/connect/payouts', authenticateMerchant, async (req, res) => {
     }
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
+
+        const connectedAccount = await loadConnectedAccountForPayout(client, {
+            accountId: account,
+            platformMerchantId: req.merchant.merchant_id
+        });
 
         // 1. Balance check (pending + available counts as liquid for Connect)
         const balRes = await client.query(
@@ -6694,7 +14223,35 @@ app.post('/v1/connect/payouts', authenticateMerchant, async (req, res) => {
              VALUES ($1, $2, NULL, $3, $4, 'PAYOUT', 'PENDING', $5) RETURNING id`,
             [payoutId, account, amount, currency || 'ZMW', JSON.stringify({ destination })]
         );
+
+        fraudPayload = {
+            eventType: 'connect.payout.initiated',
+            sourceSystem: 'connect',
+            merchantId: req.merchant.merchant_id,
+            connectedAccountId: connectedAccount.id,
+            reference: payoutId,
+            rail: destination.type === 'mobile_money' ? 'mobile_money' : 'bank',
+            direction: 'debit',
+            currency: currency || 'ZMW',
+            amount: Number(amount),
+            feeAmount: 0,
+            status: 'PENDING',
+            livemode: req.headers['x-flapapay-test-mode'] !== 'true',
+            counterpartyType: destination.type || 'payout_destination',
+            counterpartyKey: destination.type === 'mobile_money'
+                ? `mobile_money:${String(destination.network || '').toUpperCase()}:${String(destination.number || '').replace(/\D/g, '')}`
+                : destination.type === 'bank'
+                    ? `bank:${String(destination.bankCode || '').toLowerCase()}:${String(destination.accountNumber || '').replace(/\D/g, '')}`
+                    : null,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                connectedAccountId: account,
+                destination
+            }
+        };
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudPlatformEvent(fraudPayload);
 
         // 4. Attempt real PawaPay disbursement asynchronously
         setImmediate(async () => {
@@ -6832,6 +14389,36 @@ app.delete('/v1/connect/accounts/:id/schedule', authenticateMerchant, async (req
 
 // ─── PHASE 1: Webhook Endpoints Management ────────────────────────────────────
 
+// Get active encryption key for merchant payload encryption
+app.get('/v1/encryption-key', authenticateMerchant, async (req, res) => {
+    try {
+        const bundle = getActiveEncryptionKeyBundle();
+        res.json({
+            status: true,
+            message: 'Encryption key fetched successfully',
+            data: {
+                kty: bundle.public_jwk.kty,
+                use: bundle.public_jwk.use,
+                alg: bundle.public_jwk.alg,
+                n: bundle.public_jwk.n,
+                e: bundle.public_jwk.e,
+                kid: bundle.public_jwk.kid,
+                issuedAt: bundle.issued_at,
+                expiresAt: bundle.expires_at,
+                format: 'jwk',
+                transport: 'jwe-compact',
+                supportedAlgorithms: {
+                    keyEncryption: 'RSA-OAEP-256',
+                    contentEncryption: 'A256GCM',
+                },
+            }
+        });
+    } catch (err) {
+        console.error('[EncryptionKey]', err.message);
+        res.status(500).json({ status: false, message: 'Failed to fetch encryption key', data: null });
+    }
+});
+
 // List webhook endpoints
 app.get('/v1/webhooks', authenticateMerchant, async (req, res) => {
     try {
@@ -6932,7 +14519,7 @@ app.post('/v1/webhooks/:id/test', authenticateMerchant, async (req, res) => {
             'kyc.rejected':      { account_id: 'ca_test_xxx', kyc_status: 'rejected', reason: 'Document unclear' },
         };
         const data = custom_payload ?? (EVENT_DEFAULTS[eventName] || defaultData);
-        const payload = { id: `evt_${crypto.randomBytes(8).toString('hex')}`, type: eventName, livemode: false, created: timestamp, data: { object: data } };
+        const payload = { id: `evt_${crypto.randomBytes(8).toString('hex')}`, event: eventName, livemode: false, created: timestamp, data };
         const body = JSON.stringify(payload);
 
         // Sign with HMAC — format: t={ts},v1={sig}
@@ -7419,7 +15006,7 @@ app.patch('/v1/connect/accounts/:id/kyc/:docId', authenticateMerchant, async (re
             await emitWebhookForMerchant(platformMerchantId, 'account.rejected', { account_id: accountId, reason: rejection_reason });
         }
 
-        // Email notification to sub-merchant (via EmailService — noreply@flapabay.com)
+        // Email notification to sub-merchant (via EmailService — noreply@flapapay.com)
         const acctEmailRes = await pool.query(`SELECT email, business_name FROM connected_accounts WHERE id = $1`, [accountId]);
         if (acctEmailRes.rows.length > 0 && acctEmailRes.rows[0].email && (newKycStatus === 'verified' || newKycStatus === 'rejected')) {
             const { email: toEmail, business_name } = acctEmailRes.rows[0];
@@ -7844,7 +15431,7 @@ app.post('/v1/connect/invites', authenticateMerchant, async (req, res) => {
         );
         const invite = result.rows[0];
 
-        // Send invite email if email provided (via EmailService — noreply@flapabay.com)
+        // Send invite email if email provided (via EmailService — noreply@flapapay.com)
         if (email) {
             const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/connect/invite/${token}`;
             try {
@@ -7984,7 +15571,7 @@ app.post('/v1/connect/invite/:token/register', async (req, res) => {
             account_id: accountId, business_name, email, source: 'invite'
         });
 
-        // Welcome email to sub-merchant (via EmailService — noreply@flapabay.com)
+        // Welcome email to sub-merchant (via EmailService — noreply@flapapay.com)
         try {
             const platformRes = await pool.query(
                 'SELECT business_name FROM merchants WHERE id = $1',
@@ -8646,11 +16233,13 @@ app.post('/v1/connect/accounts/:id/payout-request', authenticateMerchant, async 
     try {
         // Verify account belongs to platform
         const acctRes = await pool.query(
-            `SELECT id, status, email, business_name FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
+            `SELECT id, status, email, business_name, payouts_paused, payout_hold_reason
+             FROM connected_accounts WHERE id = $1 AND platform_merchant_id = $2`,
             [accountId, platformMerchantId]
         );
         if (acctRes.rows.length === 0) return res.status(404).json({ error: 'Account not found' });
         if (acctRes.rows[0].status === 'SUSPENDED') return res.status(403).json({ error: 'Account is suspended' });
+        if (acctRes.rows[0].payouts_paused) return res.status(403).json({ error: acctRes.rows[0].payout_hold_reason || 'Payouts are paused pending fraud review.' });
 
         // Check available balance
         const balRes = await pool.query(
@@ -9022,6 +16611,18 @@ async function authenticateSubMerchant(req, res, next) {
 app.get('/v1/connect/portal/me', authenticateSubMerchant, async (req, res) => {
     const acct = req.subMerchant;
     try {
+        const metadata = (() => {
+            if (!acct?.metadata) return {};
+            if (typeof acct.metadata === 'object') return acct.metadata;
+            try {
+                return JSON.parse(acct.metadata);
+            } catch {
+                return {};
+            }
+        })();
+        const connectProfile = metadata.connect_profile && typeof metadata.connect_profile === 'object'
+            ? metadata.connect_profile
+            : {};
         const [balRes, payoutMethodsRes, onboardingRes] = await Promise.all([
             pool.query(`SELECT pending_amount, available_amount FROM balances WHERE merchant_id = $1`, [acct.account_id]),
             pool.query(`SELECT id, type, details, is_default FROM connected_account_payout_methods WHERE connected_account_id = $1 ORDER BY is_default DESC, created_at DESC`, [acct.account_id]),
@@ -9033,6 +16634,11 @@ app.get('/v1/connect/portal/me', authenticateSubMerchant, async (req, res) => {
             id: acct.account_id,
             business_name: acct.business_name,
             email: acct.email,
+            phone: connectProfile.phone || acct.contact_phone || '',
+            website: connectProfile.website || '',
+            address_line_1: connectProfile.address_line_1 || acct.registered_address || '',
+            city: connectProfile.city || '',
+            profile: connectProfile,
             kyc_status: acct.kyc_status,
             status: acct.status,
             platform_merchant_id: acct.platform_merchant_id,
@@ -9051,6 +16657,72 @@ app.get('/v1/connect/portal/me', authenticateSubMerchant, async (req, res) => {
     }
 });
 
+// PATCH /v1/connect/portal/me — update own account profile details
+app.patch('/v1/connect/portal/me', authenticateSubMerchant, async (req, res) => {
+    const acct = req.subMerchant;
+    const body = req.body || {};
+    const nextBusinessName = typeof body.business_name === 'string' ? body.business_name.trim() : '';
+    const nextEmail = typeof body.email === 'string' ? body.email.trim() : '';
+    const nextPhone = typeof body.phone === 'string' ? body.phone.trim() : '';
+    const nextWebsite = typeof body.website === 'string' ? body.website.trim() : '';
+    const nextAddress = typeof body.address_line_1 === 'string' ? body.address_line_1.trim() : '';
+    const nextCity = typeof body.city === 'string' ? body.city.trim() : '';
+
+    const profilePatch = {
+        ...(nextPhone ? { phone: nextPhone } : {}),
+        ...(nextWebsite ? { website: nextWebsite } : {}),
+        ...(nextAddress ? { address_line_1: nextAddress } : {}),
+        ...(nextCity ? { city: nextCity } : {}),
+    };
+
+    if (!nextBusinessName && !nextEmail && Object.keys(profilePatch).length === 0) {
+        return res.status(400).json({ error: 'No profile fields provided' });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE connected_accounts
+             SET business_name = COALESCE(NULLIF($1, ''), business_name),
+                 email = COALESCE(NULLIF($2, ''), email),
+                 metadata = COALESCE(metadata, '{}'::jsonb)
+                     || CASE
+                         WHEN $3::jsonb = '{}'::jsonb THEN '{}'::jsonb
+                         ELSE jsonb_build_object(
+                             'connect_profile',
+                             COALESCE(metadata->'connect_profile', '{}'::jsonb) || $3::jsonb
+                         )
+                     END
+             WHERE id = $4
+             RETURNING id, business_name, email, metadata, status, platform_merchant_id, account_id`,
+            [nextBusinessName, nextEmail, JSON.stringify(profilePatch), acct.account_id]
+        );
+
+        const updated = result.rows[0];
+        const metadata = updated?.metadata && typeof updated.metadata === 'object' ? updated.metadata : {};
+        const profile = metadata.connect_profile && typeof metadata.connect_profile === 'object' ? metadata.connect_profile : {};
+
+        res.json({
+            success: true,
+            account: {
+                id: updated.id,
+                business_name: updated.business_name,
+                email: updated.email,
+                phone: profile.phone || '',
+                website: profile.website || '',
+                address_line_1: profile.address_line_1 || '',
+                city: profile.city || '',
+                profile,
+                status: updated.status,
+                platform_merchant_id: updated.platform_merchant_id,
+                account_id: updated.account_id,
+            },
+        });
+    } catch (err) {
+        console.error('[ConnectPortalProfile] Failed to update profile:', err);
+        res.status(500).json({ error: 'Failed to update account profile' });
+    }
+});
+
 // GET /v1/connect/portal/charges — own charge history
 app.get('/v1/connect/portal/charges', authenticateSubMerchant, async (req, res) => {
     const { limit = 50, offset = 0 } = req.query;
@@ -9065,6 +16737,174 @@ app.get('/v1/connect/portal/charges', authenticateSubMerchant, async (req, res) 
         res.json({ charges: result.rows });
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch charges' });
+    }
+});
+
+// GET /v1/connect/portal/charges/:id — own charge detail
+app.get('/v1/connect/portal/charges/:id', authenticateSubMerchant, async (req, res) => {
+    try {
+        const chargeRes = await pool.query(
+            `SELECT c.*, 
+                    COALESCE(c.payment_details, '{}'::jsonb) AS payment_details
+             FROM charges c
+             WHERE c.id = $1 AND c.destination_merchant_id = $2
+             LIMIT 1`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        if (chargeRes.rows.length === 0) return res.status(404).json({ error: 'Charge not found' });
+
+        const charge = chargeRes.rows[0];
+        const [refundsRes, disputesRes] = await Promise.all([
+            pool.query(
+                `SELECT id, amount, currency, reason, status, platform_fee_reversal, sub_merchant_reversal, created_at
+                 FROM refunds
+                 WHERE charge_id = $1
+                 ORDER BY created_at DESC`,
+                [charge.id]
+            ),
+            pool.query(
+                `SELECT id, amount, currency, reason, status, customer_email, customer_statement, created_at
+                 FROM disputes
+                 WHERE charge_id = $1
+                 ORDER BY created_at DESC`,
+                [charge.id]
+            ),
+        ]);
+        const refundRequestsRes = await pool.query(
+            `SELECT id, amount, currency, reason, status, reviewed_at, review_note, created_at
+             FROM connect_refund_requests
+             WHERE charge_id = $1 AND account_id = $2
+             ORDER BY created_at DESC`,
+            [charge.id, req.subMerchant.account_id]
+        );
+
+        res.json({
+            charge: {
+                ...charge,
+                payment_details: charge.payment_details || {},
+            },
+            refunds: refundsRes.rows,
+            refund_requests: refundRequestsRes.rows,
+            disputes: disputesRes.rows,
+        });
+    } catch (err) {
+        console.error('[PortalChargeDetail] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch charge details' });
+    }
+});
+
+// POST /v1/connect/portal/charges/:id/refund-request — connected account submits a refund request
+app.post('/v1/connect/portal/charges/:id/refund-request', authenticateSubMerchant, async (req, res) => {
+    const { amount, reason } = req.body || {};
+    const requestedAmount = parseFloat(amount);
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+        return res.status(400).json({ error: 'Valid refund amount is required' });
+    }
+
+    try {
+        const chargeRes = await pool.query(
+            `SELECT id, merchant_id, destination_merchant_id, amount, currency, status
+             FROM charges
+             WHERE id = $1 AND destination_merchant_id = $2
+             LIMIT 1`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        if (chargeRes.rows.length === 0) return res.status(404).json({ error: 'Charge not found' });
+
+        const charge = chargeRes.rows[0];
+        const originalAmount = parseFloat(charge.amount || 0);
+        if (requestedAmount > originalAmount) {
+            return res.status(400).json({ error: 'Refund amount exceeds charge amount' });
+        }
+        if (!['succeeded', 'partially_refunded', 'refunded'].includes(String(charge.status || '').toLowerCase())) {
+            return res.status(400).json({ error: 'Refund requests can only be created for successful charges' });
+        }
+
+        const insertRes = await pool.query(
+            `INSERT INTO connect_refund_requests
+                (platform_merchant_id, account_id, charge_id, amount, currency, reason, requested_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             RETURNING *`,
+            [charge.merchant_id, req.subMerchant.account_id, charge.id, requestedAmount, charge.currency || 'ZMW', reason || null, req.user?.id || null]
+        );
+
+        res.json({ success: true, refund_request: insertRes.rows[0] });
+    } catch (err) {
+        console.error('[PortalRefundRequest] Error:', err);
+        res.status(500).json({ error: 'Failed to submit refund request' });
+    }
+});
+
+// GET /v1/connect/portal/charges/:id/refund-requests — list refund requests for a charge
+app.get('/v1/connect/portal/charges/:id/refund-requests', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT rr.*
+             FROM connect_refund_requests rr
+             WHERE rr.charge_id = $1 AND rr.account_id = $2
+             ORDER BY created_at DESC`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        res.json({ refund_requests: result.rows });
+    } catch (err) {
+        console.error('[PortalRefundRequestList] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch refund requests' });
+    }
+});
+
+// POST /v1/connect/portal/charges/:id/disputes/:disputeId/evidence — submit dispute evidence
+app.post('/v1/connect/portal/charges/:id/disputes/:disputeId/evidence', authenticateSubMerchant, async (req, res) => {
+    const evidence = String(req.body?.evidence || '').trim();
+    if (!evidence) return res.status(400).json({ error: 'Evidence is required' });
+
+    try {
+        const disputeRes = await pool.query(
+            `SELECT id, charge_id, amount, currency, status
+             FROM disputes
+             WHERE id = $1 AND charge_id = $2
+             LIMIT 1`,
+            [req.params.disputeId, req.params.id]
+        );
+        if (disputeRes.rows.length === 0) return res.status(404).json({ error: 'Dispute not found' });
+
+        const chargeRes = await pool.query(
+            `SELECT destination_merchant_id, merchant_id
+             FROM charges
+             WHERE id = $1 AND destination_merchant_id = $2
+             LIMIT 1`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        if (chargeRes.rows.length === 0) return res.status(404).json({ error: 'Charge not found' });
+
+        const insertRes = await pool.query(
+            `INSERT INTO connect_dispute_evidence
+                (platform_merchant_id, account_id, charge_id, dispute_id, evidence, submitted_by)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             RETURNING *`,
+            [chargeRes.rows[0].merchant_id, req.subMerchant.account_id, req.params.id, req.params.disputeId, evidence, req.user?.id || null]
+        );
+
+        res.json({ success: true, evidence: insertRes.rows[0] });
+    } catch (err) {
+        console.error('[PortalDisputeEvidence] Error:', err);
+        res.status(500).json({ error: 'Failed to submit dispute evidence' });
+    }
+});
+
+// GET /v1/connect/portal/charges/:id/disputes/:disputeId/evidence — list submitted evidence
+app.get('/v1/connect/portal/charges/:id/disputes/:disputeId/evidence', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT *
+             FROM connect_dispute_evidence
+             WHERE charge_id = $1 AND dispute_id = $2 AND account_id = $3
+             ORDER BY created_at DESC`,
+            [req.params.id, req.params.disputeId, req.subMerchant.account_id]
+        );
+        res.json({ evidence: result.rows });
+    } catch (err) {
+        console.error('[PortalDisputeEvidenceList] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch dispute evidence' });
     }
 });
 
@@ -9153,6 +16993,42 @@ app.get('/v1/connect/portal/payout-requests', authenticateSubMerchant, async (re
     }
 });
 
+// GET /v1/connect/portal/payout-requests/:id — own payout request detail
+app.get('/v1/connect/portal/payout-requests/:id', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT *
+             FROM payout_requests
+             WHERE id = $1 AND account_id = $2
+             LIMIT 1`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Payout request not found' });
+        res.json({ request: result.rows[0] });
+    } catch (err) {
+        console.error('[PortalPayoutRequestDetail] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch payout request details' });
+    }
+});
+
+// GET /v1/connect/portal/payouts/:id — own payout ledger detail
+app.get('/v1/connect/portal/payouts/:id', authenticateSubMerchant, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT *
+             FROM connect_ledger
+             WHERE id = $1 AND account_id = $2
+             LIMIT 1`,
+            [req.params.id, req.subMerchant.account_id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Payout not found' });
+        res.json({ payout: result.rows[0] });
+    } catch (err) {
+        console.error('[PortalPayoutDetail] Error:', err);
+        res.status(500).json({ error: 'Failed to fetch payout details' });
+    }
+});
+
 // GET /v1/connect/portal/kyc — sub-merchant lists their own KYC documents
 app.get('/v1/connect/portal/kyc', authenticateSubMerchant, async (req, res) => {
     try {
@@ -9199,7 +17075,7 @@ app.post('/v1/connect/portal/kyc', authenticateSubMerchant, uploadKyc.single('do
     }
 });
 
-// POST /v1/connect/portal/payout-execute — process real payout via PawaPay (mobile) or Lenco (bank)
+// POST /v1/connect/portal/payout-execute — process real payout via Lenco for both mobile money and bank
 app.post('/v1/connect/portal/payout-execute', authenticateSubMerchant, async (req, res) => {
     const { amount, type = 'standard' } = req.body;
     const acct = req.subMerchant;
@@ -9213,6 +17089,7 @@ app.post('/v1/connect/portal/payout-execute', authenticateSubMerchant, async (re
     const amountNgwe = Math.round(amountZmw * 100);
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
 
@@ -9224,6 +17101,11 @@ app.post('/v1/connect/portal/payout-execute', authenticateSubMerchant, async (re
         const availableNgwe = parseFloat(balRes.rows[0]?.available_amount || 0);
         if (amountNgwe > availableNgwe)
             return res.status(400).json({ error: 'Amount exceeds available balance', available: availableNgwe / 100 });
+
+        await loadConnectedAccountForPayout(client, {
+            accountId,
+            platformMerchantId: acct.platform_merchant_id
+        });
 
         // 2. Get default payout method
         const pmRes = await client.query(
@@ -9283,35 +17165,60 @@ app.post('/v1/connect/portal/payout-execute', authenticateSubMerchant, async (re
             [accountId]
         );
 
+        fraudPayload = {
+            eventType: 'connect.portal.payout.completed',
+            sourceSystem: 'connect_portal',
+            merchantId: acct.platform_merchant_id,
+            connectedAccountId: accountId,
+            reference: payoutRef,
+            rail: pm.type === 'mobile_money' ? 'mobile_money' : 'bank',
+            direction: 'debit',
+            currency: 'ZMW',
+            amount: netAmountZmw,
+            feeAmount: feeZmw,
+            status: 'COMPLETED',
+            livemode: false,
+            counterpartyType: pm.type,
+            counterpartyKey: pm.type === 'mobile_money'
+                ? `mobile_money:${mobileNetwork}:${String(mobileNumber).replace(/\D/g, '')}`
+                : `bank:${String(details.bank_id || details.bank_name || '').toLowerCase()}:${String(details.account_number || '').replace(/\D/g, '')}`,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                connectedAccountId: accountId,
+                payoutType: type,
+                destination: details,
+                grossAmountZmw: amountZmw
+            }
+        };
+
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudPlatformEvent(fraudPayload);
 
         // 8. External transfer (after commit — non-fatal)
         let externalResult = { provider: pm.type, status: 'processing', reference: payoutRef };
 
         if (pm.type === 'mobile_money') {
-            const NETWORK_PROVIDER = {
-                mtn: 'MTN_MOMO_ZMB',
-                airtel: 'AIRTEL_OAPI_ZMB',
-                zamtel: 'ZAMTEL_ZMB',
-            };
-            const provider = NETWORK_PROVIDER[(mobileNetwork).toLowerCase()] || 'MTN_MOMO_ZMB';
-            const pawapayId = crypto.randomUUID();
             try {
-                const r = await axios.post(`${PAWAPAY_BASE_URL}/v2/payouts`, {
-                    payoutId: pawapayId,
-                    recipient: { type: 'MMO', accountDetails: { phoneNumber: mobileNumber, provider } },
-                    amount: netAmountZmw.toFixed(2),
-                    currency: 'ZMW',
-                    clientReferenceId: payoutRef,
-                    customerMessage: `FlapaPay Connect payout — ${acct.business_name || acct.email}`,
-                    metadata: [{ orderId: payoutRef }]
-                }, {
-                    headers: { 'Authorization': `Bearer ${PAWAPAY_TOKEN}`, 'Content-Type': 'application/json' }
+                const mobileMoneyResult = await initiateLencoMobileMoneyTransfer({
+                    accountId: 'e24f5dee-3b7b-4fbd-835f-b75365a7c4cd',
+                    amount: netAmountZmw,
+                    reference: payoutRef,
+                    phoneNumber: mobileNumber,
+                    operator: mobileNetwork,
+                    country: 'zm',
+                    narration: `FlapaPay Connect payout — ${acct.business_name || acct.email}`
                 });
-                externalResult = { provider: 'pawapay', payout_id: pawapayId, status: r.data.status, reference: payoutRef };
+                externalResult = {
+                    provider: 'lenco',
+                    transfer_recipient_id: mobileMoneyResult.transferRecipient?.id || null,
+                    transfer_id: mobileMoneyResult.transferData?.id || null,
+                    status: mobileMoneyResult.transferData?.status || 'processing',
+                    reference: payoutRef,
+                };
             } catch (e) {
-                console.error('[ConnectPayout][PawaPay]', e.response?.data || e.message);
-                externalResult = { provider: 'pawapay', status: 'ENQUEUED', reference: payoutRef, note: 'Will retry' };
+                console.error('[ConnectPayout][Lenco Mobile Money]', e.response?.data || e.message);
+                externalResult = { provider: 'lenco', status: 'pending', reference: payoutRef, note: e.response?.data?.message || e.message };
             }
         } else if (pm.type === 'bank_account') {
             const LENCO_ACCOUNT = 'e24f5dee-3b7b-4fbd-835f-b75365a7c4cd';
@@ -9793,16 +17700,18 @@ app.post('/v1/webhooks/deliveries/:id/retry', authenticateMerchant, async (req, 
         const delivery = delRes.rows[0];
 
         const payload = typeof delivery.payload === 'string' ? JSON.parse(delivery.payload) : delivery.payload;
-        const body = JSON.stringify(payload);
-        const sig = require('crypto').createHmac('sha256', delivery.signing_secret).update(body).digest('hex');
+        const timestamp = Math.floor(Date.now() / 1000);
+        const body = JSON.stringify({ ...payload, created: timestamp });
+        const sig = require('crypto').createHmac('sha256', delivery.signing_secret).update(`${timestamp}.${body}`).digest('hex');
+        const sigHeader = `t=${timestamp},v1=${sig}`;
 
         let responseStatus, responseBody;
         try {
-            const retryRes = await axios.post(delivery.url, payload, {
+            const retryRes = await axios.post(delivery.url, JSON.parse(body), {
                 headers: {
                     'Content-Type': 'application/json',
-                    'FlapaPay-Signature': `sha256=${sig}`,
-                    'FlapaPay-Event': payload.event,
+                    'x-flapapay-signature': sigHeader,
+                    'x-flapapay-event': payload.event,
                     'X-FlapaPay-Retry': 'true',
                 },
                 timeout: 10000,
@@ -10175,6 +18084,110 @@ async function recordSubscriptionPayment(subId, paymentIntent) {
     return { subscription, invoice };
 }
 
+function extractCybersourceRecurringReference(event = {}) {
+    return event?.data?.subscriptionInformation?.code
+        || event?.subscriptionInformation?.code
+        || event?.data?.clientReferenceInformation?.code
+        || event?.clientReferenceInformation?.code
+        || null;
+}
+
+function extractCybersourceRecurringChargeId(event = {}) {
+    return event?.data?.id || event?.id || null;
+}
+
+async function syncCybersourceRecurringWebhook(eventType, event = {}) {
+    const reference = extractCybersourceRecurringReference(event);
+    if (!reference?.startsWith('SUB-')) return false;
+
+    const subId = reference.slice(4).toLowerCase();
+    const subRes = await pool.query('SELECT * FROM subscriptions WHERE id = $1', [subId]);
+    if (!subRes.rows.length) return false;
+    const subscription = subRes.rows[0];
+
+    if (eventType === 'rbs.subscriptions.charge.created') {
+        const invoiceRes = await pool.query(
+            `SELECT id
+             FROM sub_invoice
+             WHERE subscription_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [subId]
+        );
+
+        if (invoiceRes.rows.length) {
+            await pool.query(
+                `UPDATE sub_invoice
+                 SET status = 'paid',
+                     paid_at = COALESCE(paid_at, NOW()),
+                     payment_provider = 'cybersource',
+                     cybersource_payment_id = COALESCE(cybersource_payment_id, $2),
+                     payment_intent_id = COALESCE(payment_intent_id, $2)
+                 WHERE id = $1`,
+                [invoiceRes.rows[0].id, extractCybersourceRecurringChargeId(event)]
+            );
+        }
+
+        await pool.query(
+            `UPDATE subscriptions
+             SET status = 'active',
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [subId]
+        );
+
+        if (subscription.merchant_id) {
+            await emitWebhookForMerchant(subscription.merchant_id, 'subscription.renewed', {
+                subscription_id: subId,
+                provider: 'cybersource',
+                event_type: eventType,
+            });
+        }
+        return true;
+    }
+
+    if (eventType === 'rbs.subscriptions.charge.failed') {
+        const invoiceRes = await pool.query(
+            `SELECT id
+             FROM sub_invoice
+             WHERE subscription_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [subId]
+        );
+
+        if (invoiceRes.rows.length) {
+            await pool.query(
+                `UPDATE sub_invoice
+                 SET status = 'open',
+                     payment_provider = 'cybersource',
+                     next_retry_at = NOW() + INTERVAL '1 day'
+                 WHERE id = $1`,
+                [invoiceRes.rows[0].id]
+            );
+        }
+
+        await pool.query(
+            `UPDATE subscriptions
+             SET status = 'past_due',
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [subId]
+        );
+
+        if (subscription.merchant_id) {
+            await emitWebhookForMerchant(subscription.merchant_id, 'subscription.past_due', {
+                subscription_id: subId,
+                provider: 'cybersource',
+                event_type: eventType,
+            });
+        }
+        return true;
+    }
+
+    return false;
+}
+
 // =============================================================================
 // CYBERSOURCE ENDPOINTS
 // =============================================================================
@@ -10182,7 +18195,7 @@ async function recordSubscriptionPayment(subId, paymentIntent) {
 // GET Flex capture context — called by LinkCard.tsx and AddMoney.tsx before card input
 app.post('/v1/card-setup/context', authenticateToken, async (req, res) => {
     try {
-        const targetOrigin   = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
+        const targetOrigin   = resolveFlexTargetOrigin(req);
         const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
         const csCustomerId   = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
         res.json({
@@ -10191,24 +18204,52 @@ app.post('/v1/card-setup/context', authenticateToken, async (req, res) => {
             expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         });
     } catch (err) {
-        console.error('[CyberSource] Card setup context error:', err.message);
+        console.error('[CyberSource] Card setup context error:', err.message, 'origin=', resolveFlexTargetOrigin(req));
         res.status(500).json({ error: 'Failed to generate card setup context' });
     }
 });
 
 // POST /v1/payment-methods — link a card via Flex transient token (replaces Stripe Setup Intent confirm)
 app.post('/v1/payment-methods', authenticateToken, async (req, res) => {
-    const { transientToken, transient_token, billing_address = {} } = req.body;
+    const {
+        transientToken,
+        transient_token,
+        billing_address = {},
+        expirationMonth,
+        expirationYear,
+    } = req.body;
     const token = transientToken || transient_token;
     if (!token) return res.status(400).json({ error: 'transientToken is required' });
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    let tokenJti = null;
+    try {
+        const parts = String(token).split('.');
+        if (parts.length >= 2) {
+            let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            b64 += '='.repeat((4 - (b64.length % 4)) % 4);
+            const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+            tokenJti = payload?.jti || null;
+        }
+    } catch (_) {}
+    let attemptId = null;
     try {
         const csCustomerId = await getOrCreateCybersourceCustomer(req.user.id, req.user.email, req.user.full_name || '');
-        _dbgLog(`[LinkCard] customerId=${csCustomerId} tokenLen=${token.length}`);
+        const attemptRes = await pool.query(
+            `INSERT INTO payment_tokenization_attempts
+             (user_id, cybersource_customer_id, transient_token_hash, transient_token_jti, token_length, status)
+             VALUES ($1, $2, $3, $4, $5, 'received')
+             RETURNING id`,
+            [req.user.id, csCustomerId, tokenHash, tokenJti, String(token).length]
+        );
+        attemptId = attemptRes.rows[0]?.id || null;
+        _dbgLog(`[LinkCard] attemptId=${attemptId || 'NA'} customerId=${csCustomerId} tokenLen=${String(token).length} tokenHash=${tokenHash.slice(0, 16)} jti=${tokenJti || 'NA'}`);
         const instrument   = await CybersourceService.tokens.linkCard({
             customerId:      csCustomerId,
             transientToken:  token,
             billingAddress:  billing_address,
             userEmail:       req.user.email,
+            expirationMonth,
+            expirationYear,
         });
 
         const existing = await pool.query(
@@ -10230,6 +18271,16 @@ app.post('/v1/payment-methods', authenticateToken, async (req, res) => {
                 isFirst,
             ]
         );
+        if (attemptId) {
+            await pool.query(
+                `UPDATE payment_tokenization_attempts
+                 SET status = 'linked',
+                     cybersource_instrument_id = $2,
+                     updated_at = NOW()
+                 WHERE id = $1`,
+                [attemptId, instrument.instrumentId]
+            );
+        }
 
         res.json({
             id:           instrument.instrumentId,
@@ -10241,7 +18292,24 @@ app.post('/v1/payment-methods', authenticateToken, async (req, res) => {
         });
     } catch (err) {
         _dbgLog('[CyberSource] Link card error FULL:', err.message);
-        res.status(500).json({ error: 'Failed to link card', detail: err.message });
+        if (attemptId) {
+            try {
+                await pool.query(
+                    `UPDATE payment_tokenization_attempts
+                     SET status = 'failed',
+                         error_message = $2,
+                         updated_at = NOW()
+                     WHERE id = $1`,
+                    [attemptId, String(err.message || 'Unknown tokenization error').slice(0, 4000)]
+                );
+            } catch (_) {}
+        }
+        const upstreamStatus = Number(err?.csStatus || 0);
+        const status = (upstreamStatus >= 400 && upstreamStatus < 500) ? 400 : 500;
+        res.status(status).json({
+            error: status === 400 ? 'Invalid card token or billing data' : 'Failed to link card',
+            detail: err.message,
+        });
     }
 });
 
@@ -10284,10 +18352,16 @@ app.post('/webhooks/cybersource', express.json(), CybersourceService.webhooks.ha
     const event = req.cybersourceEvent;
     try {
         const eventType = CybersourceService.webhooks.eventType(event);
+        const syncedRecurring = await syncCybersourceRecurringWebhook(eventType, event);
         switch (eventType) {
             case 'payment.updated':
             case 'payment.created':
                 console.log(`[CyberSource Webhook] Payment event: ${event.id} status=${event.status}`);
+                break;
+            case 'rbs.subscriptions.charge.created':
+            case 'rbs.subscriptions.charge.failed':
+            case 'rbs.subscriptions.charge.pre-notified':
+                console.log(`[CyberSource Webhook] Recurring billing event: ${eventType} synced=${syncedRecurring}`);
                 break;
             case 'risk.casemanagement.order.updated':
                 console.log(`[CyberSource Webhook] Risk event: ${event.id}`);
@@ -10504,6 +18578,41 @@ setInterval(async () => {
     }
 }, 30000);
 
+async function creditCheckoutToMerchantWallet(client, {
+    merchantId,
+    amount,
+    currency,
+    transactionReference,
+    description,
+    livemode = false,
+}) {
+    const merchantRes = await client.query(
+        'SELECT user_id FROM merchants WHERE id = $1',
+        [merchantId]
+    );
+    if (merchantRes.rows.length === 0) {
+        throw new Error('Merchant not found for checkout settlement');
+    }
+
+    const walletRes = await client.query(
+        `INSERT INTO wallets (user_id, currency, balance)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, currency) DO UPDATE
+         SET balance = wallets.balance + $3, updated_at = NOW()
+         RETURNING id`,
+        [merchantRes.rows[0].user_id, currency, amount]
+    );
+
+    await client.query(
+        `INSERT INTO ledger_entries
+          (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode)
+         VALUES ($1, $2, $3, $4, $5, 'checkout_payment', 'COMPLETED', $6)`,
+        [transactionReference, walletRes.rows[0].id, amount, currency, description, livemode]
+    );
+
+    return walletRes.rows[0].id;
+}
+
 // 1. Create Checkout Session
 app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
     const {
@@ -10518,8 +18627,6 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
         mode = 'payment',
         customer,
         customer_email,
-        transfer_data,
-        application_fee_amount,
         subscription_data
     } = req.body;
 
@@ -10529,7 +18636,16 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
 
         // 1. Resolve Customer if provided
         if (customer) {
-            const custRes = await pool.query('SELECT id FROM customers WHERE id = $1 OR email = $1 AND merchant_id = $2', [customer, req.merchant.merchant_id]);
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(customer));
+            const custRes = isUuid
+                ? await pool.query(
+                    'SELECT id FROM customers WHERE id = $1 AND merchant_id = $2',
+                    [customer, req.merchant.merchant_id]
+                )
+                : await pool.query(
+                    'SELECT id FROM customers WHERE email = $1 AND merchant_id = $2',
+                    [customer, req.merchant.merchant_id]
+                );
             if (custRes.rows.length > 0) dbCustomerId = custRes.rows[0].id;
         } else if (customer_email) {
             const custRes = await pool.query('SELECT id FROM customers WHERE email = $1 AND merchant_id = $2', [customer_email, req.merchant.merchant_id]);
@@ -10571,6 +18687,10 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
             customer_email: customer_email || ''
         };
 
+        const resolvedPaymentMethodTypes = mode === 'subscription'
+            ? ['card']
+            : (payment_method_types || ['card', 'mobile_money']);
+
         await pool.query(
             `INSERT INTO checkout_sessions
              (id, merchant_id, amount, currency, payment_method_types, success_url, cancel_url, client_reference_id, metadata, transfer_data, application_fee_amount, mode, subscription_data, customer_id, livemode)
@@ -10580,13 +18700,13 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
                 req.merchant.merchant_id,
                 finalAmount,
                 (currency || 'ZMW').toUpperCase(),
-                JSON.stringify(payment_method_types || ['card', 'mobile_money']),
+                JSON.stringify(resolvedPaymentMethodTypes),
                 success_url,
                 cancel_url,
                 client_reference_id,
                 JSON.stringify(sessionMetadata),
-                JSON.stringify(transfer_data || {}),
-                application_fee_amount || null,
+                null,
+                null,
                 mode,
                 JSON.stringify(subscription_data || (mode === 'subscription' ? { price: line_items[0].price } : {})),
                 dbCustomerId,
@@ -10594,9 +18714,10 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
             ]
         );
 
+        const frontendBaseUrl = resolveFrontendBaseUrl();
         const checkoutUrl = mode === 'subscription'
-            ? `http://localhost:5173/checkout/subscription/${sessionId}`
-            : `http://localhost:5173/checkout/${sessionId}`;
+            ? `${frontendBaseUrl}/checkout/subscription/${sessionId}`
+            : `${frontendBaseUrl}/checkout/${sessionId}`;
 
         res.json({
             id: sessionId,
@@ -10619,11 +18740,9 @@ app.post('/v1/checkout/sessions', authenticateApiKey, async (req, res) => {
 app.get('/v1/checkout/sessions/:id', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT cs.*, m.business_name,
-                   ca.business_name as sub_merchant_name
+            SELECT cs.*, m.business_name
             FROM checkout_sessions cs
-            JOIN merchants m ON cs.merchant_id = m.id
-            LEFT JOIN connected_accounts ca ON ca.id = (cs.transfer_data->>'destination')::uuid
+            LEFT JOIN merchants m ON cs.merchant_id = m.id
             WHERE cs.id = $1
         `, [req.params.id]);
 
@@ -10642,8 +18761,6 @@ app.get('/v1/checkout/sessions/:id', async (req, res) => {
             if (priceRes.rows.length > 0) priceInfo = priceRes.rows[0];
         }
 
-        const transferData = session.transfer_data && Object.keys(session.transfer_data).length > 0 ? session.transfer_data : null;
-        const appFee = session.application_fee_amount ? parseFloat(session.application_fee_amount) : null;
         const amountTotal = session.amount ? parseFloat(session.amount) : null;
 
         res.json({
@@ -10660,9 +18777,9 @@ app.get('/v1/checkout/sessions/:id', async (req, res) => {
             cancel_url: session.cancel_url,
             livemode: session.livemode,
             mode: session.mode,
-            transfer_data: transferData,
-            application_fee_amount: appFee,
-            sub_merchant_name: session.sub_merchant_name || null,
+            transfer_data: null,
+            application_fee_amount: null,
+            sub_merchant_name: null,
             subscription_details: priceInfo ? {
                 product_name: priceInfo.product_name,
                 product_description: priceInfo.product_description,
@@ -10678,7 +18795,7 @@ app.get('/v1/checkout/sessions/:id', async (req, res) => {
     }
 });
 
-// 2b. Create Stripe Intent for Card Payments
+// 2b. Create card payment context
 app.post('/v1/checkout/sessions/:id/intent', async (req, res) => {
     try {
         const sessionRes = await pool.query('SELECT * FROM checkout_sessions WHERE id = $1', [req.params.id]);
@@ -10691,8 +18808,24 @@ app.post('/v1/checkout/sessions/:id/intent', async (req, res) => {
         }
 
         // CyberSource Flex Microform — generate capture context for secure card input
-        const targetOrigin = req.headers.origin || process.env.CYBERSOURCE_FLEX_TARGET_ORIGIN || 'http://localhost:5173';
-        const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
+        const targetOrigin = resolveFlexTargetOrigin(req);
+        const cs = require('cybersource-rest-client');
+        const { configObject } = require('./services/CybersourceService');
+        const client = new cs.MicroformIntegrationApi(configObject, new cs.ApiClient());
+        const request = new cs.GenerateFlexAPICaptureContextRequest();
+        request.clientVersion = 'v2';
+        request.targetOrigins = [targetOrigin];
+        request.allowedCardNetworks = ['VISA', 'MASTERCARD', 'AMEX', 'MAESTRO'];
+        const captureContext = await new Promise((resolve, reject) => {
+            client.generateCaptureContext(request, (error, data) => {
+                if (error) {
+                    const body = error?.response?.text || error?.response?.body || error?.message;
+                    const message = typeof body === 'object' ? JSON.stringify(body) : String(body || error);
+                    return reject(new Error(message));
+                }
+                resolve(typeof data === 'string' ? data : JSON.stringify(data));
+            });
+        });
 
         res.json({
             captureContext,           // JWT passed to new Flex(captureContext) on frontend
@@ -10701,21 +18834,22 @@ app.post('/v1/checkout/sessions/:id/intent', async (req, res) => {
             sessionId: session.id,
         });
     } catch (err) {
-        console.error('[CyberSource] Flex capture context error:', err.message);
-        res.status(500).json({ error: 'Failed to generate payment context' });
+        console.error('[Checkout Intent] Error:', err.message);
+        res.status(500).json({ error: 'Failed to generate payment context', details: err.message });
     }
 });
 
-// 2c. Initiate Mobile Money Payment (PawaPay Style)
+// 2c. Initiate Mobile Money Payment (Lenco live, PawaPay test)
 app.post('/v1/checkout/sessions/:id/initiate-mobile', async (req, res) => {
     const { phoneNumber, provider, amount } = req.body;
+    let depositId = null;
 
     try {
         const sessionRes = await pool.query('SELECT * FROM checkout_sessions WHERE id = $1', [req.params.id]);
         if (sessionRes.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
 
         const session = sessionRes.rows[0];
-        const amountToCharge = session.amount ? parseFloat(session.amount) : (amount ? parseFloat(amount) : 0);
+        const amountToCharge = session.amount ? parseFloat(session.amount) : parseFloat(amount);
 
         if (!amountToCharge || isNaN(amountToCharge) || amountToCharge <= 0) {
             return res.status(400).json({ error: 'Valid amount is required' });
@@ -10726,283 +18860,426 @@ app.post('/v1/checkout/sessions/:id/initiate-mobile', async (req, res) => {
             return res.status(400).json({ error: 'Phone number and provider are required' });
         }
 
-        // Normalize Phone Number
-        let normalizedPhone = phoneNumber.replace(/\D/g, '');
-        if (normalizedPhone.startsWith('0')) {
-            normalizedPhone = (session.currency === 'ZMW' ? '260' : '234') + normalizedPhone.substring(1);
-        } else if (!normalizedPhone.startsWith('260') && !normalizedPhone.startsWith('234')) {
-            normalizedPhone = (session.currency === 'ZMW' ? '260' : '234') + normalizedPhone;
-        }
+        const isLiveMode = Boolean(session.livemode);
+        const normalizedPhone = isLiveMode
+            ? normalizeLencoMobilePhone(phoneNumber, session.currency)
+            : normalizePawaPayMsisdn(phoneNumber, session.currency);
 
-        const depositId = crypto.randomUUID();
+        depositId = crypto.randomUUID();
         const clientReferenceId = `SESSION-${Date.now()}`;
 
-        // CORRECT PawaPay API format for deposits
-        const response = await axios.post(`${PAWAPAY_BASE_URL}/v2/deposits`, {
-            depositId: depositId,
-            payer: {
-                type: 'MMO',
-                accountDetails: {
-                    phoneNumber: normalizedPhone,
-                    provider: provider
-                }
-            },
-            amount: amountToCharge.toFixed(2),
-            currency: session.currency,
-            clientReferenceId: clientReferenceId,
-            customerMessage: `Payment for ${session.description || 'Checkout'}`.replace(/[^a-zA-Z0-9 ]/g, '').substring(0, 22),
-            metadata: [
-                { checkout_session_id: session.id },
-                { merchant_id: session.merchant_id }
-            ]
+        if (!isLiveMode) {
+            console.log('[PawaPay] Hosted checkout sandbox mobile money simulated:', {
+                sessionId: session.id,
+                depositId,
+                phoneNumber: normalizedPhone,
+                provider,
+                amount: amountToCharge.toFixed(2),
+                currency: session.currency,
+            });
+            return res.json({
+                status: 'ACCEPTED',
+                depositId,
+                provider_reference: depositId,
+                mock: true,
+                message: 'Sandbox mobile money prompt simulated.'
+            });
+        }
+
+        if (String(session.currency || 'ZMW').toUpperCase() !== 'ZMW') {
+            return res.status(400).json({ error: 'Live mobile money checkout is currently supported for ZMW only' });
+        }
+
+        const lencoOperator = normalizeLencoMobileOperator(provider, session.currency);
+        if (!lencoOperator) {
+            return res.status(400).json({ error: 'Unsupported mobile money provider for live checkout' });
+        }
+
+        const response = await axios.post(`${LENCO_BASE_URL}/collections/mobile-money`, {
+            amount: roundMoney(amountToCharge),
+            reference: depositId,
+            phone: normalizedPhone,
+            operator: lencoOperator,
+            country: normalizeLencoCountry(session.currency === 'ZMW' ? 'zm' : 'zm'),
+            bearer: 'merchant'
         }, {
             headers: {
-                'Authorization': `Bearer ${PAWAPAY_TOKEN}`,
+                'Authorization': `Bearer ${LENCO_SECRET_KEY}`,
                 'Content-Type': 'application/json'
             }
         });
 
-        console.log('[PawaPay] Checkout deposit initiated:', response.data);
+        const providerData = response.data?.data || response.data || {};
+        console.log('[Lenco] Hosted checkout mobile money initiated:', providerData);
         res.json({
-            status: response.data.status,
-            depositId: response.data.depositId,
-            provider_reference: depositId,
-            message: 'Please check your phone for the PIN prompt.'
+            status: providerData.status || response.data?.status || 'pay-offline',
+            depositId,
+            provider_reference: providerData.reference || depositId,
+            collectionReference: providerData.reference || depositId,
+            provider: 'lenco',
+            providerData,
+            message: providerData.status === 'successful'
+                ? 'Payment received.'
+                : 'Please check your phone for the mobile money approval prompt.'
         });
-
+        return;
     } catch (err) {
-        console.error('Mobile Initiation Error:', err.response?.data || err.message);
+        const providerError = err.response?.data;
+        if (!session?.livemode && providerError?.failureReason?.failureCode === 'AUTHENTICATION_ERROR') {
+            console.warn('[PawaPay] Sandbox token invalid; using hosted-checkout test fallback for session', session.id);
+            return res.json({
+                status: 'ACCEPTED',
+                depositId,
+                provider_reference: depositId,
+                mock: true,
+                message: 'Test mobile money prompt simulated.'
+            });
+        }
+
+        console.error('Mobile Initiation Error:', providerError || err.message);
         res.status(err.response?.status || 500).json({
             error: 'Failed to initiate mobile payment',
-            details: err.response?.data || err.message
+            details: providerError || err.message
         });
     }
 });
 
 // 3. Confirm/Pay Session (Called by Gateway UI)
 app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
-    const { payment_method, payment_details } = req.body;
-    // payment_method: 'card' or 'mobile_money'
-    // payment_details: { token: 'tok_visa' } or { phone: '...', network: '...' }
+    const { payment_method, payment_details } = req.body || {};
     console.log(`[Checkout] Confirming session: ${req.params.id}`, { payment_method, payment_details });
 
     try {
-        // 1. Get Session
         const sessionRes = await pool.query('SELECT * FROM checkout_sessions WHERE id = $1', [req.params.id]);
         if (sessionRes.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
 
         const session = sessionRes.rows[0];
         if (session.status === 'complete') return res.status(400).json({ error: 'Session already paid' });
 
-        // 2. Process Charge (Using internal API logic logic)
-        // Ensure we handle splits if transfer_data exists in session
-
         let amount = session.amount ? parseFloat(session.amount) : parseFloat(req.body.amount);
         const currency = session.currency;
-        const transfer_data = session.transfer_data; // JSONB
 
         if (!amount || isNaN(amount) || amount <= 0) {
             return res.status(400).json({ error: 'Valid amount is required' });
         }
-        amount = parseFloat(amount.toFixed(2)); // Ensure precision and number type
+        amount = parseFloat(amount.toFixed(2));
 
-        // Fetch settlement delay for this session's platform
-        const settlementCfgRes = await pool.query(
-            `SELECT settlement_delay_days FROM connect_config WHERE merchant_id = $1`,
-            [session.merchant_id]
-        );
-        const settlementDelayForSession = settlementCfgRes.rows[0]?.settlement_delay_days ?? 1;
-        const sessionAvailableAt = new Date();
-        sessionAvailableAt.setDate(sessionAvailableAt.getDate() + settlementDelayForSession);
-
-        // Reuse Logic: Credit Merchant (and Split if needed)
-        // Start TX
-        await pool.query('BEGIN');
-
-        let platformFee = 0;
-        let merchantAmount = amount;
-        const csChargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
-        let subMerchantId = null;
-
-        const isSessionLive = session.livemode;
-        const targetColumn = isSessionLive ? 'available_amount' : 'pending_amount';
-
-        if (transfer_data && transfer_data.destination) {
-            subMerchantId = transfer_data.destination;
-            // Phase 3: per-account override → platform config → 5% default
-            if (session.application_fee_amount) {
-                platformFee = parseFloat(session.application_fee_amount);
-            } else {
-                const overrideRes = await pool.query(
-                    `SELECT fee_percent FROM connected_account_fee_overrides WHERE account_id = $1`, [subMerchantId]
-                );
-                if (overrideRes.rows.length > 0) {
-                    platformFee = Math.round(amount * (parseFloat(overrideRes.rows[0].fee_percent) / 100) * 100) / 100;
-                } else {
-                    const cfgRes = await pool.query(
-                        `SELECT platform_fee_percent FROM connect_config WHERE merchant_id = $1`, [session.merchant_id]
-                    );
-                    const feeRate = cfgRes.rows.length > 0 ? parseFloat(cfgRes.rows[0].platform_fee_percent) / 100 : 0.05;
-                    platformFee = Math.round(amount * feeRate * 100) / 100;
-                }
-            }
-            merchantAmount = amount - platformFee;
-
-            // Credit Sub
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [subMerchantId, merchantAmount, currency]
-            );
-
-            // Credit Platform
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency) 
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [session.merchant_id, platformFee, currency]
-            );
-
-            // Write ledger entries for split (fee_collected + split_credit)
-            if (platformFee > 0) {
-                await pool.query(
-                    `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                     VALUES ($1,'fee_collected',$2,$3,$4,$5,'credit',$6,$7)`,
-                    [session.merchant_id, csChargeId, subMerchantId,
-                     platformFee, currency,
-                     `Platform fee on checkout ${currency} ${amount}`, isSessionLive]
-                );
-            }
-            await pool.query(
-                `INSERT INTO connect_ledger (platform_merchant_id, entry_type, charge_id, account_id, amount, currency, direction, description, livemode)
-                 VALUES ($1,'split_credit',$2,$3,$4,$5,'credit',$6,$7)`,
-                [session.merchant_id, csChargeId, subMerchantId,
-                 merchantAmount, currency,
-                 `Net earnings on checkout ${currency} ${amount} (T+${settlementDelayForSession})`, isSessionLive]
-            );
-
-        } else {
-            // Credit Platform (Direct)
-            await pool.query(
-                `INSERT INTO balances (merchant_id, ${targetColumn}, currency)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (merchant_id) DO UPDATE SET ${targetColumn} = balances.${targetColumn} + $2`,
-                [session.merchant_id, amount, currency]
-            );
+        const guardClient = await pool.connect();
+        try {
+            await guardClient.query('BEGIN');
+            await loadMerchantForCharge(guardClient, { merchantId: session.merchant_id });
+            await guardClient.query('COMMIT');
+        } catch (guardErr) {
+            await guardClient.query('ROLLBACK').catch(() => {});
+            const message = guardErr.message || 'Charge acceptance is paused pending fraud review.';
+            const statusCode = /not found/i.test(message) ? 404 : 403;
+            return res.status(statusCode).json({ error: message, code: 'charge_hold_active' });
+        } finally {
+            guardClient.release();
         }
 
-        // --- Process Card Payment via CyberSource ---
         let finalPaymentIntentId = 'pi_mock_' + Date.now();
+        let finalProcessorTransactionId = null;
+        let fullName = 'Cardholder';
+        let billTo = null;
 
-        if (payment_method === 'card') {
-            const transientToken  = payment_details?.transientToken;
-            const csCustomerId    = payment_details?.customerId;
-            const legacyToken     = payment_details?.token;
+        if (payment_method === 'mobile_money') {
+            const isLiveMode = Boolean(session.livemode);
+            const depositRef = payment_details?.depositId || payment_details?.reference || payment_details?.provider_reference || payment_details?.collectionReference;
+            if (!depositRef) {
+                return res.status(400).json({ error: 'Mobile money confirmation requires depositId' });
+            }
 
-            if (transientToken || csCustomerId) {
-                // CyberSource path: Flex transient token or TMS customer token
+            if (!isLiveMode) {
+                console.log('[PawaPay] Hosted checkout sandbox mobile money auto-approved:', { sessionId: session.id, depositId: depositRef });
+                finalPaymentIntentId = depositRef;
+            } else {
                 try {
-                    const chargeResult = await CybersourceService.payments.sale({
+                    const depositStatusRes = await axios.get(`${LENCO_BASE_URL}/collections/status/${encodeURIComponent(depositRef)}`, {
+                        headers: { 'Authorization': `Bearer ${LENCO_SECRET_KEY}` }
+                    });
+                    const collection = depositStatusRes.data?.data || depositStatusRes.data || {};
+                    const collectionStatus = String(collection?.status || '').trim().toLowerCase();
+
+                    if (['pending', 'pay-offline'].includes(collectionStatus)) {
+                        return res.json({ status: 'PENDING', success: false, depositId: depositRef, provider: 'lenco' });
+                    }
+
+                    if (collectionStatus !== 'successful') {
+                        return res.status(402).json({
+                            error: 'Mobile money payment failed',
+                            status: collectionStatus || 'UNKNOWN',
+                            details: collection,
+                            provider: 'lenco'
+                        });
+                    }
+
+                    finalPaymentIntentId = collection?.lencoReference || collection?.id || depositRef;
+                } catch (mmErr) {
+                    const providerError = mmErr.response?.data;
+                    console.error('[Lenco] Checkout confirm error:', providerError || mmErr.message);
+                    return res.status(mmErr.response?.status || 500).json({
+                        error: 'Failed to verify mobile money payment',
+                        details: providerError || mmErr.message,
+                        provider: 'lenco'
+                    });
+                }
+            }
+        }
+
+        const csChargeId = 'ch_' + crypto.randomBytes(12).toString('hex');
+        const isSessionLive = session.livemode;
+        const txClient = await pool.connect();
+        try {
+            await txClient.query('BEGIN');
+
+            // --- Process Card Payment via CyberSource ---
+            if (payment_method === 'card') {
+                const transientToken  = payment_details?.transientToken;
+                const csCustomerId    = payment_details?.customerId;
+                const legacyToken     = payment_details?.token;
+                const sessionMetadata = session.metadata || {};
+                const billingDetails  = payment_details?.billingDetails || {};
+                fullName = String(
+                    billingDetails.name ||
+                    sessionMetadata.name ||
+                    sessionMetadata.customer_name ||
+                    sessionMetadata.customer_email ||
+                    'Cardholder'
+                ).trim();
+                const nameParts = fullName.split(/\s+/).filter(Boolean);
+                const inferredCountry = String(
+                    billingDetails.country ||
+                    sessionMetadata.country ||
+                    (currency?.toUpperCase() === 'ZMW' ? 'ZM' : currency?.toUpperCase() === 'NGN' ? 'NG' : 'US')
+                ).toUpperCase();
+                billTo = {
+                    firstName: billingDetails.firstName || nameParts[0] || 'Cardholder',
+                    lastName:  billingDetails.lastName  || nameParts.slice(1).join(' ') || 'Customer',
+                    address1:  billingDetails.address1  || sessionMetadata.address1 || sessionMetadata.address || '1 Main St',
+                    locality:  billingDetails.city      || sessionMetadata.city || 'Lusaka',
+                    administrativeArea: billingDetails.state || sessionMetadata.state || billingDetails.city || sessionMetadata.city || 'Lusaka',
+                    postalCode: billingDetails.postalCode || sessionMetadata.postalCode || '10101',
+                    country: inferredCountry,
+                    email: billingDetails.email || sessionMetadata.customer_email || sessionMetadata.email || 'checkout@flapapay.com',
+                    phoneNumber: billingDetails.phone || sessionMetadata.phone || '0000000000',
+                };
+
+                if (transientToken || csCustomerId) {
+                    try {
+                        const chargeResult = await CybersourceService.payments.sale({
+                            amount,
+                            currency,
+                            transientToken: transientToken || undefined,
+                            customerId:     csCustomerId    || undefined,
+                            billTo,
+                            metadata:       { ref: `CS-SESSION-${session.id}`, merchantId: session.merchant_id },
+                        });
+
+                        if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(chargeResult.status?.toUpperCase())) {
+                            await txClient.query('ROLLBACK');
+                            return res.status(402).json({ error: 'Card declined', code: chargeResult.status });
+                        }
+                        finalPaymentIntentId = chargeResult.id;
+                        finalProcessorTransactionId = chargeResult.transactionId || null;
+                    } catch (csErr) {
+                        await txClient.query('ROLLBACK');
+                        console.error('[CyberSource] Checkout confirm error:', csErr.message);
+                        return res.status(402).json({ error: 'Card payment failed', details: csErr.message });
+                    }
+                } else if (legacyToken === 'tok_visa') {
+                    finalPaymentIntentId = 'cs_test_tok_visa_' + Date.now();
+                } else {
+                    await txClient.query('ROLLBACK');
+                    return res.status(400).json({ error: 'Card payment requires transientToken or customerId' });
+                }
+            }
+
+            await creditCheckoutToMerchantWallet(txClient, {
+                merchantId: session.merchant_id,
+                amount,
+                currency,
+                transactionReference: `CHK_${session.id}`,
+                description: session.description || `Checkout ${session.id}`,
+                livemode: isSessionLive,
+            });
+
+            await txClient.query(
+                "UPDATE checkout_sessions SET status = 'complete', payment_intent = $1, amount = $2 WHERE id = $3",
+                [finalPaymentIntentId, amount, session.id]
+            );
+
+            await txClient.query(
+                `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
+                                     description, metadata, livemode, destination_merchant_id, application_fee_amount,
+                                     available_at, is_settled)
+                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)
+                 ON CONFLICT (id) DO NOTHING`,
+                [
+                    csChargeId, session.merchant_id, amount, currency,
+                    payment_method || 'mobile_money',
+                    JSON.stringify({ payment_intent: finalPaymentIntentId }),
+                    session.description || `Checkout ${session.id}`,
+                    JSON.stringify(session.metadata || {}), isSessionLive,
+                    null, null
+                ]
+            );
+
+            if (session.mode === 'subscription' && session.subscription_data) {
+                const subData = session.subscription_data;
+                const priceId = subData.price;
+                let customerId = session.customer_id;
+
+                if (!customerId) {
+                    const email = session.metadata?.customer_email || session.metadata?.email || 'guest@example.com';
+                    const name = session.metadata?.name || 'Guest';
+                    const custRes = await txClient.query(
+                        'INSERT INTO customers (email, name, merchant_id) VALUES ($1, $2, $3) ON CONFLICT (email, merchant_id) DO UPDATE SET name=EXCLUDED.name RETURNING id',
+                        [email, name, session.merchant_id]
+                    );
+                    customerId = custRes.rows[0].id;
+                }
+
+                const priceRes = await txClient.query(`
+                    SELECT p.*, prod.name AS product_name, prod.description AS product_description
+                    FROM prices p
+                    JOIN products prod ON p.product_id = prod.id
+                    WHERE p.id = $1
+                `, [priceId]);
+                if (priceRes.rows.length > 0) {
+                    const price = priceRes.rows[0];
+                    const periodStart = new Date();
+                    const periodEnd = new Date();
+                    if (price.billing_interval === 'monthly') {
+                        periodEnd.setMonth(periodEnd.getMonth() + (price.interval_count || 1));
+                    } else if (price.billing_interval === 'yearly') {
+                        periodEnd.setFullYear(periodEnd.getFullYear() + (price.interval_count || 1));
+                    } else if (price.billing_interval === 'weekly') {
+                        periodEnd.setDate(periodEnd.getDate() + ((price.interval_count || 1) * 7));
+                    } else if (price.billing_interval === 'daily') {
+                        periodEnd.setDate(periodEnd.getDate() + (price.interval_count || 1));
+                    }
+
+                    const customerRowRes = await txClient.query(
+                        'SELECT * FROM customers WHERE id = $1',
+                        [customerId]
+                    );
+                    const customerRow = customerRowRes.rows[0];
+                    const resolvedCsCustomerId = customerRow?.cybersource_customer_id || await getOrCreateCybersourceMerchantCustomer(
+                        customerId,
+                        customerRow?.email || session.metadata?.customer_email || billTo?.email || 'checkout@flapapay.com',
+                        customerRow?.name || session.metadata?.name || fullName
+                    );
+
+                    if (payment_method !== 'card' || (!payment_details?.transientToken && !payment_details?.customerId)) {
+                        await txClient.query('ROLLBACK');
+                        return res.status(400).json({ error: 'Subscription checkout requires a CyberSource transient token or existing customer token' });
+                    }
+
+                    if (payment_details?.transientToken) {
+                        await CybersourceService.tokens.linkCard({
+                            customerId: resolvedCsCustomerId,
+                            transientToken: payment_details.transientToken,
+                            billingAddress: billTo,
+                            userEmail: customerRow?.email || billTo?.email || 'checkout@flapapay.com',
+                            expirationMonth: payment_details?.expirationMonth,
+                            expirationYear: payment_details?.expirationYear,
+                            setDefault: true,
+                        });
+                    }
+
+                    const subRes = await txClient.query(
+                        `INSERT INTO subscriptions
+                           (customer_id, price_id, merchant_id, status, payment_rail, current_period_start, current_period_end, livemode)
+                         VALUES ($1, $2, $3, $4, 'cybersource', $5, $6, $7) RETURNING id`,
+                        [customerId, priceId, session.merchant_id, 'active', periodStart, periodEnd, session.livemode]
+                    );
+                    const subId = subRes.rows[0].id;
+
+                    let csPlanId = price.cybersource_plan_id;
+                    if (!csPlanId) {
+                        const planResult = await CybersourceRecurringBillingService.ensurePlanForPrice(price, {
+                            name: price.product_name,
+                            description: price.product_description,
+                        });
+                        csPlanId = planResult.id;
+                        await txClient.query(
+                            'UPDATE prices SET cybersource_plan_id = $1, updated_at = NOW() WHERE id = $2',
+                            [csPlanId, priceId]
+                        );
+                    }
+
+                    const originalTransactionId = payment_method === 'card'
+                        ? finalProcessorTransactionId
+                        : null;
+
+                    const subscriptionName = `${price.product_name || 'Subscription'} • ${customerRow?.email || customerId}`;
+                    const csSub = await CybersourceRecurringBillingService.createSubscription({
+                        planId: csPlanId,
+                        customerId: resolvedCsCustomerId,
+                        flapaSubscriptionId: subId,
+                        subscriptionName,
+                        startDate: periodStart,
                         amount,
                         currency,
-                        transientToken: transientToken || undefined,
-                        customerId:     csCustomerId    || undefined,
-                        metadata:       { ref: `CS-SESSION-${session.id}`, merchantId: session.merchant_id },
+                        originalTransactionId,
+                        originalTransactionAuthorizedAmount: amount,
                     });
 
-                    if (!['AUTHORIZED', 'PENDING', 'ACCEPTED', 'COMPLETED'].includes(chargeResult.status?.toUpperCase())) {
-                        await pool.query('ROLLBACK');
-                        return res.status(402).json({ error: 'Card declined', code: chargeResult.status });
-                    }
-                    finalPaymentIntentId = chargeResult.id;
-                } catch (csErr) {
-                    await pool.query('ROLLBACK');
-                    console.error('[CyberSource] Checkout confirm error:', csErr.message);
-                    return res.status(402).json({ error: 'Card payment failed', details: csErr.message });
+                    await txClient.query(
+                        `UPDATE subscriptions
+                         SET cybersource_subscription_id = $1,
+                             status = 'active',
+                             updated_at = NOW()
+                         WHERE id = $2`,
+                        [csSub.id, subId]
+                    );
+
+                    await txClient.query(
+                        `INSERT INTO sub_invoice
+                           (subscription_id, customer_id, merchant_id, amount, currency, status, paid_at, payment_provider, payment_intent_id, cybersource_payment_id)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, 'cybersource', $8, $9)`,
+                        [subId, customerId, session.merchant_id, amount, currency, 'paid', new Date(), finalPaymentIntentId, finalPaymentIntentId]
+                    );
                 }
-            } else if (legacyToken === 'tok_visa') {
-                // Legacy test token fallback (sandbox simulation)
-                finalPaymentIntentId = 'cs_test_tok_visa_' + Date.now();
-            } else {
-                await pool.query('ROLLBACK');
-                return res.status(400).json({ error: 'Card payment requires transientToken or customerId' });
             }
+
+            await txClient.query('COMMIT');
+        } catch (txErr) {
+            await txClient.query('ROLLBACK').catch(() => {});
+            throw txErr;
+        } finally {
+            txClient.release();
         }
 
-        // Update Session
-        await pool.query("UPDATE checkout_sessions SET status = 'complete', payment_intent = $1, amount = $2 WHERE id = $3",
-            [finalPaymentIntentId, amount, session.id]
-        );
-
-        // Record charge with settlement tracking
-        await pool.query(
-            `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
-                                 description, metadata, livemode, destination_merchant_id, application_fee_amount,
-                                 available_at, is_settled)
-             VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,$12,false)
-             ON CONFLICT (id) DO NOTHING`,
-            [
-                csChargeId, session.merchant_id, amount, currency,
-                payment_method || 'mobile_money',
-                JSON.stringify({ payment_intent: finalPaymentIntentId }),
-                session.description || `Checkout ${session.id}`,
-                JSON.stringify(session.metadata || {}), isSessionLive,
-                subMerchantId || null, platformFee || null, sessionAvailableAt
-            ]
-        );
-
-        // --- Handle Subscription Mode ---
-        if (session.mode === 'subscription' && session.subscription_data) {
-            const subData = session.subscription_data;
-            const priceId = subData.price;
-            let customerId = session.customer_id;
-
-            // 1. Ensure Customer exists if not already linked (e.g. guest checkout)
-            if (!customerId) {
-                const email = session.metadata?.customer_email || session.metadata?.email || 'guest@example.com';
-                const name = session.metadata?.name || 'Guest';
-                const custRes = await pool.query(
-                    'INSERT INTO customers (email, name, merchant_id) VALUES ($1, $2, $3) ON CONFLICT (email, merchant_id) DO UPDATE SET name=EXCLUDED.name RETURNING id',
-                    [email, name, session.merchant_id]
-                );
-                customerId = custRes.rows[0].id;
+        await emitFraudPlatformEvent({
+            eventType: 'checkout.charge.completed',
+            sourceSystem: 'checkout',
+            merchantId: session.merchant_id,
+            reference: csChargeId,
+            providerReference: finalProcessorTransactionId || finalPaymentIntentId,
+            rail: payment_method === 'card' ? 'card' : payment_method === 'mobile_money' ? 'mobile_money' : 'checkout',
+            direction: 'credit',
+            currency,
+            amount,
+            feeAmount: 0,
+            status: 'COMPLETED',
+            livemode: isSessionLive,
+            connectedAccountId: null,
+            counterpartyType: payment_method || 'checkout_payment',
+            counterpartyKey: payment_method === 'mobile_money'
+                ? `mobile_money:${String(payment_details?.provider || '').toUpperCase()}:${String(payment_details?.phoneNumber || payment_details?.phone || '').replace(/\D/g, '')}`
+                : payment_method === 'card'
+                    ? `checkout_session:${session.id}`
+                    : null,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                checkoutSessionId: session.id,
+                mode: session.mode,
+                destinationMerchantId: null
             }
-
-            // 2. Fetch Price Info for interval
-            const priceRes = await pool.query('SELECT billing_interval, interval_count FROM prices WHERE id = $1', [priceId]);
-            if (priceRes.rows.length > 0) {
-                const price = priceRes.rows[0];
-
-                // 3. Create Subscription
-                const periodStart = new Date();
-                const periodEnd = new Date();
-                if (price.billing_interval === 'monthly') {
-                    periodEnd.setMonth(periodEnd.getMonth() + (price.interval_count || 1));
-                } else if (price.billing_interval === 'yearly') {
-                    periodEnd.setFullYear(periodEnd.getFullYear() + (price.interval_count || 1));
-                }
-
-                const subRes = await pool.query(
-                    `INSERT INTO subscriptions (customer_id, price_id, status, current_period_start, current_period_end)
-                     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-                    [customerId, priceId, 'active', periodStart, periodEnd]
-                );
-                const subId = subRes.rows[0].id;
-
-                // 4. Create Initial Invoice
-                await pool.query(
-                    `INSERT INTO sub_invoice (subscription_id, customer_id, amount, currency, status, paid_at)
-                     VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [subId, customerId, amount, currency, 'paid', new Date()]
-                );
-            }
-        }
-
-        // NOTE: The authoritative charge record was already inserted above (csChargeId)
-        // with correct split amounts and is_settled=false. Do NOT insert a second charge here.
-
-        await pool.query('COMMIT');
+        });
 
         // Trigger Webhook
         // await dispatchWebhook(session.merchant_id, 'checkout.session.completed', { ...session, status: 'complete' });
@@ -11010,7 +19287,6 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
         res.json({ status: 'succeeded', success_url: session.success_url });
 
     } catch (err) {
-        await pool.query('ROLLBACK');
         console.error('Session Confirm Error Details:', {
             message: err.message,
             stack: err.stack,
@@ -11027,10 +19303,8 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
 // Multer Config for Image Uploads
 
 // Ensure directory exists
-const cmsUploadDir = 'C:/FlapaPay/apps/mobile/assets/images';
-if (!fs.existsSync(cmsUploadDir)) {
-    fs.mkdirSync(cmsUploadDir, { recursive: true });
-}
+const cmsUploadDir = blogUploadDir;
+ensureDir(cmsUploadDir);
 
 const cmsStorage = multer.diskStorage({
     destination: function (req, file, cb) {
@@ -11240,21 +19514,75 @@ app.get('/content/blog/:slug', async (req, res) => {
 // 1. Get Platform Stats
 app.get('/admin/stats', authenticateToken, isAdmin, async (req, res) => {
     try {
-        const userCount = await pool.query("SELECT COUNT(*) FROM users");
-        const transactionCount = await pool.query("SELECT COUNT(*) FROM ledger_entries");
-        const totalVolume = await pool.query("SELECT currency, SUM(amount) as total FROM ledger_entries GROUP BY currency");
-        const helpArticles = await pool.query("SELECT COUNT(*) FROM help_articles");
-        const blogPosts = await pool.query("SELECT COUNT(*) FROM blog_posts");
-        const jobPostings = await pool.query("SELECT COUNT(*) FROM job_postings");
+        const [
+            userCount,
+            transactionCount,
+            merchantCount,
+            totalVolume,
+            walletTotals,
+            helpArticles,
+            blogPosts,
+            jobPostings,
+            totalRevenue
+        ] = await Promise.all([
+            pool.query("SELECT COUNT(*) FROM users"),
+            pool.query("SELECT COUNT(*) FROM ledger_entries"),
+            pool.query("SELECT COUNT(*) FROM merchants"),
+            pool.query(`
+                SELECT currency, COUNT(*)::int AS entries, COALESCE(SUM(amount), 0) AS total
+                FROM ledger_entries
+                WHERE status = 'COMPLETED'
+                GROUP BY currency
+                ORDER BY COALESCE(SUM(amount), 0) DESC, currency ASC
+            `),
+            pool.query(`
+                SELECT currency, COUNT(*)::int AS wallets, COALESCE(SUM(balance), 0) AS total_balance
+                FROM wallets
+                GROUP BY currency
+                ORDER BY COALESCE(SUM(balance), 0) DESC, currency ASC
+            `),
+            pool.query("SELECT COUNT(*) FROM help_articles"),
+            pool.query("SELECT COUNT(*) FROM blog_posts"),
+            pool.query("SELECT COUNT(*) FROM job_postings"),
+            pool.query(`
+                SELECT currency, COUNT(*)::int AS entries, COALESCE(SUM(amount), 0) AS total
+                FROM ledger_entries
+                WHERE status = 'COMPLETED' AND transaction_type IN ('FEE', 'ESCROW_FEE')
+                GROUP BY currency
+                ORDER BY COALESCE(SUM(amount), 0) DESC, currency ASC
+            `)
+        ]);
 
-        const totalRevenue = await pool.query("SELECT currency, SUM(amount) as total FROM ledger_entries WHERE transaction_type = 'FEE' GROUP BY currency");
+        const volumes = totalVolume.rows.map((row) => ({
+            currency: row.currency,
+            entries: parseInt(row.entries, 10) || 0,
+            total: parseFloat(row.total || 0)
+        }));
+        const revenue = totalRevenue.rows.map((row) => ({
+            currency: row.currency,
+            entries: parseInt(row.entries, 10) || 0,
+            total: parseFloat(row.total || 0)
+        }));
+        const wallets = walletTotals.rows.map((row) => ({
+            currency: row.currency,
+            wallets: parseInt(row.wallets, 10) || 0,
+            total_balance: parseFloat(row.total_balance || 0)
+        }));
 
         res.json({
             stats: {
                 users: parseInt(userCount.rows[0].count),
                 transactions: parseInt(transactionCount.rows[0].count),
-                volumes: totalVolume.rows,
-                revenue: totalRevenue.rows,
+                merchants: parseInt(merchantCount.rows[0].count),
+                volumes,
+                revenue,
+                wallets,
+                summary: {
+                    volume_total: volumes.reduce((sum, row) => sum + row.total, 0),
+                    revenue_total: revenue.reduce((sum, row) => sum + row.total, 0),
+                    wallet_balance_total: wallets.reduce((sum, row) => sum + row.total_balance, 0),
+                    active_wallet_currencies: wallets.length
+                },
                 content: {
                     help: parseInt(helpArticles.rows[0].count),
                     blog: parseInt(blogPosts.rows[0].count),
@@ -11325,6 +19653,8 @@ app.get('/admin/users', authenticateToken, isAdmin, async (req, res) => {
 // 2b. Get All Transactions (Global Ledger)
 app.get('/admin/transactions', authenticateToken, isAdmin, async (req, res) => {
     try {
+        const limit = Math.min(parseInt(String(req.query.limit || '5000'), 10) || 5000, 20000);
+        const offset = Math.max(parseInt(String(req.query.offset || '0'), 10) || 0, 0);
         const result = await pool.query(`
             SELECT 
                 l.id,
@@ -11335,20 +19665,33 @@ app.get('/admin/transactions', authenticateToken, isAdmin, async (req, res) => {
                 l.description,
                 l.status,
                 l.created_at,
+                l.debit_wallet_id,
+                l.credit_wallet_id,
+                l.funding_source_type,
+                l.funding_source_brand,
+                l.funding_source_last4,
+                dw.currency as debit_wallet_currency,
+                cw.currency as credit_wallet_currency,
                 sender.full_name as sender_name, 
                 sender.email as sender_email,
+                sender.role as sender_role,
                 sender.avatar_url as sender_avatar,
+                sender_merchant.business_name as sender_merchant_name,
                 receiver.full_name as receiver_name,
                 receiver.email as receiver_email,
-                receiver.avatar_url as receiver_avatar
+                receiver.role as receiver_role,
+                receiver.avatar_url as receiver_avatar,
+                receiver_merchant.business_name as receiver_merchant_name
             FROM ledger_entries l
             LEFT JOIN wallets dw ON l.debit_wallet_id = dw.id
             LEFT JOIN users sender ON dw.user_id = sender.id
+            LEFT JOIN merchants sender_merchant ON sender_merchant.user_id = sender.id
             LEFT JOIN wallets cw ON l.credit_wallet_id = cw.id
             LEFT JOIN users receiver ON cw.user_id = receiver.id
+            LEFT JOIN merchants receiver_merchant ON receiver_merchant.user_id = receiver.id
             ORDER BY l.created_at DESC 
-            LIMIT 100
-        `);
+            LIMIT $1 OFFSET $2
+        `, [limit, offset]);
         res.json(result.rows);
     } catch (err) {
         console.error('Admin Transactions Error:', err);
@@ -11384,6 +19727,478 @@ app.delete('/admin/notifications/:id', authenticateToken, isAdmin, async (req, r
     } catch (err) {
         console.error('Delete Admin Notification Error:', err);
         res.status(500).json({ error: 'Failed to delete notification' });
+    }
+});
+
+// Admin Fraud Operations
+app.get('/admin/fraud/summary', authenticateToken, isAdmin, async (req, res) => {
+    try {
+        const [openRes, reviewRes, confirmedRes, criticalRes, last24Res, rulesRes] = await Promise.all([
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_cases WHERE status IN ('open', 'in_review', 'escalated')`),
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_cases WHERE status = 'in_review'`),
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_cases WHERE status = 'confirmed_fraud'`),
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_cases WHERE severity = 'critical' AND status IN ('open', 'in_review', 'escalated')`),
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_events WHERE created_at >= NOW() - INTERVAL '24 hours'`),
+            pool.query(`SELECT COUNT(*)::int AS count FROM fraud_rules WHERE enabled = TRUE`)
+        ]);
+
+        res.json({
+            open_cases: openRes.rows[0]?.count || 0,
+            in_review_cases: reviewRes.rows[0]?.count || 0,
+            confirmed_fraud_cases: confirmedRes.rows[0]?.count || 0,
+            critical_cases: criticalRes.rows[0]?.count || 0,
+            events_last_24h: last24Res.rows[0]?.count || 0,
+            active_rules: rulesRes.rows[0]?.count || 0
+        });
+    } catch (err) {
+        console.error('[Admin Fraud Summary]', err.message);
+        res.status(500).json({ error: 'Failed to fetch fraud summary' });
+    }
+});
+
+app.get('/admin/fraud/rules', authenticateToken, isAdmin, async (_req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM fraud_rules ORDER BY created_at ASC');
+        res.json({ rules: result.rows });
+    } catch (err) {
+        console.error('[Admin Fraud Rules]', err.message);
+        res.status(500).json({ error: 'Failed to fetch fraud rules' });
+    }
+});
+
+app.post('/admin/fraud/rules', authenticateToken, isAdmin, async (req, res) => {
+    const { name, rule_type, action = 'review', severity = 'medium', weight = 20, applies_to = ['wallet.withdrawal.initiated'], parameters = {}, enabled = true } = req.body;
+    const validRuleTypes = ['large_amount', 'velocity_count', 'velocity_amount', 'repeat_counterparty', 'new_counterparty_large_amount', 'high_risk_country'];
+    const validActions = ['review', 'alert', 'freeze'];
+    const validSeverities = ['low', 'medium', 'high', 'critical'];
+
+    if (!name || !rule_type) return res.status(400).json({ error: 'name and rule_type are required' });
+    if (!validRuleTypes.includes(rule_type)) return res.status(400).json({ error: `rule_type must be one of: ${validRuleTypes.join(', ')}` });
+    if (!validActions.includes(action)) return res.status(400).json({ error: `action must be one of: ${validActions.join(', ')}` });
+    if (!validSeverities.includes(severity)) return res.status(400).json({ error: `severity must be one of: ${validSeverities.join(', ')}` });
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO fraud_rules (name, rule_type, action, severity, weight, applies_to, parameters, enabled, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+             RETURNING *`,
+            [name, rule_type, action, severity, weight, applies_to, JSON.stringify(parameters || {}), enabled, req.user.id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Admin Fraud Rule Create]', err.message);
+        res.status(500).json({ error: 'Failed to create fraud rule' });
+    }
+});
+
+app.patch('/admin/fraud/rules/:id', authenticateToken, isAdmin, async (req, res) => {
+    const { name, action, severity, weight, applies_to, parameters, enabled } = req.body;
+    try {
+        const result = await pool.query(
+            `UPDATE fraud_rules
+             SET name = COALESCE($1, name),
+                 action = COALESCE($2, action),
+                 severity = COALESCE($3, severity),
+                 weight = COALESCE($4, weight),
+                 applies_to = COALESCE($5, applies_to),
+                 parameters = COALESCE($6::jsonb, parameters),
+                 enabled = COALESCE($7, enabled),
+                 updated_at = NOW()
+             WHERE id = $8
+             RETURNING *`,
+            [
+                name || null,
+                action || null,
+                severity || null,
+                weight ?? null,
+                applies_to || null,
+                parameters ? JSON.stringify(parameters) : null,
+                enabled != null ? enabled : null,
+                req.params.id
+            ]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Fraud rule not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('[Admin Fraud Rule Update]', err.message);
+        res.status(500).json({ error: 'Failed to update fraud rule' });
+    }
+});
+
+app.delete('/admin/fraud/rules/:id', authenticateToken, isAdmin, async (req, res) => {
+    try {
+        await pool.query('DELETE FROM fraud_rules WHERE id = $1', [req.params.id]);
+        res.json({ deleted: true });
+    } catch (err) {
+        console.error('[Admin Fraud Rule Delete]', err.message);
+        res.status(500).json({ error: 'Failed to delete fraud rule' });
+    }
+});
+
+app.get('/admin/fraud/cases', authenticateToken, isAdmin, async (req, res) => {
+    const { status = 'all', severity = 'all', limit = 50, offset = 0 } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT fc.*,
+                    u.email AS user_email,
+                    u.full_name AS user_name,
+                    m.business_name AS merchant_name,
+                    m.charges_paused AS merchant_charges_paused,
+                    m.charge_hold_reason AS merchant_charge_hold_reason,
+                    ca.business_name AS connected_account_name,
+                    ca.charges_paused AS connected_account_charges_paused,
+                    ca.charge_hold_reason AS connected_account_charge_hold_reason,
+                    w.currency AS wallet_currency,
+                    w.status AS wallet_status,
+                    w.withdrawals_paused,
+                    w.withdrawal_hold_reason,
+                    fe.event_type,
+                    fe.rail,
+                    fe.amount,
+                    fe.status AS event_status
+             FROM fraud_cases fc
+             LEFT JOIN users u ON u.id = fc.user_id
+             LEFT JOIN merchants m ON m.id = fc.merchant_id
+             LEFT JOIN connected_accounts ca ON ca.id = fc.connected_account_id
+             LEFT JOIN wallets w ON w.id = fc.wallet_id
+             LEFT JOIN fraud_events fe ON fe.id = fc.fraud_event_id
+             WHERE ($1 = 'all' OR fc.status = $1)
+               AND ($2 = 'all' OR fc.severity = $2)
+             ORDER BY fc.opened_at DESC
+             LIMIT $3 OFFSET $4`,
+            [status, severity, parseInt(limit, 10), parseInt(offset, 10)]
+        );
+        const countRes = await pool.query(
+            `SELECT COUNT(*)::int AS count
+             FROM fraud_cases
+             WHERE ($1 = 'all' OR status = $1)
+               AND ($2 = 'all' OR severity = $2)`,
+            [status, severity]
+        );
+        res.json({ cases: result.rows, total: countRes.rows[0]?.count || 0 });
+    } catch (err) {
+        console.error('[Admin Fraud Cases]', err.message);
+        res.status(500).json({ error: 'Failed to fetch fraud cases' });
+    }
+});
+
+app.get('/admin/fraud/cases/:id', authenticateToken, isAdmin, async (req, res) => {
+    try {
+        const caseRes = await pool.query(
+            `SELECT fc.*,
+                    u.email AS user_email,
+                    u.full_name AS user_name,
+                    m.business_name AS merchant_name,
+                    m.charges_paused AS merchant_charges_paused,
+                    m.charge_hold_reason AS merchant_charge_hold_reason,
+                    ca.business_name AS connected_account_name,
+                    ca.charges_paused AS connected_account_charges_paused,
+                    ca.charge_hold_reason AS connected_account_charge_hold_reason,
+                    w.currency AS wallet_currency,
+                    w.balance AS wallet_balance,
+                    w.status AS wallet_status,
+                    w.withdrawals_paused,
+                    w.withdrawal_hold_reason,
+                    fe.event_type,
+                    fe.rail,
+                    fe.amount,
+                    fe.currency AS event_currency,
+                    fe.status AS event_status,
+                    fe.provider_reference,
+                    fe.counterparty_type,
+                    fe.counterparty_key,
+                    fe.ip_address,
+                    fe.user_agent,
+                    fe.metadata AS event_metadata
+             FROM fraud_cases fc
+             LEFT JOIN users u ON u.id = fc.user_id
+             LEFT JOIN merchants m ON m.id = fc.merchant_id
+             LEFT JOIN connected_accounts ca ON ca.id = fc.connected_account_id
+             LEFT JOIN wallets w ON w.id = fc.wallet_id
+             LEFT JOIN fraud_events fe ON fe.id = fc.fraud_event_id
+             WHERE fc.id = $1
+             LIMIT 1`,
+            [req.params.id]
+        );
+        if (caseRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Fraud case not found' });
+        }
+
+        const fraudCase = caseRes.rows[0];
+        const [signalsRes, actionsRes, notesRes, relatedEventsRes] = await Promise.all([
+            pool.query(
+                `SELECT *
+                 FROM fraud_signals
+                 WHERE fraud_event_id = $1
+                 ORDER BY created_at ASC`,
+                [fraudCase.fraud_event_id]
+            ),
+            pool.query(
+                `SELECT fa.*,
+                        u.full_name AS executed_by_name,
+                        u.email AS executed_by_email
+                 FROM fraud_actions fa
+                 LEFT JOIN users u ON u.id = fa.executed_by
+                 WHERE fa.fraud_case_id = $1
+                 ORDER BY fa.executed_at DESC`,
+                [req.params.id]
+            ),
+            pool.query(
+                `SELECT n.*,
+                        u.full_name AS author_name,
+                        u.email AS author_email
+                 FROM fraud_case_notes n
+                 LEFT JOIN users u ON u.id = n.author_user_id
+                 WHERE n.fraud_case_id = $1
+                 ORDER BY n.created_at DESC`,
+                [req.params.id]
+            ),
+            pool.query(
+                `SELECT fe.*
+                 FROM fraud_events fe
+                 WHERE (
+                        ($1::varchar IS NOT NULL AND fe.transaction_reference = $1)
+                     OR ($2::uuid IS NOT NULL AND fe.wallet_id = $2)
+                     OR ($3::uuid IS NOT NULL AND fe.merchant_id = $3)
+                     OR ($4::uuid IS NOT NULL AND fe.connected_account_id = $4)
+                 )
+                 ORDER BY fe.occurred_at DESC
+                 LIMIT 20`,
+                [
+                    fraudCase.transaction_reference || null,
+                    fraudCase.wallet_id || null,
+                    fraudCase.merchant_id || null,
+                    fraudCase.connected_account_id || null
+                ]
+            )
+        ]);
+
+        res.json({
+            fraud_case: fraudCase,
+            signals: signalsRes.rows,
+            actions: actionsRes.rows,
+            notes: notesRes.rows,
+            related_events: relatedEventsRes.rows
+        });
+    } catch (err) {
+        console.error('[Admin Fraud Case Detail]', err.message);
+        res.status(500).json({ error: 'Failed to fetch fraud case detail' });
+    }
+});
+
+app.get('/admin/fraud/events', authenticateToken, isAdmin, async (req, res) => {
+    const { limit = 100, offset = 0, event_type = 'all' } = req.query;
+    try {
+        const result = await pool.query(
+            `SELECT fe.*
+             FROM fraud_events fe
+             WHERE ($1 = 'all' OR fe.event_type = $1)
+             ORDER BY fe.occurred_at DESC
+             LIMIT $2 OFFSET $3`,
+            [event_type, parseInt(limit, 10), parseInt(offset, 10)]
+        );
+        res.json({ events: result.rows });
+    } catch (err) {
+        console.error('[Admin Fraud Events]', err.message);
+        res.status(500).json({ error: 'Failed to fetch fraud events' });
+    }
+});
+
+app.post('/admin/fraud/cases/:id/notes', authenticateToken, isAdmin, async (req, res) => {
+    const note = String(req.body?.note || '').trim();
+    if (!note) {
+        return res.status(400).json({ error: 'note is required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const caseRes = await client.query('SELECT id FROM fraud_cases WHERE id = $1', [req.params.id]);
+        if (caseRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Fraud case not found' });
+        }
+
+        const noteRes = await client.query(
+            `INSERT INTO fraud_case_notes (fraud_case_id, author_user_id, note, metadata)
+             VALUES ($1, $2, $3, $4::jsonb)
+             RETURNING *`,
+            [req.params.id, req.user.id, note, JSON.stringify({ source: 'admin_fraud_ops' })]
+        );
+
+        await FraudActionService.recordAction(client, {
+            fraudCaseId: req.params.id,
+            actionType: 'case_note_added',
+            targetType: 'fraud_case',
+            targetId: req.params.id,
+            executedBy: req.user.id,
+            metadata: { note_preview: note.slice(0, 160) }
+        });
+
+        await client.query('COMMIT');
+        res.status(201).json(noteRes.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Admin Fraud Case Note]', err.message);
+        res.status(500).json({ error: 'Failed to add fraud case note' });
+    } finally {
+        client.release();
+    }
+});
+
+app.patch('/admin/fraud/cases/:id', authenticateToken, isAdmin, async (req, res) => {
+    const { status, resolution, resolution_note, assigned_to } = req.body;
+    const validStatuses = ['open', 'in_review', 'escalated', 'cleared', 'confirmed_fraud', 'closed'];
+    if (status && !validStatuses.includes(status)) {
+        return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const existingRes = await client.query('SELECT * FROM fraud_cases WHERE id = $1 FOR UPDATE', [req.params.id]);
+        if (existingRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Fraud case not found' });
+        }
+        const existing = existingRes.rows[0];
+        const nextStatus = status || existing.status;
+        const caseEventType = existing?.metadata?.event_type || null;
+        const isChargeSideCase = ['charge.succeeded', 'checkout.charge.completed'].includes(caseEventType);
+        const result = await client.query(
+            `UPDATE fraud_cases
+             SET status = $1,
+                 assigned_to = COALESCE($2, assigned_to),
+                 resolution = COALESCE($3, resolution),
+                 resolution_note = COALESCE($4, resolution_note),
+                 reviewed_at = CASE WHEN $1 IN ('in_review','cleared','confirmed_fraud','closed') THEN NOW() ELSE reviewed_at END,
+                 closed_at = CASE WHEN $1 IN ('cleared','confirmed_fraud','closed') THEN NOW() ELSE closed_at END
+             WHERE id = $5
+             RETURNING *`,
+            [nextStatus, assigned_to || null, resolution || null, resolution_note || null, req.params.id]
+        );
+
+        if (existing.wallet_id) {
+            if (nextStatus === 'confirmed_fraud' || nextStatus === 'escalated') {
+                await applyFraudWalletRestriction(client, {
+                    walletId: existing.wallet_id,
+                    fraudCaseId: existing.id,
+                    action: 'freeze',
+                    reason: resolution_note || 'Wallet frozen by fraud operations.'
+                });
+            } else if (nextStatus === 'in_review' || nextStatus === 'open') {
+                await applyFraudWalletRestriction(client, {
+                    walletId: existing.wallet_id,
+                    fraudCaseId: existing.id,
+                    action: 'review',
+                    reason: resolution_note || 'Withdrawals paused pending fraud review.'
+                });
+            } else if (nextStatus === 'cleared' || nextStatus === 'closed') {
+                await releaseFraudWalletRestriction(client, {
+                    walletId: existing.wallet_id,
+                    excludingCaseId: existing.id,
+                    forceUnfreeze: true
+                });
+            }
+        }
+        if (existing.connected_account_id) {
+            if (nextStatus === 'confirmed_fraud' || nextStatus === 'escalated' || nextStatus === 'in_review' || nextStatus === 'open') {
+                await applyConnectedAccountPayoutRestriction(client, {
+                    accountId: existing.connected_account_id,
+                    fraudCaseId: existing.id,
+                    reason: resolution_note || 'Payouts paused by fraud operations.'
+                });
+            } else if (nextStatus === 'cleared' || nextStatus === 'closed') {
+                await releaseConnectedAccountPayoutRestriction(client, {
+                    accountId: existing.connected_account_id,
+                    excludingCaseId: existing.id
+                });
+            }
+        }
+        if (existing.merchant_id && isChargeSideCase) {
+            if (nextStatus === 'confirmed_fraud' || nextStatus === 'escalated' || nextStatus === 'in_review' || nextStatus === 'open') {
+                await applyMerchantChargeRestriction(client, {
+                    merchantId: existing.merchant_id,
+                    fraudCaseId: existing.id,
+                    reason: resolution_note || 'Charge acceptance paused by fraud operations.'
+                });
+            } else if (nextStatus === 'cleared' || nextStatus === 'closed') {
+                await releaseMerchantChargeRestriction(client, {
+                    merchantId: existing.merchant_id,
+                    excludingCaseId: existing.id
+                });
+            }
+        }
+        if (existing.connected_account_id && isChargeSideCase) {
+            if (nextStatus === 'confirmed_fraud' || nextStatus === 'escalated' || nextStatus === 'in_review' || nextStatus === 'open') {
+                await applyConnectedAccountChargeRestriction(client, {
+                    accountId: existing.connected_account_id,
+                    fraudCaseId: existing.id,
+                    reason: resolution_note || 'Connected account charge acceptance paused by fraud operations.'
+                });
+            } else if (nextStatus === 'cleared' || nextStatus === 'closed') {
+                await releaseConnectedAccountChargeRestriction(client, {
+                    accountId: existing.connected_account_id,
+                    excludingCaseId: existing.id
+                });
+            }
+        }
+
+        await FraudActionService.recordAction(client, {
+            fraudCaseId: req.params.id,
+            actionType: `case_${nextStatus}`,
+            targetType: 'fraud_case',
+            targetId: req.params.id,
+            executedBy: req.user.id,
+            metadata: {
+                previous_status: existing.status,
+                resolution: resolution || null,
+                resolution_note: resolution_note || null
+            }
+        });
+
+        if (nextStatus === 'escalated' || nextStatus === 'confirmed_fraud') {
+            await FraudAlertService.queueAlert(client, {
+                fraudCaseId: req.params.id,
+                channel: 'admin_notification',
+                recipient: 'fraud_ops',
+                payload: {
+                    title: `Fraud case ${nextStatus.replace('_', ' ')}`,
+                    message: `Case ${req.params.id.slice(0, 8)} was marked ${nextStatus.replace('_', ' ')} and requires immediate attention.`,
+                    case_id: req.params.id,
+                    reference: existing.transaction_reference || null,
+                    severity: existing.severity,
+                    rail: existing.metadata?.rail || null,
+                    score: existing.score,
+                    action: nextStatus
+                }
+            });
+            await FraudAlertService.queueAlert(client, {
+                fraudCaseId: req.params.id,
+                channel: 'email',
+                recipient: process.env.FRAUD_ALERT_EMAIL || 'mbolela.pule@flapapay.com',
+                payload: {
+                    subject: `Fraud case ${nextStatus.replace('_', ' ')}: ${existing.transaction_reference || req.params.id.slice(0, 8)}`,
+                    title: `Fraud case ${nextStatus.replace('_', ' ')}`,
+                    message: resolution_note || `Fraud operations marked case ${req.params.id.slice(0, 8)} as ${nextStatus.replace('_', ' ')}.`,
+                    case_id: req.params.id,
+                    reference: existing.transaction_reference || null,
+                    severity: existing.severity,
+                    rail: existing.metadata?.rail || null,
+                    score: existing.score,
+                    action: nextStatus
+                }
+            });
+        }
+
+        await client.query('COMMIT');
+        res.json(result.rows[0]);
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Admin Fraud Case Update]', err.message);
+        res.status(500).json({ error: 'Failed to update fraud case' });
+    } finally {
+        client.release();
     }
 });
 
@@ -11740,11 +20555,12 @@ app.post('/merchants/register', async (req, res) => {
 // ---- POST /merchants/login ----
 app.post('/merchants/login', async (req, res) => {
     const { email, password } = req.body;
+    const normalizedEmail = (email || '').toLowerCase().trim();
 
-    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    if (!normalizedEmail || !password) return res.status(400).json({ error: 'Email and password are required' });
 
     try {
-        const userRes = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        const userRes = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = $1', [normalizedEmail]);
         if (userRes.rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
 
         const user = userRes.rows[0];
@@ -11881,7 +20697,8 @@ app.post('/merchants/onboarding', authenticateToken, uploadKyc.any(), async (req
                 const base64Data = faceCapture.replace(/^data:image\/\w+;base64,/, "");
                 const buffer = Buffer.from(base64Data, 'base64');
                 const filename = `face-capture-${Date.now()}.jpg`;
-                const fullPath = path.join('C:/FlapaPay/apps/web/public/assets/images/kyc', filename);
+                ensureDir(kycUploadDir);
+                const fullPath = path.join(kycUploadDir, filename);
                 fs.writeFileSync(fullPath, buffer);
                 faceCapturePath = `/assets/images/kyc/${filename}`;
             } catch (err) {
@@ -12201,25 +21018,29 @@ app.post('/admin/sub-merchants/:id/kyc/reject', authenticateToken, isAdmin, asyn
 });
 
 // ---- GET /merchants/profile ----
-app.get('/merchants/profile', authenticateToken, async (req, res) => {
+app.get('/merchants/profile', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT m.id, m.business_name, m.country, m.compliance_status, m.is_live_enabled,
-                    m.first_name, m.last_name, m.email, m.is_incorporated, m.registration_type,
-                    m.account_type, m.pacra_verified, m.email_verified,
-                    u.email AS user_email, u.full_name
+            `SELECT m.*, u.email AS user_email, u.full_name
              FROM merchants m
              JOIN users u ON u.id = m.user_id
-             WHERE m.user_id = $1`,
-            [req.user.id]
+             WHERE m.id = $1`,
+            [req.currentMerchant.id]
         );
-
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Merchant profile not found' });
-
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
         const m = result.rows[0];
         res.json({
             id: m.id,
             businessName: m.business_name,
+            business_name: m.business_name,
+            registeredAddress: m.registered_address,
+            registered_address: m.registered_address,
+            contactPhone: m.contact_phone,
+            contact_phone: m.contact_phone,
+            logoUrl: normalizePublicAssetUrl(m.logo_url),
+            logo_url: normalizePublicAssetUrl(m.logo_url),
+            brandColor: m.brand_color,
+            brand_color: m.brand_color,
             country: m.country,
             complianceStatus: m.compliance_status,
             isLiveEnabled: m.is_live_enabled,
@@ -12232,6 +21053,9 @@ app.get('/merchants/profile', authenticateToken, async (req, res) => {
             accountType: m.account_type,
             pacraVerified: m.pacra_verified,
             emailVerified: m.email_verified,
+            adminKycNotes: m.admin_kyc_notes,
+            kycSubmittedAt: m.kyc_submitted_at,
+            workspaceRole: m.membership_role,
         });
     } catch (err) {
         console.error('[Merchants] Profile Error:', err);
@@ -12239,25 +21063,630 @@ app.get('/merchants/profile', authenticateToken, async (req, res) => {
     }
 });
 
-// ---- GET /merchants/stats ----
-app.get('/merchants/stats', authenticateToken, async (req, res) => {
+app.get('/merchant/team/invites/lookup/:token', async (req, res) => {
     try {
-        const merchantRes = await pool.query('SELECT id FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.json({
-            stats: [
-                { label: 'Test Volume', value: 'ZK 0.00', count: 0, change: '+0%', trend: 'up' },
-                { label: 'Test Available Balance', value: 'ZK 0.00', change: '+0%', trend: 'up' },
-                { label: 'Test Transactions', value: '0', change: '+0%', trend: 'up' },
-                { label: 'Success Rate', value: '100%', change: '+0%', trend: 'up' },
-            ],
-            rawBalance: 0,
-            recentActivity: [],
-            volumeHistory: [],
-            methodBreakdown: [],
-            geographicData: [],
-            cohortData: []
+        const tokenHash = hashMerchantTeamToken(req.params.token);
+        const result = await pool.query(
+            `SELECT
+                mti.id,
+                mti.email,
+                mti.full_name,
+                mti.role,
+                mti.expires_at,
+                mti.accepted_at,
+                mti.revoked_at,
+                m.business_name,
+                inviter.full_name AS inviter_name
+             FROM merchant_team_invites mti
+             JOIN merchants m ON m.id = mti.merchant_id
+             LEFT JOIN users inviter ON inviter.id = mti.invited_by_user_id
+             WHERE mti.token_hash = $1`,
+            [tokenHash]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Invitation not found' });
+        }
+
+        const invite = result.rows[0];
+        const now = Date.now();
+        const expiresAt = invite.expires_at ? new Date(invite.expires_at).getTime() : 0;
+        const status =
+            invite.accepted_at ? 'accepted'
+                : invite.revoked_at ? 'revoked'
+                    : expiresAt && expiresAt < now ? 'expired'
+                        : 'pending';
+
+        return res.json({
+            invite: {
+                businessName: invite.business_name,
+                inviterName: invite.inviter_name || 'FlapaPay Team',
+                inviteeEmail: invite.email,
+                fullName: invite.full_name,
+                role: invite.role,
+                expiresAt: invite.expires_at,
+                status,
+            }
         });
-        const merchantId = merchantRes.rows[0].id;
+    } catch (err) {
+        console.error('[Merchant Team] Invite lookup error:', err);
+        return res.status(500).json({ error: 'Failed to load invitation' });
+    }
+});
+
+app.get('/merchant/workspaces', authenticateToken, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                m.id,
+                m.business_name,
+                m.account_id,
+                m.country,
+                m.compliance_status,
+                m.is_live_enabled,
+                CASE
+                    WHEN m.user_id = $1 THEN 'owner'
+                    ELSE mtm.role
+                END AS role
+             FROM merchants m
+             LEFT JOIN merchant_team_members mtm
+               ON mtm.merchant_id = m.id
+              AND mtm.user_id = $1
+              AND mtm.status = 'active'
+             WHERE m.user_id = $1
+                OR mtm.user_id = $1
+             ORDER BY CASE WHEN m.user_id = $1 THEN 0 ELSE 1 END, m.created_at ASC`,
+            [req.user.id]
+        );
+
+        return res.json({
+            workspaces: result.rows.map((row) => ({
+                id: row.id,
+                businessName: row.business_name,
+                accountId: row.account_id,
+                country: row.country,
+                complianceStatus: row.compliance_status,
+                isLiveEnabled: row.is_live_enabled,
+                role: row.role,
+            }))
+        });
+    } catch (err) {
+        console.error('[Merchant Workspaces] List error:', err);
+        return res.status(500).json({ error: 'Failed to load merchant workspaces' });
+    }
+});
+
+app.get('/merchant/team', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const { id: merchantId } = req.currentMerchant;
+        const ownerRes = await pool.query(
+            `SELECT u.id, u.full_name, u.email, m.created_at
+             FROM merchants m
+             JOIN users u ON u.id = m.user_id
+             WHERE m.id = $1`,
+            [merchantId]
+        );
+
+        const membersRes = await pool.query(
+            `SELECT
+                mtm.id,
+                mtm.user_id,
+                mtm.role,
+                mtm.status,
+                mtm.joined_at,
+                mtm.last_active_at,
+                mtm.created_at,
+                u.full_name,
+                u.email
+             FROM merchant_team_members mtm
+             JOIN users u ON u.id = mtm.user_id
+             WHERE mtm.merchant_id = $1
+             ORDER BY
+                CASE mtm.role
+                    WHEN 'admin' THEN 0
+                    WHEN 'finance' THEN 1
+                    WHEN 'operations' THEN 2
+                    WHEN 'developer' THEN 3
+                    WHEN 'support' THEN 4
+                    ELSE 5
+                END,
+                mtm.created_at ASC`,
+            [merchantId]
+        );
+
+        const owner = ownerRes.rows[0];
+        const members = [
+            owner ? {
+                id: `owner-${owner.id}`,
+                userId: owner.id,
+                fullName: owner.full_name,
+                email: owner.email,
+                role: 'owner',
+                status: 'active',
+                joinedAt: owner.created_at,
+                lastActiveAt: null,
+                isOwner: true,
+            } : null,
+            ...membersRes.rows.map((row) => ({
+                id: row.id,
+                userId: row.user_id,
+                fullName: row.full_name,
+                email: row.email,
+                role: row.role,
+                status: row.status,
+                joinedAt: row.joined_at || row.created_at,
+                lastActiveAt: row.last_active_at,
+                isOwner: false,
+            }))
+        ].filter(Boolean);
+
+        return res.json({
+            merchant: {
+                id: req.currentMerchant.id,
+                businessName: req.currentMerchant.business_name,
+                currentUserRole: req.currentMerchant.membership_role,
+            },
+            members,
+        });
+    } catch (err) {
+        console.error('[Merchant Team] Members fetch error:', err);
+        return res.status(500).json({ error: 'Failed to fetch team members' });
+    }
+});
+
+app.get('/merchant/team/invites', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                mti.id,
+                mti.email,
+                mti.full_name,
+                mti.role,
+                mti.expires_at,
+                mti.accepted_at,
+                mti.revoked_at,
+                mti.created_at,
+                inviter.full_name AS invited_by_name
+             FROM merchant_team_invites mti
+             LEFT JOIN users inviter ON inviter.id = mti.invited_by_user_id
+             WHERE mti.merchant_id = $1
+             ORDER BY mti.created_at DESC`,
+            [req.currentMerchant.id]
+        );
+
+        const now = Date.now();
+        return res.json({
+            invites: result.rows.map((row) => ({
+                id: row.id,
+                email: row.email,
+                fullName: row.full_name,
+                role: row.role,
+                invitedByName: row.invited_by_name,
+                createdAt: row.created_at,
+                expiresAt: row.expires_at,
+                status: row.accepted_at
+                    ? 'accepted'
+                    : row.revoked_at
+                        ? 'revoked'
+                        : (row.expires_at && new Date(row.expires_at).getTime() < now)
+                            ? 'expired'
+                            : 'pending',
+            })),
+        });
+    } catch (err) {
+        console.error('[Merchant Team] Invite list error:', err);
+        return res.status(500).json({ error: 'Failed to fetch team invites' });
+    }
+});
+
+app.get('/merchant/team/audit-log', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT
+                log.id,
+                log.action,
+                log.old_role,
+                log.new_role,
+                log.metadata,
+                log.created_at,
+                actor.full_name AS actor_name,
+                target.full_name AS target_name
+             FROM merchant_role_audit_log log
+             LEFT JOIN users actor ON actor.id = log.actor_user_id
+             LEFT JOIN users target ON target.id = log.target_user_id
+             WHERE log.merchant_id = $1
+             ORDER BY log.created_at DESC
+             LIMIT 50`,
+            [req.currentMerchant.id]
+        );
+
+        return res.json({ items: result.rows });
+    } catch (err) {
+        console.error('[Merchant Team] Audit log error:', err);
+        return res.status(500).json({ error: 'Failed to fetch team audit log' });
+    }
+});
+
+app.post('/merchant/team/invites', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const fullName = String(req.body.fullName || '').trim();
+        const email = String(req.body.email || '').trim().toLowerCase();
+        const role = String(req.body.role || '').trim().toLowerCase();
+
+        if (!fullName) return res.status(400).json({ error: 'Full name is required' });
+        if (!validateEmail(email)) return res.status(400).json({ error: 'Valid email is required' });
+        if (!MERCHANT_TEAM_ROLES.includes(role) || role === 'owner') {
+            return res.status(400).json({ error: 'Invalid role selected' });
+        }
+        if (req.currentMerchant.membership_role !== 'owner' && role === 'admin') {
+            return res.status(403).json({ error: 'Only the owner can assign admin access' });
+        }
+
+        await client.query('BEGIN');
+
+        const ownerRes = await client.query(
+            `SELECT u.email
+             FROM merchants m
+             JOIN users u ON u.id = m.user_id
+             WHERE m.id = $1`,
+            [req.currentMerchant.id]
+        );
+        const ownerEmail = String(ownerRes.rows[0]?.email || '').toLowerCase();
+        if (ownerEmail === email) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'This email already belongs to the merchant owner' });
+        }
+
+        const existingMemberRes = await client.query(
+            `SELECT mtm.id, mtm.role
+             FROM merchant_team_members mtm
+             JOIN users u ON u.id = mtm.user_id
+             WHERE mtm.merchant_id = $1
+               AND LOWER(u.email) = $2
+               AND mtm.status = 'active'
+             LIMIT 1`,
+            [req.currentMerchant.id, email]
+        );
+
+        if (existingMemberRes.rows.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'This user already has active access to the merchant workspace' });
+        }
+
+        await client.query(
+            `UPDATE merchant_team_invites
+             SET revoked_at = NOW(), updated_at = NOW()
+             WHERE merchant_id = $1
+               AND LOWER(email) = $2
+               AND accepted_at IS NULL
+               AND revoked_at IS NULL
+               AND expires_at > NOW()`,
+            [req.currentMerchant.id, email]
+        );
+
+        const rawToken = crypto.randomBytes(32).toString('hex');
+        const tokenHash = hashMerchantTeamToken(rawToken);
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+        const inviteRes = await client.query(
+            `INSERT INTO merchant_team_invites (
+                merchant_id,
+                email,
+                full_name,
+                role,
+                token_hash,
+                expires_at,
+                invited_by_user_id
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, created_at`,
+            [req.currentMerchant.id, email, fullName, role, tokenHash, expiresAt.toISOString(), req.user.id]
+        );
+
+        await logMerchantRoleEvent({
+            client,
+            merchantId: req.currentMerchant.id,
+            actorUserId: req.user.id,
+            action: 'invite.created',
+            newRole: role,
+            metadata: { inviteId: inviteRes.rows[0].id, email }
+        });
+
+        await client.query('COMMIT');
+
+        const frontendBase = process.env.FRONTEND_URL || 'https://www.flapapay.com';
+        const inviteUrl = `${String(frontendBase).replace(/\/$/, '')}/merchant/team/accept/${rawToken}`;
+        await EmailService.sendMerchantTeamInvite(email, {
+            businessName: req.currentMerchant.business_name,
+            inviterName: req.user.full_name || req.user.email,
+            inviteUrl,
+            role,
+            expiresAt: '7 days',
+        });
+
+        return res.status(201).json({
+            message: 'Invitation sent successfully',
+            invite: {
+                id: inviteRes.rows[0].id,
+                email,
+                fullName,
+                role,
+                expiresAt: expiresAt.toISOString(),
+            }
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Merchant Team] Invite creation error:', err);
+        return res.status(500).json({ error: 'Failed to send team invitation' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/merchant/team/invites/:token/accept', authenticateToken, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const tokenHash = hashMerchantTeamToken(req.params.token);
+        await client.query('BEGIN');
+
+        const inviteRes = await client.query(
+            `SELECT
+                mti.*,
+                m.business_name,
+                owner.email AS owner_email
+             FROM merchant_team_invites mti
+             JOIN merchants m ON m.id = mti.merchant_id
+             JOIN users owner ON owner.id = m.user_id
+             WHERE mti.token_hash = $1
+             FOR UPDATE`,
+            [tokenHash]
+        );
+
+        if (inviteRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Invitation not found' });
+        }
+
+        const invite = inviteRes.rows[0];
+        if (invite.accepted_at) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'Invitation has already been accepted' });
+        }
+        if (invite.revoked_at) {
+            await client.query('ROLLBACK');
+            return res.status(410).json({ error: 'Invitation has been revoked' });
+        }
+        if (new Date(invite.expires_at).getTime() < Date.now()) {
+            await client.query('ROLLBACK');
+            return res.status(410).json({ error: 'Invitation has expired' });
+        }
+        if (String(req.user.email || '').toLowerCase() !== String(invite.email || '').toLowerCase()) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'Sign in with the invited email address to accept this invitation' });
+        }
+        if (String(invite.owner_email || '').toLowerCase() === String(req.user.email || '').toLowerCase()) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'The merchant owner already has workspace access' });
+        }
+
+        const existingMemberRes = await client.query(
+            `SELECT id, role, status
+             FROM merchant_team_members
+             WHERE merchant_id = $1 AND user_id = $2
+             LIMIT 1`,
+            [invite.merchant_id, req.user.id]
+        );
+
+        let membershipId = null;
+        if (existingMemberRes.rows.length > 0) {
+            membershipId = existingMemberRes.rows[0].id;
+            await client.query(
+                `UPDATE merchant_team_members
+                 SET role = $1, status = 'active', joined_at = COALESCE(joined_at, NOW()), updated_at = NOW()
+                 WHERE id = $2`,
+                [invite.role, membershipId]
+            );
+        } else {
+            const insertRes = await client.query(
+                `INSERT INTO merchant_team_members (
+                    merchant_id,
+                    user_id,
+                    role,
+                    status,
+                    invited_by_user_id,
+                    joined_at
+                 ) VALUES ($1, $2, $3, 'active', $4, NOW())
+                 RETURNING id`,
+                [invite.merchant_id, req.user.id, invite.role, invite.invited_by_user_id]
+            );
+            membershipId = insertRes.rows[0].id;
+        }
+
+        await client.query(
+            `UPDATE merchant_team_invites
+             SET accepted_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [invite.id]
+        );
+
+        await client.query(
+            `UPDATE merchant_team_members
+             SET last_active_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [membershipId]
+        );
+
+        await logMerchantRoleEvent({
+            client,
+            merchantId: invite.merchant_id,
+            actorUserId: req.user.id,
+            targetUserId: req.user.id,
+            action: 'invite.accepted',
+            newRole: invite.role,
+            metadata: { inviteId: invite.id, email: invite.email }
+        });
+
+        await client.query('COMMIT');
+
+        return res.json({
+            message: 'Invitation accepted successfully',
+            merchant: {
+                id: invite.merchant_id,
+                businessName: invite.business_name,
+            },
+            role: invite.role,
+        });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('[Merchant Team] Invite accept error:', err);
+        return res.status(500).json({ error: 'Failed to accept invitation' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/merchant/team/invites/:id/revoke', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const inviteRes = await pool.query(
+            `SELECT id, role, email, accepted_at, revoked_at, expires_at
+             FROM merchant_team_invites
+             WHERE id = $1 AND merchant_id = $2`,
+            [req.params.id, req.currentMerchant.id]
+        );
+
+        if (inviteRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Invitation not found' });
+        }
+
+        const invite = inviteRes.rows[0];
+        if (invite.accepted_at) return res.status(409).json({ error: 'Accepted invitations cannot be revoked' });
+        if (invite.revoked_at) return res.status(409).json({ error: 'Invitation has already been revoked' });
+        if (req.currentMerchant.membership_role !== 'owner' && invite.role === 'admin') {
+            return res.status(403).json({ error: 'Only the owner can revoke admin invitations' });
+        }
+
+        await pool.query(
+            `UPDATE merchant_team_invites
+             SET revoked_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [invite.id]
+        );
+
+        await logMerchantRoleEvent({
+            merchantId: req.currentMerchant.id,
+            actorUserId: req.user.id,
+            action: 'invite.revoked',
+            oldRole: invite.role,
+            metadata: { inviteId: invite.id, email: invite.email }
+        });
+
+        return res.json({ message: 'Invitation revoked successfully' });
+    } catch (err) {
+        console.error('[Merchant Team] Invite revoke error:', err);
+        return res.status(500).json({ error: 'Failed to revoke invitation' });
+    }
+});
+
+app.patch('/merchant/team/members/:id/role', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const nextRole = String(req.body.role || '').trim().toLowerCase();
+        if (!MERCHANT_TEAM_ROLES.includes(nextRole) || nextRole === 'owner') {
+            return res.status(400).json({ error: 'Invalid role selected' });
+        }
+
+        const memberRes = await pool.query(
+            `SELECT mtm.id, mtm.user_id, mtm.role, u.full_name, u.email
+             FROM merchant_team_members mtm
+             JOIN users u ON u.id = mtm.user_id
+             WHERE mtm.id = $1 AND mtm.merchant_id = $2`,
+            [req.params.id, req.currentMerchant.id]
+        );
+
+        if (memberRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Team member not found' });
+        }
+
+        const member = memberRes.rows[0];
+        if (req.currentMerchant.membership_role !== 'owner' && (member.role === 'admin' || nextRole === 'admin')) {
+            return res.status(403).json({ error: 'Only the owner can modify admin access' });
+        }
+        if (member.user_id === req.user.id && member.role === 'admin' && nextRole !== 'admin') {
+            return res.status(409).json({ error: 'Use the owner account to downgrade this administrator' });
+        }
+
+        await pool.query(
+            `UPDATE merchant_team_members
+             SET role = $1, updated_at = NOW()
+             WHERE id = $2`,
+            [nextRole, member.id]
+        );
+
+        await logMerchantRoleEvent({
+            merchantId: req.currentMerchant.id,
+            actorUserId: req.user.id,
+            targetUserId: member.user_id,
+            action: 'member.role_updated',
+            oldRole: member.role,
+            newRole: nextRole,
+            metadata: { email: member.email }
+        });
+
+        return res.json({ message: 'Role updated successfully' });
+    } catch (err) {
+        console.error('[Merchant Team] Role update error:', err);
+        return res.status(500).json({ error: 'Failed to update team role' });
+    }
+});
+
+app.delete('/merchant/team/members/:id', authenticateToken, requireMerchantTeamManager, async (req, res) => {
+    try {
+        const memberRes = await pool.query(
+            `SELECT mtm.id, mtm.user_id, mtm.role, u.email
+             FROM merchant_team_members mtm
+             JOIN users u ON u.id = mtm.user_id
+             WHERE mtm.id = $1 AND mtm.merchant_id = $2`,
+            [req.params.id, req.currentMerchant.id]
+        );
+
+        if (memberRes.rows.length === 0) {
+            return res.status(404).json({ error: 'Team member not found' });
+        }
+
+        const member = memberRes.rows[0];
+        if (req.currentMerchant.membership_role !== 'owner' && member.role === 'admin') {
+            return res.status(403).json({ error: 'Only the owner can remove administrators' });
+        }
+        if (member.user_id === req.user.id) {
+            return res.status(409).json({ error: 'You cannot remove your own access from this page' });
+        }
+
+        await pool.query(
+            `DELETE FROM merchant_team_members
+             WHERE id = $1`,
+            [member.id]
+        );
+
+        await logMerchantRoleEvent({
+            merchantId: req.currentMerchant.id,
+            actorUserId: req.user.id,
+            targetUserId: member.user_id,
+            action: 'member.removed',
+            oldRole: member.role,
+            metadata: { email: member.email }
+        });
+
+        return res.json({ message: 'Team member removed successfully' });
+    } catch (err) {
+        console.error('[Merchant Team] Member removal error:', err);
+        return res.status(500).json({ error: 'Failed to remove team member' });
+    }
+});
+
+// ---- GET /merchants/stats ----
+app.get('/merchants/stats', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.stats.read'), async (req, res) => {
+    try {
+        const merchantId = req.currentMerchant.id;
+        const merchantUserId = req.currentMerchant.user_id;
 
         // Honour the mode requested from the dashboard (default: test)
         const isLive = req.query.mode === 'live';
@@ -12303,9 +21732,6 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
         } else {
             // Test: ALL successful test charges count as available immediately (no T+N for test mode)
             // Subtract any amounts already settled to test wallet (tracked in test ledger_entries)
-            const merchantUserRes = await pool.query('SELECT user_id FROM merchants WHERE id = $1', [merchantId]);
-            const merchantUserId = merchantUserRes.rows[0]?.user_id;
-
             const testBalRes = await pool.query(
                 `SELECT
                     COALESCE(SUM(
@@ -12321,19 +21747,17 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
 
             // Subtract test settlements already moved to test wallet
             const testSettledRes = await pool.query(
-                `SELECT COALESCE(SUM(le.amount), 0) AS settled_out
-                 FROM ledger_entries le
-                 JOIN wallets w ON le.credit_wallet_id = w.id
-                 WHERE le.livemode = false
-                   AND le.transaction_type = 'SETTLEMENT'
-                   AND w.livemode = false
-                   AND w.user_id = $1`,
+                `SELECT COALESCE(SUM(source_amount), 0) AS settled_out
+                 FROM merchant_wallet_settlements
+                 WHERE user_id = $1
+                   AND livemode = FALSE
+                   AND source_currency = 'ZMW'`,
                 [merchantUserId]
             );
 
             const grossEarned = parseFloat(testBalRes.rows[0]?.net_earned || 0);
             const settledOut = parseFloat(testSettledRes.rows[0]?.settled_out || 0);
-            // Convert settled_out from ZMW to ngwe for consistent comparison
+            // Convert settled_out from ZMW major units to ngwe for consistent comparison
             availableBalance = Math.max(0, grossEarned - (settledOut * 100));
             pendingBalance = 0;
         }
@@ -12353,7 +21777,7 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
         // Fetch recent activity — always return full gross amount so the merchant sees
         // exactly what the customer paid. For marketplace splits, also return the
         // commission (application_fee_amount) they kept and how much went to the seller.
-        const recentRes = await pool.query(
+        const recentChargeRes = await pool.query(
             `SELECT id,
                 amount AS gross_amount,
                 CASE WHEN destination_merchant_id IS NOT NULL
@@ -12372,6 +21796,63 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
              WHERE merchant_id = $1 AND livemode = $2
              ORDER BY created_at DESC LIMIT 10`,
             [merchantId, isLive]
+        );
+
+        const recentSettlementRes = await pool.query(
+            `SELECT
+                le.id,
+                le.transaction_reference,
+                le.amount,
+                le.currency,
+                le.status,
+                le.description,
+                le.created_at,
+                w.currency AS wallet_currency
+             FROM ledger_entries le
+             JOIN wallets w ON le.credit_wallet_id = w.id
+             WHERE le.transaction_type = 'SETTLEMENT'
+               AND le.livemode = $2
+               AND w.user_id = $1
+               AND w.livemode = $2
+             ORDER BY le.created_at DESC
+             LIMIT 10`,
+            [merchantUserId, isLive]
+        );
+
+        const recentInvoiceRes = await pool.query(
+            `SELECT
+                le.id,
+                le.transaction_reference,
+                le.amount,
+                le.currency,
+                COALESCE(ip.status, le.status) AS status,
+                le.description,
+                le.created_at,
+                w.currency AS wallet_currency,
+                COALESCE(ip.fee_amount, (
+                    SELECT amount
+                    FROM ledger_entries fee
+                    WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                      AND fee.transaction_type = 'FEE'
+                    LIMIT 1
+                ), 0) AS fee_amount,
+                COALESCE(ip.total_charged, le.amount) AS total_charged,
+                COALESCE(ip.payment_provider, 'invoice') AS payment_provider
+             FROM ledger_entries le
+             JOIN wallets w ON le.credit_wallet_id = w.id
+             LEFT JOIN invoice_payments ip ON ip.transaction_reference = le.transaction_reference
+             WHERE le.transaction_type = 'DEPOSIT'
+               AND le.livemode = $2
+               AND w.user_id = $1
+               AND w.livemode = $2
+               AND (
+                    le.description ILIKE 'Payment for Invoice%'
+                    OR le.transaction_reference LIKE 'INV-%'
+                    OR ip.id IS NOT NULL
+               )
+             ORDER BY le.created_at DESC
+             LIMIT 200`,
+            [merchantUserId, isLive]
         );
 
         // Fetch Volume by Day — merchant earnings (fee for splits, full for direct)
@@ -12406,31 +21887,74 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
             rawBalance: availableBalance,        // ngwe — frontend divides by 100
             pendingBalance: pendingBalance,       // ngwe
             totalBalance: totalBalance,           // ngwe
-            recentActivity: recentRes.rows.map(c => {
-                const isSplit = c.is_split;
-                const gross = parseFloat(c.gross_amount || 0);
-                const appFee = c.application_fee_amount ? parseFloat(c.application_fee_amount) : null;
-                // merchantEarning: for direct → full amount; for split → platform commission only
-                const merchantEarning = isSplit ? (appFee ?? 0) : gross;
-                // submerchantEarning: for split → gross minus commission; for direct → 0
-                const submerchantEarning = isSplit ? (gross - (appFee ?? 0)) : 0;
-                return {
-                    id: c.id,
-                    grossAmount: gross.toFixed(2),
-                    merchantNet: merchantEarning.toFixed(2),
-                    submerchantNet: submerchantEarning.toFixed(2),
-                    currency: c.currency,
-                    status: c.status,
-                    method: c.payment_method,
-                    description: c.description,
-                    created_at: c.created_at,
-                    isSplit,
-                    // null for direct charges, commission amount for marketplace
-                    applicationFee: isSplit && appFee != null ? appFee.toFixed(2) : null,
-                    hasSubMerchant: isSplit,
-                    chargeType: isSplit ? 'marketplace' : 'direct',
-                };
-            }),
+            recentActivity: [
+                ...recentChargeRes.rows.map(c => {
+                    const isSplit = c.is_split;
+                    const gross = parseFloat(c.gross_amount || 0);
+                    const appFee = c.application_fee_amount ? parseFloat(c.application_fee_amount) : null;
+                    const merchantEarning = isSplit ? (appFee ?? 0) : gross;
+                    const submerchantEarning = isSplit ? (gross - (appFee ?? 0)) : 0;
+                    return {
+                        id: c.id,
+                        activityType: 'charge',
+                        grossAmount: gross.toFixed(2),
+                        merchantNet: merchantEarning.toFixed(2),
+                        submerchantNet: submerchantEarning.toFixed(2),
+                        currency: c.currency,
+                        status: c.status,
+                        method: c.payment_method,
+                        description: c.description,
+                        created_at: c.created_at,
+                        isSplit,
+                        applicationFee: isSplit && appFee != null ? appFee.toFixed(2) : null,
+                        hasSubMerchant: isSplit,
+                        chargeType: isSplit ? 'marketplace' : 'direct',
+                    };
+                }),
+                ...recentSettlementRes.rows.map(s => ({
+                    id: s.id,
+                    activityType: 'settlement',
+                    grossAmount: Number(s.amount || 0).toFixed(2),
+                    merchantNet: Number(s.amount || 0).toFixed(2),
+                    submerchantNet: '0.00',
+                    currency: s.currency,
+                    status: String(s.status || 'COMPLETED').toLowerCase(),
+                    method: 'settlement',
+                    description: s.description,
+                    created_at: s.created_at,
+                    isSplit: false,
+                    applicationFee: null,
+                    hasSubMerchant: false,
+                    chargeType: 'settlement',
+                    transactionReference: s.transaction_reference,
+                    walletCurrency: s.wallet_currency
+                })),
+                ...recentInvoiceRes.rows.map(inv => ({
+                    id: inv.id,
+                    activityType: 'invoice_payment',
+                    grossAmount: Number(inv.amount || 0).toFixed(2),
+                    merchantNet: Number(inv.amount || 0).toFixed(2),
+                    submerchantNet: '0.00',
+                    currency: inv.currency,
+                    status: String(inv.status || 'COMPLETED').toLowerCase(),
+                    method: 'invoice',
+                    description: inv.description,
+                    created_at: inv.created_at,
+                    isSplit: false,
+                    applicationFee: Number(inv.fee_amount || 0) > 0 ? Number(inv.fee_amount).toFixed(2) : null,
+                    hasSubMerchant: false,
+                    chargeType: 'invoice',
+                    transactionReference: inv.transaction_reference,
+                    walletCurrency: inv.wallet_currency,
+                    paymentProvider: inv.payment_provider,
+                    totalCharged: Number(inv.total_charged || inv.amount || 0).toFixed(2)
+                }))
+            ]
+                .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                .slice(0, 10)
+                .map(c => {
+                    return c;
+                }),
             volumeHistory: historyRes.rows.map(r => ({
                 label: new Date(r.day).toLocaleDateString('en-US', { weekday: 'short' }),
                 value: parseFloat(r.val) / 100    // convert to ZMW for chart
@@ -12458,22 +21982,219 @@ app.get('/merchants/stats', authenticateToken, async (req, res) => {
     }
 });
 
+// ---- GET /merchants/activity ----
+app.get('/merchants/activity', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.activity.read'), async (req, res) => {
+    try {
+        const merchantId = req.currentMerchant.id;
+        const merchantUserId = req.currentMerchant.user_id;
+        const isLive = req.query.mode === 'live';
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const statusFilter = String(req.query.status || 'all').toLowerCase();
+        const typeFilter = String(req.query.type || 'all').toLowerCase();
+
+        const chargeStatusSql = statusFilter !== 'all' && ['succeeded', 'pending', 'failed', 'refunded', 'partially_refunded'].includes(statusFilter)
+            ? ` AND LOWER(status) = '${statusFilter}'`
+            : '';
+
+        const chargeRes = await pool.query(
+            `SELECT
+                id,
+                amount AS gross_amount,
+                CASE WHEN destination_merchant_id IS NOT NULL
+                     THEN COALESCE(application_fee_amount, 0)
+                     ELSE amount
+                END AS merchant_net,
+                CASE WHEN destination_merchant_id IS NOT NULL
+                     THEN amount - COALESCE(application_fee_amount, 0)
+                     ELSE 0
+                END AS submerchant_net,
+                currency,
+                status,
+                payment_method,
+                description,
+                created_at,
+                destination_merchant_id IS NOT NULL AS is_split,
+                application_fee_amount,
+                destination_merchant_id
+             FROM charges
+             WHERE merchant_id = $1
+               AND livemode = $2
+               ${chargeStatusSql}
+             ORDER BY created_at DESC
+             LIMIT 200`,
+            [merchantId, isLive]
+        );
+
+        const settlementStatusSql = statusFilter !== 'all' && ['completed', 'pending', 'failed'].includes(statusFilter)
+            ? ` AND LOWER(le.status) = '${statusFilter}'`
+            : '';
+
+        const invoiceStatusSql = statusFilter !== 'all' && ['completed', 'pending', 'failed'].includes(statusFilter)
+            ? ` AND LOWER(COALESCE(ip.status, le.status)) = '${statusFilter}'`
+            : '';
+
+        const settlementRes = await pool.query(
+            `SELECT
+                le.id,
+                le.transaction_reference,
+                le.amount,
+                le.currency,
+                le.status,
+                le.description,
+                le.created_at,
+                w.currency AS wallet_currency
+             FROM ledger_entries le
+             JOIN wallets w ON le.credit_wallet_id = w.id
+             WHERE le.transaction_type = 'SETTLEMENT'
+               AND le.livemode = $2
+               AND w.user_id = $1
+               AND w.livemode = $2
+               ${settlementStatusSql}
+             ORDER BY le.created_at DESC
+             LIMIT 200`,
+            [merchantUserId, isLive]
+        );
+
+        const invoiceRes = await pool.query(
+            `SELECT
+                le.id,
+                le.transaction_reference,
+                le.amount,
+                le.currency,
+                COALESCE(ip.status, le.status) AS status,
+                le.description,
+                le.created_at,
+                w.currency AS wallet_currency,
+                COALESCE(ip.fee_amount, (
+                    SELECT amount
+                    FROM ledger_entries fee
+                    WHERE fee.transaction_reference IN (le.transaction_reference, le.transaction_reference || '-FEE', le.transaction_reference || '-FEE-FEE')
+                      AND fee.transaction_type = 'FEE'
+                    LIMIT 1
+                ), 0) AS fee_amount,
+                COALESCE(ip.total_charged, le.amount) AS total_charged,
+                COALESCE(ip.payment_provider, 'invoice') AS payment_provider
+             FROM ledger_entries le
+             JOIN wallets w ON le.credit_wallet_id = w.id
+             LEFT JOIN invoice_payments ip ON ip.transaction_reference = le.transaction_reference
+             WHERE le.transaction_type = 'DEPOSIT'
+               AND le.livemode = $2
+               AND w.user_id = $1
+               AND w.livemode = $2
+               AND (
+                    le.description ILIKE 'Payment for Invoice%'
+                    OR le.transaction_reference LIKE 'INV-%'
+                    OR ip.id IS NOT NULL
+               )
+               ${invoiceStatusSql}
+             ORDER BY le.created_at DESC
+             LIMIT 200`,
+            [merchantUserId, isLive]
+        );
+
+        let items = [
+            ...chargeRes.rows.map(c => {
+                const isSplit = c.is_split;
+                const gross = parseFloat(c.gross_amount || 0);
+                const appFee = c.application_fee_amount ? parseFloat(c.application_fee_amount) : null;
+                const merchantEarning = isSplit ? (appFee ?? 0) : gross;
+                const submerchantEarning = isSplit ? (gross - (appFee ?? 0)) : 0;
+                return {
+                    id: `charge-${c.id}`,
+                    sourceId: c.id,
+                    activityType: 'charge',
+                    grossAmount: gross.toFixed(2),
+                    merchantNet: merchantEarning.toFixed(2),
+                    submerchantNet: submerchantEarning.toFixed(2),
+                    currency: c.currency,
+                    status: String(c.status || '').toLowerCase(),
+                    method: c.payment_method,
+                    description: c.description,
+                    created_at: c.created_at,
+                    isSplit,
+                    applicationFee: isSplit && appFee != null ? appFee.toFixed(2) : null,
+                    hasSubMerchant: isSplit,
+                    chargeType: isSplit ? 'marketplace' : 'direct',
+                    direction: 'incoming',
+                    displayCategory: isSplit ? 'Marketplace charge' : 'Charge',
+                };
+            }),
+            ...settlementRes.rows.map(s => ({
+                id: `settlement-${s.id}`,
+                sourceId: s.id,
+                activityType: 'settlement',
+                grossAmount: Number(s.amount || 0).toFixed(2),
+                merchantNet: Number(s.amount || 0).toFixed(2),
+                submerchantNet: '0.00',
+                currency: s.currency,
+                status: String(s.status || 'COMPLETED').toLowerCase(),
+                method: 'settlement',
+                description: s.description,
+                created_at: s.created_at,
+                isSplit: false,
+                applicationFee: null,
+                hasSubMerchant: false,
+                chargeType: 'settlement',
+                transactionReference: s.transaction_reference,
+                walletCurrency: s.wallet_currency,
+                direction: 'outgoing_from_merchant_balance',
+                displayCategory: 'Settlement',
+            })),
+            ...invoiceRes.rows.map(inv => ({
+                id: `invoice-${inv.id}`,
+                sourceId: inv.id,
+                activityType: 'invoice_payment',
+                grossAmount: Number(inv.amount || 0).toFixed(2),
+                merchantNet: Number(inv.amount || 0).toFixed(2),
+                submerchantNet: '0.00',
+                currency: inv.currency,
+                status: String(inv.status || 'completed').toLowerCase(),
+                method: 'invoice',
+                description: inv.description || 'Payment for Invoice',
+                created_at: inv.created_at,
+                isSplit: false,
+                applicationFee: Number(inv.fee_amount || 0) > 0 ? Number(inv.fee_amount).toFixed(2) : null,
+                hasSubMerchant: false,
+                chargeType: 'invoice',
+                transactionReference: inv.transaction_reference,
+                walletCurrency: inv.wallet_currency,
+                direction: 'incoming',
+                displayCategory: 'Invoice payment',
+                paymentProvider: inv.payment_provider,
+                totalCharged: Number(inv.total_charged || inv.amount || 0).toFixed(2)
+            }))
+        ];
+
+        if (typeFilter !== 'all') {
+            items = items.filter(item => item.activityType === typeFilter);
+        }
+
+        items = items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+        return res.json({
+            items: items.slice(offset, offset + limit),
+            total: items.length,
+            limit,
+            offset,
+            mode: isLive ? 'live' : 'test'
+        });
+    } catch (err) {
+        console.error('[Merchants] Activity Error:', err);
+        res.status(500).json({ error: 'Failed to fetch merchant activity' });
+    }
+});
+
 // NOTE: /merchants/transfer-to-wallet is registered earlier in this file (canonical handler).
 // This duplicate entry has been removed to avoid Express double-registration.
 
 // ---- GET /merchants/keys ----
 // Returns both test and live key pairs for the authenticated merchant
-app.get('/merchants/keys', authenticateToken, async (req, res) => {
+app.get('/merchants/keys', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
     try {
-        const merchantRes = await pool.query('SELECT id, compliance_status FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.json({
-            test: { public: '', secret: '' },
-            live: { public: '', secret: '' },
-            isApproved: false
-        });
-
-        const merchantId = merchantRes.rows[0].id;
-        const complianceStatus = merchantRes.rows[0].compliance_status;
+        const merchantId = req.currentMerchant.id;
+        const complianceStatus = req.currentMerchant.compliance_status;
+        const canReadKeys = hasMerchantPermission(req.currentMerchant.membership_role, 'merchant.keys.read');
 
         const keysRes = await pool.query(
             `SELECT key_type, key_value, is_active, created_at FROM api_keys WHERE merchant_id = $1 AND is_active = true ORDER BY created_at DESC`,
@@ -12489,14 +22210,16 @@ app.get('/merchants/keys', authenticateToken, async (req, res) => {
 
         res.json({
             test: {
-                public: keys['test_public'] || '',
-                secret: keys['test_secret'] || ''
+                public: canReadKeys ? (keys['test_public'] || '') : '',
+                secret: canReadKeys ? (keys['test_secret'] || '') : ''
             },
             live: {
-                public: keys['live_public'] || 'pk_live_unprovisioned',
-                secret: keys['live_secret'] || 'sk_live_unprovisioned'
+                public: canReadKeys ? (keys['live_public'] || 'pk_live_unprovisioned') : '',
+                secret: canReadKeys ? (keys['live_secret'] || 'sk_live_unprovisioned') : ''
             },
-            isApproved
+            isApproved,
+            canManageKeys: hasMerchantPermission(req.currentMerchant.membership_role, 'merchant.keys.rotate'),
+            canReadKeys
         });
     } catch (err) {
         console.error('[Merchants] Keys Fetch Error:', err);
@@ -12506,15 +22229,11 @@ app.get('/merchants/keys', authenticateToken, async (req, res) => {
 
 // ---- POST /merchants/keys/roll ----
 // Rotates all API keys for the authenticated merchant
-app.post('/merchants/keys/roll', authenticateToken, async (req, res) => {
+app.post('/merchants/keys/roll', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.keys.rotate'), async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-
-        const merchantRes = await client.query('SELECT id, is_live_enabled FROM merchants WHERE user_id = $1', [req.user.id]);
-        if (merchantRes.rows.length === 0) return res.status(404).json({ error: 'Merchant not found' });
-
-        const merchantId = merchantRes.rows[0].id;
+        const merchantId = req.currentMerchant.id;
         const { keyType, type } = req.body; // Handle both keyType and type
         const mode = keyType || type;
 
@@ -12628,13 +22347,14 @@ app.post('/v1/issuing/cards', authenticateToken, async (req, res) => {
     }
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
 
         // 1. Check User Wallet Balance
-        const walletRes = await client.query('SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE', [req.user.id, currency]);
-        if (walletRes.rows.length === 0) throw new Error(`User does not have a ${currency} wallet.`);
-        const wallet = walletRes.rows[0];
+        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [req.user.id, currency]);
+        if (walletLookupRes.rows.length === 0) throw new Error(`User does not have a ${currency} wallet.`);
+        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id });
 
         // Deduct initial load + issuance fee (e.g., $0.50 for USD, 12.50 for ZMW)
         const issuanceFee = currency === 'USD' ? 0.50 : 12.50;
@@ -12714,7 +22434,30 @@ app.post('/v1/issuing/cards', authenticateToken, async (req, res) => {
         );
         await recordFee(client, txnRef, issuanceFee, currency, `Virtual Card Issuance Fee`);
 
+        fraudPayload = {
+            eventType: 'virtual_card.issue.completed',
+            userId: req.user.id,
+            walletId: wallet.id,
+            reference: txnRef,
+            rail: 'card',
+            currency,
+            amount: Number(amount),
+            feeAmount: issuanceFee,
+            status: 'COMPLETED',
+            livemode: wallet.livemode,
+            counterpartyType: 'virtual_card',
+            counterpartyKey: `virtual_card:${dbRes.rows[0].id}`,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                virtualCardId: dbRes.rows[0].id,
+                accountContractId,
+                cardContractId
+            }
+        };
+
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudDebitEvent(fraudPayload);
 
         // Asynchronously try to fetch the real last4 and update
         try {
@@ -12836,6 +22579,7 @@ app.post('/v1/issuing/cards/:id/fund', authenticateToken, async (req, res) => {
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Valid amount required' });
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
 
@@ -12845,8 +22589,9 @@ app.post('/v1/issuing/cards/:id/fund', authenticateToken, async (req, res) => {
 
         if (card.status !== 'ACTIVE') throw new Error('Cannot fund a blocked card');
 
-        const walletRes = await client.query('SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE', [req.user.id, card.currency]);
-        const wallet = walletRes.rows[0];
+        const walletLookupRes = await client.query('SELECT id FROM wallets WHERE user_id = $1 AND currency = $2', [req.user.id, card.currency]);
+        if (walletLookupRes.rows.length === 0) throw new Error('Wallet not found');
+        const wallet = await loadWalletForDebit(client, { walletId: walletLookupRes.rows[0].id, userId: req.user.id });
 
         if (Number(wallet.balance) < Number(amount)) throw new Error('Insufficient wallet balance');
 
@@ -12859,7 +22604,29 @@ app.post('/v1/issuing/cards/:id/fund', authenticateToken, async (req, res) => {
         // Update local card balance
         await client.query('UPDATE virtual_cards SET amount = amount + $1 WHERE id = $2', [amount, card.id]);
 
+        fraudPayload = {
+            eventType: 'card.fund.completed',
+            userId: req.user.id,
+            walletId: wallet.id,
+            reference: `VCARD-FUND-${card.id}-${Date.now()}`,
+            rail: 'card',
+            currency: card.currency,
+            amount: Number(amount),
+            feeAmount: 0,
+            status: 'COMPLETED',
+            livemode: wallet.livemode,
+            counterpartyType: 'virtual_card',
+            counterpartyKey: `virtual_card:${card.id}`,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                virtualCardId: card.id,
+                cardContractId: card.card_contract_id
+            }
+        };
+
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudDebitEvent(fraudPayload);
         res.json({ success: true, amount });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -13172,15 +22939,23 @@ app.post('/v1/customers', async (req, res) => {
         const { email, name } = req.body;
         if (!email) return res.status(400).json({ error: 'Missing email' });
 
-        let stripeCustomerId = null;
-        try {
-            const stripeCust = await stripe.customers.create({ email, name, metadata: { merchant_id: merchant.merchantId } });
-            stripeCustomerId = stripeCust.id;
-        } catch (e) { console.error('Stripe cust err', e.message); }
+        let cybersourceCustomerId = null;
+        cybersourceCustomerId = await CybersourceService.tokens.createCustomer({
+            userId: `merchant${String(merchant.merchantId).replace(/-/g, '')}cust${Buffer.from(String(email)).toString('hex').slice(0, 16)}`,
+            email,
+            name: name || '',
+        });
 
         const result = await pool.query(
-            'INSERT INTO customers (email, name, stripe_id, merchant_id) VALUES ($1, $2, $3, $4) ON CONFLICT (email, merchant_id) DO UPDATE SET name = $2 RETURNING *',
-            [email, name || '', stripeCustomerId, merchant.merchantId]
+            `INSERT INTO customers (email, name, stripe_id, cybersource_customer_id, merchant_id)
+             VALUES ($1, $2, NULL, $3, $4)
+             ON CONFLICT (email, merchant_id)
+             DO UPDATE SET
+                name = EXCLUDED.name,
+                cybersource_customer_id = COALESCE(customers.cybersource_customer_id, EXCLUDED.cybersource_customer_id),
+                updated_at = NOW()
+             RETURNING *`,
+            [email, name || '', cybersourceCustomerId, merchant.merchantId]
         );
         res.status(201).json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -13235,15 +23010,19 @@ app.post('/v1/subscriptions', async (req, res) => {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
         const { customer_id, price_id } = req.body;
 
-        const custCheck = await pool.query('SELECT id, stripe_id FROM customers WHERE id = $1 AND merchant_id = $2', [customer_id, merchant.merchantId]);
+        const custCheck = await pool.query(
+            'SELECT id, cybersource_customer_id FROM customers WHERE id = $1 AND merchant_id = $2',
+            [customer_id, merchant.merchantId]
+        );
         if (custCheck.rows.length === 0) return res.status(404).json({ error: 'Customer not found' });
 
-        const priceCheck = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2', [price_id, merchant.merchantId]);
+        const priceCheck = await pool.query(
+            'SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2',
+            [price_id, merchant.merchantId]
+        );
         if (priceCheck.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
 
         const price = priceCheck.rows[0];
-        const customer = custCheck.rows[0];
-
         // Determine trial end
         const trialDays = parseInt(price.trial_days) || 0;
         const trialStatus = trialDays > 0 ? 'trialing' : 'incomplete';
@@ -13255,9 +23034,9 @@ app.post('/v1/subscriptions', async (req, res) => {
 
         const subInsert = await pool.query(`
             INSERT INTO subscriptions
-              (customer_id, price_id, status, merchant_id, livemode,
+              (customer_id, price_id, status, merchant_id, livemode, payment_rail,
                current_period_start, current_period_end, trial_end)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+            VALUES ($1,$2,$3,$4,$5,'cybersource',$6,$7,$8) RETURNING *
         `, [customer_id, price_id, trialStatus, merchant.merchantId,
             merchant.environment === 'live',
             periodStart, periodEnd,
@@ -13271,34 +23050,9 @@ app.post('/v1/subscriptions', async (req, res) => {
             current_period_end: periodEnd,
         }));
 
-        // In sandbox, auto-activate if no trial — create payment intent for first charge
-        let clientSecret = null;
-        try {
-            const amountInCents = Math.round(parseFloat(price.amount) * 100);
-            const paymentIntent = await stripe.paymentIntents.create({
-                amount: amountInCents,
-                currency: price.currency.toLowerCase(),
-                customer: customer.stripe_id || undefined,
-                setup_future_usage: 'off_session',
-                metadata: {
-                    subscription_id: subscription.id,
-                    merchant_id: merchant.merchantId,
-                    price_id: price.id,
-                    type: 'subscription_first_payment'
-                }
-            });
-            clientSecret = paymentIntent.client_secret;
-        } catch (_stripeErr) {
-            // Stripe unavailable (sandbox without keys) — auto-activate
-            if (!subscription.livemode) {
-                const fakePI = { id: 'pi_sandbox_' + crypto.randomUUID().replace(/-/g,'').slice(0,24), amount: Math.round(parseFloat(price.amount) * 100), currency: price.currency.toUpperCase() };
-                await recordSubscriptionPayment(subscription.id, fakePI).catch(() => {});
-            }
-        }
-
         res.status(201).json(DeveloperGateway.formatResponse({
             ...subscription,
-            client_secret: clientSecret,
+            billing_provider: 'cybersource',
         }, merchant.environment));
 
     } catch (err) {
@@ -13390,7 +23144,29 @@ app.get('/v1/subscriptions/:id', async (req, res) => {
 app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
-        const result = await pool.query('UPDATE subscriptions s SET status = $1, updated_at = NOW() FROM customers c WHERE s.customer_id = c.id AND s.id = $2 AND c.merchant_id = $3 RETURNING s.*', ['canceled', req.params.id, merchant.merchantId]);
+        const subRes = await pool.query(
+            `SELECT s.*
+             FROM subscriptions s
+             JOIN customers c ON s.customer_id = c.id
+             WHERE s.id = $1 AND c.merchant_id = $2`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (subRes.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
+
+        const subscription = subRes.rows[0];
+        if (subscription.cybersource_subscription_id) {
+            await CybersourceRecurringBillingService.cancelSubscription(subscription.cybersource_subscription_id);
+        }
+
+        const result = await pool.query(
+            `UPDATE subscriptions
+             SET status = 'canceled',
+                 canceled_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [req.params.id]
+        );
         if (result.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -13454,23 +23230,32 @@ app.post('/v1/subscriptions/:id/activate', async (req, res) => {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
         const subId = req.params.id;
 
-        // Verify sub belongs to merchant
         const subCheck = await pool.query(
-            "SELECT s.*, pr.amount, pr.currency FROM subscriptions s JOIN prices p ON s.price_id = p.id JOIN products pr ON p.product_id = pr.id WHERE s.id = $1 AND pr.merchant_id = $2",
+            `SELECT s.*
+             FROM subscriptions s
+             JOIN prices p ON s.price_id = p.id
+             JOIN products pr ON p.product_id = pr.id
+             WHERE s.id = $1 AND pr.merchant_id = $2`,
             [subId, merchant.merchantId]
         );
         if (subCheck.rows.length === 0) return res.status(404).json({ error: 'Subscription not found' });
         const sub = subCheck.rows[0];
 
-        // Simulate Stripe Payment Intent
-        const paymentIntent = {
-            id: 'pi_sim_' + crypto.randomBytes(8).toString('hex'),
-            amount: sub.amount * 100,
-            currency: sub.currency.toLowerCase()
-        };
+        if (sub.cybersource_subscription_id) {
+            await CybersourceRecurringBillingService.activateSubscription(sub.cybersource_subscription_id, true);
+        }
 
-        const result = await recordSubscriptionPayment(subId, paymentIntent);
-        res.json(DeveloperGateway.formatResponse({ success: true, ...result }, merchant.environment));
+        const result = await pool.query(
+            `UPDATE subscriptions
+             SET status = 'active',
+                 pause_at = NULL,
+                 resumed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [subId]
+        );
+        res.json(DeveloperGateway.formatResponse({ success: true, subscription: result.rows[0] }, merchant.environment));
     } catch (err) {
         res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
     }
@@ -13617,9 +23402,23 @@ app.post('/v1/subscriptions/:id/pause', async (req, res) => {
         // pause_at defaults to now; caller may pass a future timestamp
         const pauseAt = req.body.pause_at ? new Date(req.body.pause_at) : new Date();
 
+        const subCheck = await pool.query(
+            `SELECT s.*
+             FROM subscriptions s
+             WHERE s.id = $1
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!subCheck.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
+
+        if (subCheck.rows[0].cybersource_subscription_id) {
+            await CybersourceRecurringBillingService.suspendSubscription(subCheck.rows[0].cybersource_subscription_id);
+        }
+
         const result = await pool.query(
             `UPDATE subscriptions
              SET pause_at   = $1,
+                 status     = 'paused',
                  resumed_at = NULL,
                  updated_at = NOW()
              WHERE id = $2
@@ -13644,9 +23443,23 @@ app.post('/v1/subscriptions/:id/resume', async (req, res) => {
     try {
         const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
 
+        const subCheck = await pool.query(
+            `SELECT s.*
+             FROM subscriptions s
+             WHERE s.id = $1
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
+            [req.params.id, merchant.merchantId]
+        );
+        if (!subCheck.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
+
+        if (subCheck.rows[0].cybersource_subscription_id) {
+            await CybersourceRecurringBillingService.activateSubscription(subCheck.rows[0].cybersource_subscription_id, true);
+        }
+
         const result = await pool.query(
             `UPDATE subscriptions
              SET pause_at    = NULL,
+                 status      = 'active',
                  resumed_at  = NOW(),
                  updated_at  = NOW()
              WHERE id = $1
@@ -13932,30 +23745,16 @@ app.put('/v1/billing/settings', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /v1/subscriptions/:id/payment-method  — update customer's mobile money
+// POST /v1/subscriptions/:id/payment-method  — subscriptions are CyberSource card-only
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/subscriptions/:id/payment-method', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
-        const { phone, mobile_money_provider } = req.body;
-        if (!phone) return res.status(400).json({ error: 'phone is required' });
-
-        // Verify subscription belongs to merchant
-        const subRes = await pool.query(
-            `SELECT s.customer_id FROM subscriptions s
-             WHERE s.id = $1 AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
-            [req.params.id, merchant.merchantId]
-        );
-        if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
-
-        const result = await pool.query(
-            `UPDATE customers SET phone=$1, mobile_money_provider=$2, updated_at=NOW()
-             WHERE id=$3 AND merchant_id=$4 RETURNING id, email, name, phone, mobile_money_provider`,
-            [phone, mobile_money_provider || 'MTN', subRes.rows[0].customer_id, merchant.merchantId]
-        );
-        res.json(DeveloperGateway.formatResponse({ updated: true, customer: result.rows[0] }, merchant.environment));
+        await DeveloperGateway.authenticate(req.headers.authorization);
+        return res.status(400).json({
+            error: 'Subscription payment method updates must use CyberSource card tokenization. Mobile money is not supported for subscriptions.',
+        });
     } catch (err) {
-        res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
+        return res.status(err.message.includes('Unauthorized') ? 401 : 400).json({ error: err.message });
     }
 });
 
@@ -14355,15 +24154,9 @@ app.put('/v1/portal/:token/payment-method', async (req, res) => {
         const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
         const session = await pool.query('SELECT id FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()', [req.params.token]);
         if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired' });
-
-        const { phone, mobile_money_provider } = req.body;
-        if (!phone) return res.status(400).json({ error: 'phone is required' });
-
-        await pool.query(
-            'UPDATE customers SET phone=$1, mobile_money_provider=$2, updated_at=NOW() WHERE id=$3',
-            [phone, mobile_money_provider || 'MTN', decoded.customer_id]
-        );
-        res.json({ updated: true });
+        res.status(400).json({
+            error: 'Customer portal payment method updates must use CyberSource card tokenization. Mobile money is not supported for subscriptions.',
+        });
     } catch (err) {
         res.status(401).json({ error: 'Invalid portal token' });
     }
@@ -14375,6 +24168,18 @@ app.post('/v1/portal/:token/subscriptions/:sub_id/cancel', async (req, res) => {
         const decoded = jwt.verify(req.params.token, PORTAL_JWT_SECRET);
         const session = await pool.query('SELECT id FROM customer_portal_sessions WHERE token=$1 AND expires_at > NOW()', [req.params.token]);
         if (!session.rows.length) return res.status(401).json({ error: 'Portal session expired' });
+
+        const subCheck = await pool.query(
+            `SELECT id, cybersource_subscription_id
+             FROM subscriptions
+             WHERE id = $1 AND customer_id = $2`,
+            [req.params.sub_id, decoded.customer_id]
+        );
+        if (!subCheck.rows.length) return res.status(404).json({ error: 'Subscription not found' });
+
+        if (subCheck.rows[0].cybersource_subscription_id) {
+            await CybersourceRecurringBillingService.cancelSubscription(subCheck.rows[0].cybersource_subscription_id);
+        }
 
         const result = await pool.query(
             `UPDATE subscriptions SET status='canceled', canceled_at=NOW(), updated_at=NOW()
@@ -14397,14 +24202,7 @@ app.post('/fx/quote', authenticateToken, async (req, res) => {
     }
 
     try {
-        const rates = await getExchangeRates(fromCurrency);
-        const marketRate = rates[toCurrency];
-
-        if (!marketRate) {
-            return res.status(400).json({
-                error: `Unsupported currency pair: ${fromCurrency}/${toCurrency}`
-            });
-        }
+        const marketRate = await getCrossCurrencyRate(fromCurrency, toCurrency);
 
         // Apply spread: Platform Rate is 2% lower than market rate for the user
         const platformRate = marketRate * (1 - FX_SPREAD);
@@ -14446,26 +24244,39 @@ app.post('/fx/convert', authenticateToken, async (req, res) => {
     if (!isPinValid) return res.status(401).json({ error: 'Invalid security PIN' });
 
     const client = await pool.connect();
+    let fraudPayload = null;
     try {
         await client.query('BEGIN');
 
         // 1. Get Wallets
         const fromWalletRes = await client.query(
-            'SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE',
+            `SELECT id, balance, livemode
+             FROM wallets
+             WHERE user_id = $1 AND currency = $2
+             ORDER BY livemode DESC, created_at ASC
+             FOR UPDATE`,
             [req.user.id, quote.fromCurrency]
-        );
-        const toWalletRes = await client.query(
-            'SELECT id, balance FROM wallets WHERE user_id = $1 AND currency = $2 FOR UPDATE',
-            [req.user.id, quote.toCurrency]
         );
 
         if (fromWalletRes.rows.length === 0) throw new Error(`${quote.fromCurrency} wallet not found`);
-        if (toWalletRes.rows.length === 0) throw new Error(`${quote.toCurrency} wallet not found`);
 
         const fromWallet = fromWalletRes.rows[0];
+        const toWalletRes = await client.query(
+            `SELECT id, balance, livemode
+             FROM wallets
+             WHERE user_id = $1 AND currency = $2 AND livemode = $3
+             ORDER BY created_at ASC
+             FOR UPDATE`,
+            [req.user.id, quote.toCurrency, fromWallet.livemode]
+        );
+
+        if (toWalletRes.rows.length === 0) throw new Error(`${quote.toCurrency} wallet not found in the selected wallet mode`);
+
         const toWallet = toWalletRes.rows[0];
 
-        if (parseFloat(fromWallet.balance) < quote.amount) {
+        const debitWallet = await loadWalletForDebit(client, { walletId: fromWallet.id, userId: req.user.id });
+
+        if (parseFloat(debitWallet.balance) < quote.amount) {
             throw new Error('Insufficient funds in source wallet');
         }
 
@@ -14529,7 +24340,32 @@ app.post('/fx/convert', authenticateToken, async (req, res) => {
         // 5. Record Spread Revenue (FX Profit)
         await recordFee(client, ref + '-FX-SPREAD', quote.spread_profit, quote.toCurrency, `FX Spread Revenue from ${quote.fromCurrency}/${quote.toCurrency}`);
 
+        fraudPayload = {
+            eventType: 'fx.convert.completed',
+            userId: req.user.id,
+            walletId: fromWallet.id,
+            reference: ref,
+            rail: 'fx',
+            currency: quote.fromCurrency,
+            amount: Number(quote.amount),
+            feeAmount: Number(quote.spread_profit || 0),
+            status: 'COMPLETED',
+            livemode: debitWallet.livemode,
+            counterpartyType: 'fx_pair',
+            counterpartyKey: `fx:${quote.fromCurrency}:${quote.toCurrency}`,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent'] || null,
+            metadata: {
+                toWalletId: toWallet.id,
+                toCurrency: quote.toCurrency,
+                destinationAmount: quote.destination_amount,
+                platformRate: quote.platform_rate,
+                marketRate: quote.market_rate
+            }
+        };
+
         await client.query('COMMIT');
+        if (fraudPayload) await emitFraudDebitEvent(fraudPayload);
         FX_QUOTES.delete(quoteId); // Consume quote
 
         res.json({
@@ -14586,12 +24422,11 @@ pool.query(`
     CREATE INDEX IF NOT EXISTS idx_platform_earnings_merchant ON platform_earnings_cache(merchant_id, period_start DESC);
 `).then(() => console.log('[Init] Phase 7 tables ready.')).catch(err => console.error('[Init] Phase 7 table error:', err.message));
 
-// Serve React SPA for all non-API routes
-const FRONTEND_DIST = path.join(__dirname, 'apps/web/dist');
-if (fs.existsSync(FRONTEND_DIST)) {
-    app.use(express.static(FRONTEND_DIST));
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+if (fs.existsSync(webDistDir)) {
+    app.use(express.static(webDistDir));
+
+    app.get(/^\/(?!api\/|auth\/|admin\/|v1\/|wallets(?:\/|$)|transactions(?:\/|$)|escrows(?:\/|$)|payments(?:\/|$)|users(?:\/|$)|rates(?:\/|$)|support(?:\/|$)|notifications(?:\/|$)|payment-links(?:\/|$)|public\/payment-links(?:\/|$)|reports(?:\/|$)|merchant(?:\/|$)|merchants(?:\/|$)|pawapay(?:\/|$)|content(?:\/|$)|assets\/images(?:\/|$)|src\/assets\/images(?:\/|$)|health$).*/, (req, res) => {
+        res.sendFile(path.join(webDistDir, 'index.html'));
     });
 }
 
@@ -14663,6 +24498,13 @@ server.listen(PORT, '0.0.0.0', () => {
         console.log('[Cron] Running Subscription Renewal engine...');
         SubscriptionRenewalService.processRenewals()
             .catch(err => console.error('[Cron] Renewal error:', err.message));
+    });
+
+    // Pending Lenco bank withdrawal reconciliation: every 10 minutes
+    cron.schedule('*/10 * * * *', () => {
+        console.log('[Cron] Running Lenco withdrawal reconciliation...');
+        syncPendingLencoWithdrawals()
+            .catch(err => console.error('[Cron] Lenco withdrawal reconciliation error:', err.message));
     });
 
     // Dunning: every 15 minutes

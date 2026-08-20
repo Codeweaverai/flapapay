@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { API_BASE } from '../lib/runtime';
 
 // Icons
 const CloseIcon = () => (
@@ -53,7 +54,7 @@ export const AskAIAssistant: React.FC = () => {
         setIsLoading(true);
 
         try {
-            const response = await fetch('http://localhost:3005/api/ai/ask', {
+            const response = await fetch(`${API_BASE}/ai/ask`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

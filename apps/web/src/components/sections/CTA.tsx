@@ -6,9 +6,18 @@ export const CTA: React.FC = () => {
     const navigate = useNavigate();
 
     return (
-        <div className="bg-black relative overflow-hidden">
-            {/* Top Angle */}
-            <div className="absolute top-0 inset-x-0 h-16 bg-white origin-top-right -skew-y-1"></div>
+        <section className="bg-[#050505] relative overflow-hidden">
+            <div className="absolute inset-0">
+                <div className="absolute -top-24 left-[12%] h-72 w-72 rounded-full bg-orange-500/10 blur-[100px] animate-pulse"></div>
+                <div className="absolute -bottom-24 right-[10%] h-80 w-80 rounded-full bg-orange-400/8 blur-[120px] animate-pulse" style={{ animationDelay: '1.8s' }}></div>
+                <div
+                    className="absolute inset-0 opacity-[0.08]"
+                    style={{
+                        backgroundImage: 'linear-gradient(#ffffff08 1px, transparent 1px), linear-gradient(90deg, #ffffff08 1px, transparent 1px)',
+                        backgroundSize: '50px 50px'
+                    }}
+                ></div>
+            </div>
 
             <div className="mx-auto max-w-7xl py-24 sm:px-6 sm:py-32 lg:px-8 relative z-10">
                 <div className="px-6 py-24 text-center">
@@ -32,6 +41,6 @@ export const CTA: React.FC = () => {
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
     );
 };

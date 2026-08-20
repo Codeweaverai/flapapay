@@ -25,7 +25,173 @@ interface Transaction {
     credit_wallet_id?: string;
     debit_wallet_id?: string;
     fee_amount?: string;
-}
+    funding_source_type?: string;
+    funding_source_brand?: string;
+    funding_source_last4?: string;
+    deposit_operator?: string;
+    deposit_provider?: string;
+    withdrawal_provider?: string;
+    withdrawal_destination_type?: string;
+    withdrawal_destination_details?: string | {
+        provider?: string;
+        bankName?: string;
+        accountName?: string;
+        accountNumber?: string;
+        phoneNumber?: string;
+        country?: string;
+    };
+};
+
+type TransactionBrandMeta = {
+    label: string;
+    src?: string;
+    initials?: string;
+    bgClass: string;
+};
+
+const BRAND_ASSET_MAP: Record<string, TransactionBrandMeta> = {
+    mtn: { label: 'MTN MoMo', src: '/assets/images/MTN_Logo.svg', bgClass: 'bg-yellow-50' },
+    airtel: { label: 'Airtel Money', src: '/assets/images/Airtel_Africa_logo.svg', bgClass: 'bg-red-50' },
+    zamtel: { label: 'Zamtel Kwacha', src: '/assets/images/zamtel.png', bgClass: 'bg-green-50' },
+    visa: { label: 'Visa', src: '/assets/images/visa02.svg', bgClass: 'bg-blue-50' },
+    mastercard: { label: 'Mastercard', src: '/assets/images/mastercard.svg', bgClass: 'bg-orange-50' },
+    'standard chartered': { label: 'Standard Chartered', src: '/assets/images/STANCHART.svg', bgClass: 'bg-blue-50' },
+    stanchart: { label: 'Standard Chartered', src: '/assets/images/STANCHART.svg', bgClass: 'bg-blue-50' },
+    'first alliance': { label: 'First Alliance', src: '/assets/images/firstalliance.svg', bgClass: 'bg-sky-50' },
+    firstalliance: { label: 'First Alliance', src: '/assets/images/firstalliance.svg', bgClass: 'bg-sky-50' },
+    'indo zambia': { label: 'Indo Zambia', src: '/assets/images/indozambiabank.png', bgClass: 'bg-cyan-50' },
+    indozambia: { label: 'Indo Zambia', src: '/assets/images/indozambiabank.png', bgClass: 'bg-cyan-50' },
+    'ab bank': { label: 'AB Bank', src: '/assets/images/AB_Bank_Logo-300x58.png', bgClass: 'bg-red-50' },
+    abbank: { label: 'AB Bank', src: '/assets/images/AB_Bank_Logo-300x58.png', bgClass: 'bg-red-50' },
+};
+
+const toBrandKey = (value?: string) => String(value || '').trim().toLowerCase();
+
+const parseWithdrawalDestinationDetails = (value: Transaction['withdrawal_destination_details']) => {
+    if (!value) return {};
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return {};
+    }
+};
+
+const getTransactionBrandMeta = (tx: Transaction): TransactionBrandMeta | null => {
+    const destinationDetails = parseWithdrawalDestinationDetails(tx.withdrawal_destination_details);
+    const withdrawalProvider = toBrandKey(destinationDetails.provider);
+    const withdrawalBankName = String(destinationDetails.bankName || '').trim();
+
+    if (tx.transaction_type === 'WITHDRAWAL' && tx.withdrawal_destination_type === 'mobile_money') {
+        const mobileMoneyCandidate = [withdrawalProvider, toBrandKey(tx.description)].find(Boolean);
+        if (mobileMoneyCandidate) {
+            const direct = BRAND_ASSET_MAP[mobileMoneyCandidate];
+            if (direct) return direct;
+
+            const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => mobileMoneyCandidate.includes(key));
+            if (partial) return partial[1];
+        }
+
+        return { label: 'Mobile Money', initials: 'MM', bgClass: 'bg-emerald-100' };
+    }
+
+    if (tx.transaction_type === 'WITHDRAWAL' && tx.withdrawal_destination_type === 'bank_account') {
+        const bankCandidate = toBrandKey(withdrawalBankName);
+        if (bankCandidate) {
+            const direct = BRAND_ASSET_MAP[bankCandidate];
+            if (direct) return direct;
+
+            const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => bankCandidate.includes(key));
+            if (partial) return partial[1];
+
+            return { label: withdrawalBankName, initials: 'BK', bgClass: 'bg-slate-100' };
+        }
+
+        return { label: 'Bank', initials: 'BK', bgClass: 'bg-slate-100' };
+    }
+
+    const candidates = [
+        tx.deposit_operator,
+        tx.funding_source_brand,
+        tx.deposit_provider,
+        tx.description
+    ].map(toBrandKey).filter(Boolean);
+
+    for (const candidate of candidates) {
+        const direct = BRAND_ASSET_MAP[candidate];
+        if (direct) return direct;
+
+        const partial = Object.entries(BRAND_ASSET_MAP).find(([key]) => candidate.includes(key));
+        if (partial) return partial[1];
+    }
+
+    const fundingType = toBrandKey(tx.funding_source_type);
+    if (fundingType === 'bank' || tx.withdrawal_destination_type === 'bank_account') {
+        return { label: 'Bank', initials: 'BK', bgClass: 'bg-slate-100' };
+    }
+    if (fundingType === 'mobile_money') {
+        return { label: 'Mobile Money', initials: 'MM', bgClass: 'bg-emerald-100' };
+    }
+    if (fundingType === 'card') {
+        return { label: 'Card', initials: 'CD', bgClass: 'bg-blue-100' };
+    }
+
+    return null;
+};
+
+const normalizeWallets = (payload: any): Wallet[] => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.wallets)) return payload.wallets;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return [];
+};
+
+const normalizeTransactions = (payload: any): Transaction[] => {
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload?.transactions)) return payload.transactions;
+    if (Array.isArray(payload?.data)) return payload.data;
+    return [];
+};
+
+const formatTransactionDescription = (tx: Transaction) => {
+    const raw = String(tx.description || '').trim();
+    if (!raw) return 'Transaction processed successfully';
+
+    const cleaned = raw.replace(/via PawaPay/gi, '').replace(/via Lenco/gi, '').trim();
+    const mobileMoneyMatch = cleaned.match(/^Withdrawal to mobile_money \((.+)\)$/i);
+    const bankMatch = cleaned.match(/^Withdrawal to bank_account \((.+)\)$/i);
+
+    const toFriendlyWithdrawal = (jsonPayload: string, destinationLabel: string) => {
+        try {
+            const parsed = JSON.parse(jsonPayload);
+            if (destinationLabel === 'mobile money') {
+                const provider = String(parsed.provider || '').trim();
+                const phoneNumber = String(parsed.phoneNumber || '').trim();
+                const accountName = String(parsed.accountName || '').trim();
+                return [
+                    'Withdrawal to mobile money',
+                    [provider ? provider.toUpperCase() : '', phoneNumber, accountName].filter(Boolean).join(' • ')
+                ].filter(Boolean).join(' • ');
+            }
+
+            const bankName = String(parsed.bankName || '').trim();
+            const accountName = String(parsed.accountName || '').trim();
+            const accountNumber = String(parsed.accountNumber || '').trim();
+            const maskedAccount = accountNumber ? `****${accountNumber.slice(-4)}` : '';
+            return [
+                'Withdrawal to bank account',
+                [bankName, accountName, maskedAccount].filter(Boolean).join(' • ')
+            ].filter(Boolean).join(' • ');
+        } catch {
+            return cleaned;
+        }
+    };
+
+    if (mobileMoneyMatch) return toFriendlyWithdrawal(mobileMoneyMatch[1], 'mobile money');
+    if (bankMatch) return toFriendlyWithdrawal(bankMatch[1], 'bank account');
+
+    return cleaned;
+};
 
 export const Dashboard: React.FC = () => {
     const { user, token, logout } = useAuth();
@@ -39,26 +205,36 @@ export const Dashboard: React.FC = () => {
     const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
     const [showUserMenu, setShowUserMenu] = useState(false);
 
-    useEffect(() => {
-        const fetchData = async () => {
-            if (token) {
-                try {
-                    const res = await api.get('/auth/me');
-                    if (res.data.wallets) {
-                        setWallets(res.data.wallets);
-                    }
+    const fetchData = async () => {
+        if (!token) return;
 
-                    const txRes = await api.get('/transactions');
-                    setTransactions(txRes.data || []); // Backend returns an array directly
-                } catch (error) {
-                    console.error('Failed to load dashboard data', error);
-                    // Optionally handle logout if token is invalid
-                    if (axios.isAxiosError(error) && error.response?.status === 403) logout();
-                } finally {
-                    setIsLoading(false);
-                }
-            }
-        };
+        try {
+            const res = await api.get('/auth/me', {
+                params: { _t: Date.now() },
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    Pragma: 'no-cache',
+                },
+            });
+            setWallets(normalizeWallets(res.data?.wallets ?? res.data));
+
+            const txRes = await api.get('/transactions', {
+                params: { _t: Date.now() },
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    Pragma: 'no-cache',
+                },
+            });
+            setTransactions(normalizeTransactions(txRes.data));
+        } catch (error) {
+            console.error('Failed to load dashboard data', error);
+            if (axios.isAxiosError(error) && error.response?.status === 403) logout();
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
         fetchData();
     }, [token, logout]); // Added logout to dependency array
 
@@ -160,7 +336,7 @@ export const Dashboard: React.FC = () => {
                                             </div>
                                         </div>
                                         <button
-                                            onClick={() => { logout(); navigate('/login'); }}
+                                            onClick={() => { logout(); navigate('/signup/individual'); }}
                                             className="w-full mt-2 py-3 px-4 text-[10px] font-black text-gray-400 hover:text-red-500 uppercase tracking-widest rounded-xl hover:bg-red-50 transition-all flex items-center justify-center gap-2"
                                         >
                                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -227,7 +403,7 @@ export const Dashboard: React.FC = () => {
                                         FX Liquidity Pool
                                     </h2>
                                     <p className="text-lg font-medium text-gray-500 leading-relaxed mb-8 max-w-md">
-                                        Swap between USD, ZMW, and other local currencies instantly with real-time market rates and low spreads.
+                                        Swap between USD and ZMW instantly with real-time market rates and low spreads.
                                     </p>
                                     <button className="flex items-center gap-4 px-10 py-5 bg-emerald-600 text-white rounded-full font-black uppercase tracking-widest text-sm shadow-xl shadow-emerald-600/20 group-hover:-translate-y-1 transition-all active:scale-95">
                                         Swap Funds Now
@@ -265,8 +441,8 @@ export const Dashboard: React.FC = () => {
                         <h2 className="text-xl font-bold text-gray-900 mb-6">Your Wallets</h2>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                             {(() => {
-                                const supportedCurrencies = ['USD', 'ZMW', 'GBP', 'EUR'];
-                                const existingWallets = wallets.filter(wallet => supportedCurrencies.includes(wallet.currency));
+                                const supportedCurrencies = ['USD', 'ZMW'];
+                                const existingWallets = normalizeWallets(wallets).filter(wallet => supportedCurrencies.includes(wallet.currency));
                                 const hasAllWallets = supportedCurrencies.every(currency => 
                                     existingWallets.some(wallet => wallet.currency === currency)
                                 );
@@ -296,20 +472,6 @@ export const Dashboard: React.FC = () => {
                                                 iconBg = "bg-white/20 text-white";
                                                 subText = "text-white";
                                                 countryCode = 'ZM';
-                                            } else if (wallet.currency === 'EUR') {
-                                                bgClass = "bg-gradient-to-br from-blue-400 to-blue-600 border-none text-white shadow-lg shadow-blue-500/20";
-                                                textClass = "text-white";
-                                                labelClass = "text-blue-100";
-                                                iconBg = "bg-white/20 text-white";
-                                                subText = "text-white";
-                                                countryCode = 'EU';
-                                            } else if (wallet.currency === 'GBP') {
-                                                bgClass = "bg-gradient-to-br from-purple-400 to-purple-600 border-none text-white shadow-lg shadow-purple-500/20";
-                                                textClass = "text-white";
-                                                labelClass = "text-purple-100";
-                                                iconBg = "bg-white/20 text-white";
-                                                subText = "text-white";
-                                                countryCode = 'GB';
                                             }
 
                                             return (
@@ -359,8 +521,6 @@ export const Dashboard: React.FC = () => {
                                                                     <option key={currency} value={currency}>
                                                                         {currency === 'USD' && 'USD (US Dollar)'}
                                                                         {currency === 'ZMW' && 'ZMW (Zambian Kwacha)'}
-                                                                        {currency === 'EUR' && 'EUR (Euro)'}
-                                                                        {currency === 'GBP' && 'GBP (British Pound)'}
                                                                     </option>
                                                                 ))}
                                                         </select>
@@ -412,10 +572,11 @@ export const Dashboard: React.FC = () => {
                                 </div>
                             ) : (
                                 <div className="divide-y divide-gray-50">
-                                    {transactions.map((tx) => {
+                                    {normalizeTransactions(transactions).map((tx) => {
                                         const isCredit = wallets.some(w => w.id === tx.credit_wallet_id);
                                         const isDebit = wallets.some(w => w.id === tx.debit_wallet_id);
                                         const isInflow = isCredit && !isDebit;
+                                        const brandMeta = getTransactionBrandMeta(tx);
 
                                         // Default to DEPOSIT logic if unsure
                                         const finalIsInflow = tx.transaction_type === 'DEPOSIT' || isInflow;
@@ -427,11 +588,13 @@ export const Dashboard: React.FC = () => {
                                                 className="p-5 flex items-center justify-between hover:bg-gray-50 transition-colors group border-b border-gray-50 last:border-0 cursor-pointer"
                                             >
                                                 <div className="flex items-center gap-4">
-                                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${finalIsInflow ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-                                                        {finalIsInflow ? (
-                                                            <svg className="w-6 h-6 transform group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+                                                    <div className={`w-12 h-12 rounded-2xl overflow-hidden border border-gray-100 shadow-sm flex items-center justify-center ${brandMeta?.bgClass || 'bg-gray-50'}`}>
+                                                        {brandMeta?.src ? (
+                                                            <img src={brandMeta.src} alt={brandMeta.label} className="w-full h-full object-contain p-1.5" />
                                                         ) : (
-                                                            <svg className="w-6 h-6 transform group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>
+                                                            <span className={`text-xs font-black ${finalIsInflow ? 'text-green-600' : 'text-red-500'}`}>
+                                                                {brandMeta?.initials || (finalIsInflow ? 'IN' : 'OUT')}
+                                                            </span>
                                                         )}
                                                     </div>
                                                     <div>
@@ -443,9 +606,14 @@ export const Dashboard: React.FC = () => {
                                                             <span className="text-[10px] font-bold px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded uppercase tracking-wider">
                                                                 {tx.transaction_type}
                                                             </span>
+                                                            {brandMeta && (
+                                                                <span className="text-[10px] font-bold px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-full">
+                                                                    {brandMeta.label}
+                                                                </span>
+                                                            )}
                                                         </div>
                                                         <p className="text-sm text-gray-600 font-medium mt-0.5 line-clamp-1">
-                                                            {(tx.description ? tx.description.replace(/via PawaPay/gi, '') : 'Transaction processed successfully')}
+                                                            {formatTransactionDescription(tx)}
                                                         </p>
                                                         <div className="flex items-center gap-2 mt-1">
                                                             <p className="text-[11px] text-gray-400 font-medium">
@@ -536,7 +704,7 @@ export const Dashboard: React.FC = () => {
                                 <div className="pt-4 border-t border-gray-50">
                                     <span className="text-gray-400 text-xs font-bold uppercase tracking-wider block mb-2">Description</span>
                                     <p className="text-gray-900 font-medium bg-gray-50 p-4 rounded-2xl border border-gray-100">
-                                        {(selectedTx.description ? selectedTx.description.replace(/via PawaPay/gi, '') : 'No description provided for this transaction.')}
+                                        {formatTransactionDescription(selectedTx)}
                                     </p>
                                 </div>
                             </div>
@@ -554,6 +722,3 @@ export const Dashboard: React.FC = () => {
         </div>
     );
 };
-
-
-

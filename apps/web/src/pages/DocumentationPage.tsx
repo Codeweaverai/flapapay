@@ -26,6 +26,14 @@ import {
     Server
 } from 'lucide-react';
 
+const PUBLIC_API_BASE = 'https://api.flapapay.com';
+const EXAMPLE_APP_BASE = 'https://yourapp.com';
+const normalizeDocExample = (input: string) => input
+    .replaceAll('http://localhost:3005', PUBLIC_API_BASE)
+    .replaceAll('http://localhost:5173', EXAMPLE_APP_BASE)
+    .replaceAll('localhost:3005', 'api.flapapay.com')
+    .replaceAll('localhost:5173', 'yourapp.com');
+
 export const DocumentationPage: React.FC = () => {
     const [copiedCode, setCopiedCode] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
@@ -69,7 +77,7 @@ export const DocumentationPage: React.FC = () => {
         setPgLoading(true);
         setPgResult(null);
         try {
-            const response = await fetch('http://localhost:3005/v1/checkout/sessions', {
+            const response = await fetch(`${PUBLIC_API_BASE}/v1/checkout/sessions`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${pgApiKey}`,
@@ -79,8 +87,8 @@ export const DocumentationPage: React.FC = () => {
                     mode: 'subscription',
                     customer_email: pgEmail,
                     line_items: [{ price: pgPriceId, quantity: 1 }],
-                    success_url: 'http://localhost:5173/success',
-                    cancel_url: 'http://localhost:5173/cancel'
+                    success_url: `${EXAMPLE_APP_BASE}/success`,
+                    cancel_url: `${EXAMPLE_APP_BASE}/cancel`
                 })
             });
             const data = await response.json();
@@ -98,7 +106,7 @@ export const DocumentationPage: React.FC = () => {
             
             setPgResult(data);
         } catch (err: any) {
-            setPgResult({ error: 'Failed to connect to server. Ensure unified-server is running on port 3005.' });
+            setPgResult({ error: 'Failed to connect to the API domain.' });
         } finally {
             setPgLoading(false);
         }
@@ -106,7 +114,7 @@ export const DocumentationPage: React.FC = () => {
 
     const fetchAvailablePrices = async () => {
         try {
-            const response = await fetch('http://localhost:3005/v1/prices', {
+            const response = await fetch(`${PUBLIC_API_BASE}/v1/prices`, {
                 headers: { 'Content-Type': 'application/json' }
             });
             const data = await response.json();
@@ -122,7 +130,7 @@ export const DocumentationPage: React.FC = () => {
     };
 
     const copyCode = (code: string, id: string) => {
-        navigator.clipboard.writeText(code);
+        navigator.clipboard.writeText(normalizeDocExample(code));
         setCopiedCode(id);
         setTimeout(() => setCopiedCode(null), 2000);
     };
@@ -171,28 +179,10 @@ export const DocumentationPage: React.FC = () => {
             items: ['Products', 'Pricing', 'Customers', 'Subscriptions', 'Webhooks']
         },
         {
-            id: 'connect',
-            title: 'Connect (Marketplace)',
-            icon: <Globe className="w-5 h-5" />,
-            items: [
-                'Overview', 'Authentication', 'Connected Accounts', 'Account Sessions',
-                'Embedded Components', 'KYC & Verification', 'Payout Methods',
-                'Payouts & Settlements', 'Charges & Splits', 'Disputes',
-                'Risk Management', 'Webhooks', 'Invites & Onboarding',
-                'Analytics & Ledger', 'Seller Portal', 'Fee Configuration'
-            ]
-        },
-        {
             id: 'webhooks',
             title: 'Webhooks',
             icon: <Webhook className="w-5 h-5" />,
             items: ['Setup', 'Event Types', 'Security']
-        },
-        {
-            id: 'escrow',
-            title: 'Escrow Service',
-            icon: <Shield className="w-5 h-5" />,
-            items: ['Overview', 'Create Escrow', 'Funding', 'Release & Disputes']
         },
         {
             id: 'sdks',
@@ -543,24 +533,21 @@ for session in result['data']:
             id: 'checkout-marketplace',
             method: 'POST',
             path: '/v1/checkout/sessions',
-            title: 'Marketplace / Split Payment',
-            badge: 'Connect',
-            description: 'Route the majority of funds to a connected sub-merchant and retain a platform fee. Use transfer_data.destination with the sub-merchant account ID and application_fee_amount for your cut. The buyer pays a single total amount — the split happens server-side.',
+            title: 'Direct Wallet Settlement',
+            badge: 'Merchant Hub',
+            description: 'Checkout sessions remain the hosted payment entry point, but successful payments now settle directly into the merchant wallet and ledger.',
             params: [
-                { name: 'transfer_data.destination', type: 'string', required: true, desc: 'Connected account ID (acct_xxx) that receives the funds' },
-                { name: 'transfer_data.amount', type: 'number', required: false, desc: 'Amount to transfer (defaults to total minus application_fee_amount)' },
-                { name: 'application_fee_amount', type: 'number', required: false, desc: 'Platform fee retained by your account, in smallest currency unit' },
-                { name: 'on_behalf_of', type: 'string', required: false, desc: 'Run the payment on behalf of this connected account (useful for local card acceptance)' },
+                { name: 'wallet_id', type: 'string', required: false, desc: 'Optional wallet override when you want to settle into a specific merchant wallet record' },
+                { name: 'metadata', type: 'object', required: false, desc: 'Attach order, invoice, or customer references for downstream reconciliation' },
+                { name: 'success_url', type: 'string', required: true, desc: 'Redirect after successful payment' },
             ],
             response: `{
-  "id": "cs_live_mkt_xxx",
-  "url": "https://checkout.flapapay.com/pay/cs_live_mkt_xxx",
-  "transfer_data": { "destination": "acct_abc123", "amount": 95000 },
-  "application_fee_amount": 5000,
+  "id": "cs_live_pay_xxx",
+  "url": "https://checkout.flapapay.com/pay/cs_live_pay_xxx",
   "status": "open"
 }`,
             snippets: {
-                node: `// Customer pays ZK 1,000. Sub-merchant gets ZK 950. You keep ZK 50 (5% fee).
+                node: `// Customer pays ZK 1,000. FlapaPay credits the merchant wallet after successful payment.
 const res = await fetch('http://localhost:3005/v1/checkout/sessions', {
   method: 'POST',
   headers: {
@@ -570,10 +557,9 @@ const res = await fetch('http://localhost:3005/v1/checkout/sessions', {
   body: JSON.stringify({
     mode: 'payment',
     line_items: [{ price: 'price_product_xxx', quantity: 1 }],
-    transfer_data: { destination: 'acct_abc123' },
-    application_fee_amount: 5000,   // ZK 50 in ngwe (smallest unit)
     success_url: 'https://yourapp.com/order/success',
     cancel_url: 'https://yourapp.com/cart',
+    metadata: { order_id: 'ord_123' },
   }),
 });
 const session = await res.json();`,
@@ -581,10 +567,9 @@ const session = await res.json();`,
   json={
     'mode': 'payment',
     'line_items': [{'price': 'price_product_xxx', 'quantity': 1}],
-    'transfer_data': {'destination': 'acct_abc123'},
-    'application_fee_amount': 5000,
     'success_url': 'https://yourapp.com/order/success',
     'cancel_url': 'https://yourapp.com/cart',
+    'metadata': {'order_id': 'ord_123'},
   },
   headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
 ).json()`,
@@ -593,10 +578,9 @@ const session = await res.json();`,
   -d '{
     "mode": "payment",
     "line_items": [{"price": "price_product_xxx", "quantity": 1}],
-    "transfer_data": {"destination": "acct_abc123"},
-    "application_fee_amount": 5000,
     "success_url": "https://yourapp.com/order/success",
-    "cancel_url": "https://yourapp.com/cart"
+    "cancel_url": "https://yourapp.com/cart",
+    "metadata": {"order_id": "ord_123"}
   }'`
             }
         },
@@ -809,195 +793,7 @@ def webhook():
     ];
 
 
-    const escrowEndpoints = [
-        {
-            id: 'create-escrow',
-            method: 'POST',
-            path: '/escrows/create',
-            title: 'Create Standard Escrow',
-            description: 'Initialize a new escrow agreement between a buyer and a seller.',
-            params: [
-                { name: 'seller_email', type: 'string', required: true, desc: 'Email of the seller' },
-                { name: 'amount', type: 'number', required: true, desc: 'Transaction amount' },
-                { name: 'currency', type: 'string', required: true, desc: 'Currency code (e.g., USD, ZMW)' },
-                { name: 'description', type: 'string', required: false, desc: 'Item or service description' }
-            ],
-            response: '{ "id": "esc_123...", "status": "PENDING_FUNDING", ... }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:5173/escrows/create', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer JWT_TOKEN', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ seller_email: 'seller@example.com', amount: 100, currency: 'USD' })
-});`,
-                python: `import requests
-res = requests.post('http://localhost:5173/escrows/create', 
-  json={'seller_email': 'seller@example.com', 'amount': 100, 'currency': 'USD'},
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl -X POST http://localhost:5173/escrows/create \\
-  -H "Authorization: Bearer JWT_TOKEN" \\
-  -d '{"seller_email":"seller@example.com","amount":100,"currency":"USD"}'`
-            }
-        },
-        {
-            id: 'fund-escrow',
-            method: 'POST',
-            path: '/escrows/:id/fund',
-            title: 'Fund Escrow',
-            description: 'Move funds from the buyer\'s wallet into the escrow hold.',
-            params: [
-                { name: 'paymentMethodId', type: 'string', required: false, desc: 'Optional Stripe payment method ID' }
-            ],
-            response: '{ "message": "Escrow funded successfully", "status": "FUNDED" }',
-            snippets: {
-                node: `await fetch('http://localhost:5173/escrows/ESCROW_ID/fund', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer JWT_TOKEN' }
-});`,
-                python: `requests.post('http://localhost:5173/escrows/ESCROW_ID/fund', 
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl -X POST http://localhost:5173/escrows/ESCROW_ID/fund \\
-  -H "Authorization: Bearer JWT_TOKEN"`
-            }
-        },
-        {
-            id: 'deliver-escrow',
-            method: 'POST',
-            path: '/escrows/:id/deliver',
-            title: 'Mark as Delivered',
-            description: 'Seller signals that the item has been shipped or service provided.',
-            params: [],
-            response: '{ "message": "Marked as shipped", "status": "SHIPPED" }',
-            snippets: {
-                node: `await fetch('http://localhost:5173/escrows/ESCROW_ID/deliver', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer JWT_TOKEN' }
-});`,
-                python: `requests.post('http://localhost:5173/escrows/ESCROW_ID/deliver', 
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl -X POST http://localhost:5173/escrows/ESCROW_ID/deliver \\
-  -H "Authorization: Bearer JWT_TOKEN"`
-            }
-        },
-        {
-            id: 'confirm-escrow',
-            method: 'POST',
-            path: '/escrows/:id/confirm',
-            title: 'Confirm & Release',
-            description: 'Buyer confirms receipt, triggering immediate fund release to the seller.',
-            params: [],
-            response: '{ "message": "Funds released to seller", "status": "COMPLETED" }',
-            snippets: {
-                node: `await fetch('http://localhost:5173/escrows/ESCROW_ID/confirm', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer JWT_TOKEN' }
-});`,
-                python: `requests.post('http://localhost:5173/escrows/ESCROW_ID/confirm', 
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl -X POST http://localhost:5173/escrows/ESCROW_ID/confirm \\
-  -H "Authorization: Bearer JWT_TOKEN"`
-            }
-        },
-        {
-            id: 'dispute-escrow',
-            method: 'POST',
-            path: '/escrows/:id/dispute',
-            title: 'Dispute Escrow',
-            description: 'Halt the transaction and request administrative mediation.',
-            params: [
-                { name: 'reason', type: 'string', required: true, desc: 'Reason for the dispute' },
-                { name: 'evidenceUrl', type: 'string', required: false, desc: 'URL to supporting documents' }
-            ],
-            response: '{ "message": "Dispute opened", "status": "DISPUTED" }',
-            snippets: {
-                node: `await fetch('http://localhost:5173/escrows/ESCROW_ID/dispute', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer JWT_TOKEN', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ reason: 'Item not as described' })
-});`,
-                python: `requests.post('http://localhost:5173/escrows/ESCROW_ID/dispute', 
-  json={'reason': 'Item not as described'},
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl -X POST http://localhost:5173/escrows/ESCROW_ID/dispute \\
-  -H "Authorization: Bearer JWT_TOKEN" \\
-  -d '{"reason":"Item not as described"}'`
-            }
-        },
-        {
-            id: 'v1-create-escrow',
-            method: 'POST',
-            path: '/api/v1/escrows',
-            title: 'Marketplace Create (v1)',
-            description: 'Developer API for marketplaces to create escrows on behalf of users.',
-            params: [
-                { name: 'seller_email', type: 'string', required: true, desc: 'Email of the seller' },
-                { name: 'buyer_id', type: 'string', required: true, desc: 'FlapaPay User ID of the buyer' },
-                { name: 'amount', type: 'number', required: true, desc: 'Amount' },
-                { name: 'currency', type: 'string', required: true, desc: 'Currency' }
-            ],
-            response: '{ "id": "esc_v1_...", "status": "PENDING_FUNDING" }',
-            snippets: {
-                node: `await fetch('http://localhost:5173/api/v1/escrows', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ seller_email: 's@ex.com', buyer_id: 'usr_123', amount: 50, currency: 'USD' })
-});`,
-                python: `requests.post('http://localhost:5173/api/v1/escrows', 
-  json={'seller_email': 's@ex.com', 'buyer_id': 'usr_123', 'amount': 50, 'currency': 'USD'},
-  headers={'Authorization': 'Bearer MERCHANT_KEY'})`,
-                curl: `curl -X POST http://localhost:5173/api/v1/escrows \\
-  -H "Authorization: Bearer MERCHANT_KEY" \\
-  -d '{"seller_email":"s@ex.com","buyer_id":"usr_123","amount":50,"currency":"USD"}'`
-            }
-        },
-        {
-            id: 'list-escrows',
-            method: 'GET',
-            path: '/escrows',
-            title: 'List My Escrows',
-            description: 'Fetch all escrow transactions where the authenticated user is a buyer or seller.',
-            params: [],
-            response: '[ { "id": "esc_1", "status": "COMPLETED", ... }, ... ]',
-            snippets: {
-                node: `const res = await fetch('http://localhost:5173/escrows', {
-  headers: { 'Authorization': 'Bearer JWT_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:5173/escrows', 
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl http://localhost:5173/escrows -H "Authorization: Bearer JWT_TOKEN"`
-            }
-        },
-        {
-            id: 'get-escrow',
-            method: 'GET',
-            path: '/escrows/:id',
-            title: 'Get Escrow Details',
-            description: 'Fetch full details of a specific escrow, including participant profiles.',
-            params: [],
-            response: '{ "id": "esc_123", "buyer_name": "John Doe", "seller_name": "Jane Smith", ... }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:5173/escrows/ESCROW_ID', {
-  headers: { 'Authorization': 'Bearer JWT_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:5173/escrows/ESCROW_ID', 
-  headers={'Authorization': 'Bearer JWT_TOKEN'})`,
-                curl: `curl http://localhost:5173/escrows/ESCROW_ID -H "Authorization: Bearer JWT_TOKEN"`
-            }
-        },
-        {
-            id: 'public-escrow',
-            method: 'GET',
-            path: '/escrow-public/:id',
-            title: 'Public Escrow View',
-            description: 'A read-only public view of an escrow status. No authentication required.',
-            params: [],
-            response: '{ "id": "esc_123", "status": "SHIPPED", "amount": 50, "currency": "USD" }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:5173/escrow-public/ESCROW_ID');`,
-                python: `res = requests.get('http://localhost:5173/escrow-public/ESCROW_ID')`,
-                curl: `curl http://localhost:5173/escrow-public/ESCROW_ID`
-            }
-        }
-    ];
+    const escrowEndpoints: any[] = [];
 
     const subscriptionEndpoints = [
         {
@@ -1079,1365 +875,988 @@ res = requests.post('http://localhost:5173/v1/products',
             }
         }
     ];
-
-    const connectEndpoints = [
-        // ── ACCOUNT MANAGEMENT ───────────────────────────────────────────────────
+    const infrastructureEndpoints = [
         {
-            id: 'connect-overview',
+            id: 'banks-list',
             method: 'GET',
-            path: '/v1/connect/stats',
-            title: '① Overview — Marketplace Stats',
-            description: 'FlapaPay Connect is a full marketplace infrastructure layer. Authenticate all platform-owner requests with your merchant secret key (sk_test_flp_... or sk_live_flp_...) in the Authorization header. Use x-flapapay-test-mode: true for sandbox testing without moving real money.',
-            params: [],
+            path: '/v1/banks',
+            title: 'List Banks',
+            badge: 'Accounts',
+            description: 'Retrieve banks and financial institutions supported by FlapaPay for bank-account transfers and account resolution.',
+            params: [
+                { name: 'country', type: 'string', required: false, desc: 'Two-letter country code like "zm". Defaults to your operating country.' },
+            ],
             response: `{
-  "totalSubMerchants": 42,
-  "activeSubMerchants": 38,
-  "marketplaceGMV": 12500000,
-  "platformRevenue": 312500,
-  "pendingKYC": 4,
-  "currency": "ZMW"
+  "status": true,
+  "message": "",
+  "data": [
+    { "id": "002", "name": "Absa Bank", "country": "zm" }
+  ]
 }`,
             snippets: {
-                node: `import fetch from 'node-fetch';
-
-const BASE = 'http://localhost:3005';
-const KEY  = process.env.FLAPAPAY_SECRET_KEY; // sk_test_flp_...
-
-const res = await fetch(\`\${BASE}/v1/connect/stats\`, {
-  headers: {
-    Authorization: \`Bearer \${KEY}\`,
-    'x-flapapay-test-mode': 'true',
-  },
+                node: `const res = await fetch('http://localhost:3005/v1/banks?country=zm', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
 });
-const stats = await res.json();
-console.log(\`Sellers: \${stats.totalSubMerchants}, GMV: ZMW \${stats.marketplaceGMV / 100}\`);`,
+const banks = await res.json();`,
                 python: `import requests, os
-
-BASE = "http://localhost:3005"
-KEY  = os.environ["FLAPAPAY_SECRET_KEY"]
-
-r = requests.get(f"{BASE}/v1/connect/stats",
-    headers={"Authorization": f"Bearer {KEY}", "x-flapapay-test-mode": "true"})
-print(r.json())`,
-                curl: `curl http://localhost:3005/v1/connect/stats \\
-  -H "Authorization: Bearer sk_test_flp_xxxx" \\
-  -H "x-flapapay-test-mode: true"`,
-            },
+banks = requests.get(
+  'http://localhost:3005/v1/banks',
+  params={'country': 'zm'},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/banks?country=zm" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
         },
         {
-            id: 'create-connected-account',
+            id: 'resolve-bank-account',
             method: 'POST',
-            path: '/v1/connect/accounts',
-            title: 'Create Connected Account',
-            description: 'Register a new sub-merchant (seller) on your platform. Creates a shell account and initialises their balance ledger.',
+            path: '/v1/resolve/bank-account',
+            title: 'Resolve Bank Account',
+            badge: 'Accounts',
+            description: 'Verify a bank account before creating a transfer or saving a recipient. FlapaPay returns the resolved account name and bank details.',
             params: [
-                { name: 'email', type: 'string', required: true, desc: 'Email address of the sub-merchant' },
-                { name: 'business_name', type: 'string', required: true, desc: 'Legal business name' },
-                { name: 'business_type', type: 'string', required: false, desc: '"individual" or "company" (default: individual)' },
-                { name: 'tpin', type: 'string', required: false, desc: 'Zambia Revenue Authority TPIN number' },
-                { name: 'pacra_number', type: 'string', required: false, desc: 'PACRA business registration number' },
-                { name: 'country', type: 'string', required: false, desc: 'ISO 3166 country code (default: ZM)' },
-            ],
-            response: '{ "id": "acct_abc123", "object": "account", "type": "custom", "capabilities": { "transfers": { "requested": true } } }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/accounts', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    email: 'vendor@example.com',
-    business_name: 'Lusaka Crafts Ltd',
-    tpin: '1234567890',
-    country: 'ZM'
-  })
-});
-const account = await res.json();
-console.log('Account ID:', account.id); // acct_abc123`,
-                python: `import requests
-res = requests.post('http://localhost:3005/v1/connect/accounts',
-  json={
-    'email': 'vendor@example.com',
-    'business_name': 'Lusaka Crafts Ltd',
-    'tpin': '1234567890',
-    'country': 'ZM'
-  },
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-account = res.json()`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/accounts \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"email":"vendor@example.com","business_name":"Lusaka Crafts Ltd","country":"ZM"}'`
-            }
-        },
-        {
-            id: 'list-connected-accounts',
-            method: 'GET',
-            path: '/v1/connect/accounts',
-            title: 'List Connected Accounts',
-            description: 'Retrieve all sub-merchants on your platform with their aggregated volume and fees. Supports test/live mode filtering via x-flapapay-test-mode header.',
-            params: [],
-            response: `[{ "id": "acct_abc123", "businessName": "Lusaka Crafts Ltd", "email": "vendor@example.com", "status": "ACTIVE", "volume": "12500.00", "fees": "312.50" }]`,
-            snippets: {
-                node: `// Live mode
-const res = await fetch('http://localhost:3005/v1/connect/accounts', {
-  headers: {
-    'Authorization': 'Bearer MERCHANT_API_KEY',
-    'x-flapapay-test-mode': 'false'
-  }
-});
-const accounts = await res.json();`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/accounts',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY', 'x-flapapay-test-mode': 'false'})`,
-                curl: `curl http://localhost:3005/v1/connect/accounts \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -H "x-flapapay-test-mode: false"`
-            }
-        },
-        {
-            id: 'destination-charge',
-            method: 'POST',
-            path: '/v1/checkout/sessions',
-            title: 'Destination Charge (Split Payment)',
-            description: 'Create a checkout session that routes the payment to a connected account. Set transfer_data.destination to the sub-merchant account ID and application_fee_amount to your platform fee in the smallest currency unit.',
-            params: [
-                { name: 'amount', type: 'number', required: true, desc: 'Total amount in smallest unit (e.g., 10000 = ZK 100.00)' },
-                { name: 'currency', type: 'string', required: true, desc: 'e.g., ZMW, USD' },
-                { name: 'transfer_data.destination', type: 'string', required: true, desc: 'Connected account ID of the sub-merchant receiving funds' },
-                { name: 'application_fee_amount', type: 'number', required: false, desc: 'Platform fee in smallest unit. Retained by your wallet.' },
-                { name: 'success_url', type: 'string', required: true, desc: 'Redirect URL on success' },
-            ],
-            response: '{ "id": "cs_abc123", "url": "https://flapapay.com/checkout/cs_abc123", "status": "open" }',
-            snippets: {
-                node: `// Marketplace checkout: customer pays ZK 1,000, platform keeps ZK 50 (5%)
-const res = await fetch('http://localhost:3005/v1/checkout/sessions', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    amount: 100000,                        // ZK 1,000.00
-    currency: 'ZMW',
-    transfer_data: { destination: 'acct_abc123' },
-    application_fee_amount: 5000,         // ZK 50.00 platform fee (5%)
-    success_url: 'https://yourapp.com/success',
-    cancel_url: 'https://yourapp.com/cancel'
-  })
-});
-const session = await res.json();
-// Redirect customer to session.url`,
-                python: `res = requests.post('http://localhost:3005/v1/checkout/sessions',
-  json={
-    'amount': 100000,
-    'currency': 'ZMW',
-    'transfer_data': {'destination': 'acct_abc123'},
-    'application_fee_amount': 5000,
-    'success_url': 'https://yourapp.com/success',
-    'cancel_url': 'https://yourapp.com/cancel'
-  },
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/checkout/sessions \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"amount":100000,"currency":"ZMW","transfer_data":{"destination":"acct_abc123"},"application_fee_amount":5000,"success_url":"https://yourapp.com/success","cancel_url":"https://yourapp.com/cancel"}'`
-            }
-        },
-        {
-            id: 'connect-payout',
-            method: 'POST',
-            path: '/v1/connect/payouts',
-            title: 'Pay Out to Sub-merchant',
-            description: 'Disburse available funds from a connected account to their registered payout method (mobile money or bank). Executed via PawaPay for mobile money and Lenco for bank transfers.',
-            params: [
-                { name: 'account_id', type: 'string', required: true, desc: 'Connected account ID to pay out from' },
-                { name: 'amount', type: 'number', required: true, desc: 'Amount to disburse (decimal, e.g., 500.00)' },
-                { name: 'currency', type: 'string', required: true, desc: 'Currency code (e.g., ZMW)' },
-            ],
-            response: '{ "id": "txn_xyz789", "status": "COMPLETED", "amount": 500, "destination": { "network": "MTN", "number": "260976XXXXXX" } }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/payouts', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    account_id: 'acct_abc123',
-    amount: 500.00,
-    currency: 'ZMW'
-  })
-});
-const payout = await res.json();
-console.log('Payout status:', payout.status); // COMPLETED`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/payouts',
-  json={'account_id': 'acct_abc123', 'amount': 500.00, 'currency': 'ZMW'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/payouts \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"account_id":"acct_abc123","amount":500,"currency":"ZMW"}'`
-            }
-        },
-        {
-            id: 'vendor-stats',
-            method: 'GET',
-            path: '/v1/connect/accounts/:id/stats',
-            title: 'Get Vendor Stats',
-            description: 'Retrieve revenue, platform fees, pending settlement, and available balance for a specific sub-merchant.',
-            params: [],
-            response: '{ "totalRevenue": "12500.00", "platformFees": "312.50", "netEarnings": "12187.50", "pendingSettlement": "2000.00", "availableBalance": "10187.50" }',
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/stats', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});
-const stats = await res.json();`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/accounts/acct_abc123/stats',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl http://localhost:3005/v1/connect/accounts/acct_abc123/stats \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'connect-config',
-            method: 'PATCH',
-            path: '/v1/connect/config',
-            title: 'Update Platform Fee Config',
-            description: 'Configure your platform fee percentage, settlement delay, payout threshold, and auto-payout schedule. Also accessible via the Connect Settings page in your dashboard.',
-            params: [
-                { name: 'platform_fee_percent', type: 'number', required: false, desc: 'Fee % taken on each transaction (0–20). Default: 2.50' },
-                { name: 'fee_collection_method', type: 'string', required: false, desc: '"per_transaction" or "monthly"' },
-                { name: 'settlement_delay_days', type: 'number', required: false, desc: '0, 1, or 2 days. Default: 1 (T+1)' },
-                { name: 'min_payout_threshold', type: 'number', required: false, desc: 'Minimum balance before auto-payout triggers. Default: 50.00' },
-                { name: 'auto_payout_enabled', type: 'boolean', required: false, desc: 'Whether to auto-pay vendors on schedule' },
-                { name: 'auto_payout_schedule', type: 'string', required: false, desc: '"daily", "weekly", or "monthly"' },
-            ],
-            response: '{ "merchant_id": "mer_123", "platform_fee_percent": "3.00", "settlement_delay_days": 1, "auto_payout_enabled": true, "auto_payout_schedule": "daily" }',
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/config', {
-  method: 'PATCH',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    platform_fee_percent: 3.0,
-    settlement_delay_days: 1,
-    min_payout_threshold: 100,
-    auto_payout_enabled: true,
-    auto_payout_schedule: 'daily'
-  })
-});`,
-                python: `requests.patch('http://localhost:3005/v1/connect/config',
-  json={'platform_fee_percent': 3.0, 'settlement_delay_days': 1, 'auto_payout_enabled': True, 'auto_payout_schedule': 'daily'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X PATCH http://localhost:3005/v1/connect/config \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"platform_fee_percent":3.0,"settlement_delay_days":1,"auto_payout_enabled":true,"auto_payout_schedule":"daily"}'`
-            }
-        },
-
-        // ── ACCOUNT SESSIONS ─────────────────────────────────────────────────────
-        {
-            id: 'create-account-session',
-            method: 'POST',
-            path: '/v1/connect/account_sessions',
-            title: 'Create Account Session',
-            description: 'Generate a short-lived client_secret for a connected account. Pass this to your frontend so the seller\'s browser can call the exchange endpoint and mount embedded components — your secret key never leaves the server.',
-            params: [
-                { name: 'account', type: 'string', required: true, desc: 'Connected account ID (e.g., acct_abc123)' },
-                { name: 'components', type: 'object', required: true, desc: 'Components to enable. Keys: account_management, balances, payments, payouts, documents, notification_banner' },
-                { name: 'expires_in', type: 'number', required: false, desc: 'Session lifetime in seconds (default 3600, max 86400)' },
+                { name: 'accountNumber', type: 'string', required: true, desc: 'Destination bank account number' },
+                { name: 'bankId', type: 'string', required: true, desc: 'Bank identifier returned by GET /v1/banks' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
             ],
             response: `{
-  "client_secret": "acs_live_eyJhbGciO...",
-  "account": "acct_abc123",
-  "expires_at": 1716000000,
-  "components": { "balances": true, "payments": true, "payouts": true, "documents": true }
-}`,
-            snippets: {
-                node: `// Server-side — never expose your secret key to the browser
-const res = await fetch('http://localhost:3005/v1/connect/account_sessions', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    account: 'acct_abc123',
-    components: { balances: true, payments: true, payouts: true, documents: true },
-    expires_in: 3600
-  })
-});
-const { client_secret } = await res.json();
-// Return client_secret to your frontend`,
-                python: `import requests
-res = requests.post('http://localhost:3005/v1/connect/account_sessions',
-  json={
-    'account': 'acct_abc123',
-    'components': { 'balances': True, 'payments': True, 'payouts': True, 'documents': True },
-    'expires_in': 3600
-  },
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-client_secret = res.json()['client_secret']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/account_sessions \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"account":"acct_abc123","components":{"balances":true,"payments":true},"expires_in":3600}'`
-            }
-        },
-        {
-            id: 'exchange-account-session',
-            method: 'POST',
-            path: '/v1/connect/account_sessions/:secret/exchange',
-            title: 'Exchange Client Secret → Portal Token',
-            description: 'Called automatically by the FlapaPay Connect JS SDK. Trades a client_secret (issued server-side) for a scoped portal_token that embedded components use for all subsequent API calls. The client_secret IS the credential — no extra authentication required.',
-            params: [],
-            response: `{
-  "portal_token": "pt_live_...",
-  "account_id": "acct_abc123",
-  "components": { "balances": true, "payments": true },
-  "expires_at": 1716003600
-}`,
-            snippets: {
-                node: `// This is called automatically by loadFlapaConnect — you don't need to call it manually.
-// Shown here for documentation purposes only.
-const res = await fetch(\`http://localhost:3005/v1/connect/account_sessions/\${clientSecret}/exchange\`, {
-  method: 'POST'
-});
-const { portal_token } = await res.json();`,
-                python: `# Called automatically by the JS SDK
-import requests
-res = requests.post(
-  f'http://localhost:3005/v1/connect/account_sessions/{client_secret}/exchange'
-)
-portal_token = res.json()['portal_token']`,
-                curl: `curl -X POST "http://localhost:3005/v1/connect/account_sessions/acs_live_eyJ.../exchange"`
-            }
-        },
-
-        // ── EMBEDDED COMPONENTS (CLIENT-SIDE SDK) ────────────────────────────────
-        {
-            id: 'embedded-components-overview',
-            method: 'GET',
-            path: '— Client SDK',
-            title: 'Embedded Components — Overview',
-            description: 'FlapaPay Embedded Components let marketplace owners mount pre-built, branded UI widgets inside their platform so sellers can view balances, transactions, payouts, and KYC status without leaving your site. Components are rendered in your React tree via FlapaConnectProvider.',
-            params: [],
-            response: `// Available components:
-// <ConnectBalances />        — balance overview + KYC status
-// <ConnectPayments />        — paginated transaction list
-// <ConnectPayouts />         — payout history + request payout
-// <ConnectDocuments />       — KYC document upload / status
-// <ConnectNotificationBanner /> — contextual alerts`,
-            snippets: {
-                node: `// 1. Install the SDK (or copy the source from apps/web/src/lib/flapaConnect.ts)
-// npm install @flapapay/connect-js   (coming soon)
-
-// 2. Load the Connect SDK
-import { loadFlapaConnect } from '@flapapay/connect-js';
-
-// 3. Fetch a client_secret from your server for the logged-in seller
-const { client_secret } = await fetch('/api/connect/session').then(r => r.json());
-
-// 4. Initialise the Connect instance
-const connectInstance = loadFlapaConnect({
-  fetchClientSecret: () => fetch('/api/connect/session').then(r => r.json()).then(d => d.client_secret),
-  appearance: {
-    variables: {
-      colorPrimary: '#ea580c',   // orange brand colour
-      borderRadius: '1rem',
-      fontFamily: 'Inter, sans-serif',
+  "status": true,
+  "message": "",
+  "data": {
+    "type": "bank-account",
+    "accountName": "Beata Jean",
+    "accountNumber": "9130000000000",
+    "bank": {
+      "id": "002",
+      "name": "Absa Bank",
+      "country": "zm"
     }
   }
-});
-
-// 5. Wrap your components
-import { FlapaConnectProvider, ConnectBalances, ConnectPayments } from '@flapapay/connect-js/react';
-
-function SellerDashboard() {
-  return (
-    <FlapaConnectProvider connectInstance={connectInstance}>
-      <ConnectBalances />
-      <ConnectPayments />
-    </FlapaConnectProvider>
-  );
-}`,
-                python: `# Python backend: return a client_secret for the authenticated seller
-from flask import Flask, jsonify, request
-import requests, os
-
-app = Flask(__name__)
-FLAPAPAY_KEY = os.environ['FLAPAPAY_SECRET_KEY']
-BASE = 'http://localhost:3005'
-
-@app.route('/api/connect/session')
-def connect_session():
-    account_id = get_current_seller_account_id()  # your auth logic
-    r = requests.post(f'{BASE}/v1/connect/account_sessions',
-        json={'account': account_id, 'components': {'balances': True, 'payments': True, 'payouts': True, 'documents': True}},
-        headers={'Authorization': f'Bearer {FLAPAPAY_KEY}'})
-    return jsonify(r.json())`,
-                curl: `# No cURL example — this is a client-side SDK concept.
-# See the Node.js tab for the full integration pattern.`
-            }
-        },
-        {
-            id: 'connect-balances-component',
-            method: 'GET',
-            path: '/v1/connect/portal/me',
-            title: 'ConnectBalances Component',
-            description: 'Shows the seller\'s available and pending balance, KYC verification status, account status badge, and payment capabilities. Requires the balances component to be enabled in the Account Session.',
-            params: [],
-            response: `{
-  "account_id": "acct_abc123",
-  "business_name": "Lusaka Crafts Ltd",
-  "kyc_status": "VERIFIED",
-  "status": "ACTIVE",
-  "available_balance": 18750.00,
-  "pending_balance": 2500.00,
-  "currency": "ZMW"
 }`,
             snippets: {
-                node: `import { ConnectBalances } from '@flapapay/connect-js/react';
-
-// Inside <FlapaConnectProvider connectInstance={...}>
-<ConnectBalances
-  onLoadError={(err) => console.error('Balances failed to load', err)}
-/>`,
-                python: `# Portal endpoint (called by the component internally)
-import requests
-res = requests.get('http://localhost:3005/v1/connect/portal/me',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})
-print(res.json())`,
-                curl: `curl http://localhost:3005/v1/connect/portal/me \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-        {
-            id: 'connect-payments-component',
-            method: 'GET',
-            path: '/v1/connect/portal/charges',
-            title: 'ConnectPayments Component',
-            description: 'Renders a paginated list of the seller\'s transactions — amount, status, date, and currency. Requires the payments component in the Account Session.',
-            params: [
-                { name: 'limit', type: 'number', required: false, desc: 'Max records to return (default 10, max 100)' },
-                { name: 'offset', type: 'number', required: false, desc: 'Pagination offset' },
-            ],
-            response: `{
-  "charges": [
-    { "id": "ch_xxx", "amount": 500.00, "currency": "ZMW", "status": "COMPLETED", "created_at": "2025-01-15T10:00:00Z" }
-  ],
-  "total": 42
-}`,
-            snippets: {
-                node: `import { ConnectPayments } from '@flapapay/connect-js/react';
-
-<ConnectPayments
-  onLoadError={(err) => console.error('Payments failed to load', err)}
-/>`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/charges?limit=10',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl "http://localhost:3005/v1/connect/portal/charges?limit=10" \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-        {
-            id: 'connect-payouts-component',
-            method: 'GET',
-            path: '/v1/connect/portal/payouts',
-            title: 'ConnectPayouts Component',
-            description: 'Shows payout history and a "Request Payout" button. When the seller clicks Request Payout, the component calls POST /v1/connect/portal/payout-requests. Requires the payouts component.',
-            params: [],
-            response: `{
-  "payouts": [
-    { "id": "po_xxx", "amount": 2000.00, "currency": "ZMW", "status": "COMPLETED", "created_at": "2025-01-14T08:00:00Z", "method": "MTN_MOMO" }
-  ]
-}`,
-            snippets: {
-                node: `import { ConnectPayouts } from '@flapapay/connect-js/react';
-
-<ConnectPayouts
-  onLoadError={(err) => console.error('Payouts failed to load', err)}
-/>`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/payouts?limit=10',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl "http://localhost:3005/v1/connect/portal/payouts?limit=10" \\
-  -H "Authorization: Bearer PORTAL_TOKEN"
-
-# Request a payout
-curl -X POST http://localhost:3005/v1/connect/portal/payout-requests \\
-  -H "Authorization: Bearer PORTAL_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"amount": 1000, "currency": "ZMW"}'`
-            }
-        },
-        {
-            id: 'connect-documents-component',
-            method: 'GET',
-            path: '/v1/connect/portal/kyc',
-            title: 'ConnectDocuments Component',
-            description: 'Displays the seller\'s uploaded KYC documents with APPROVED / PENDING / REJECTED status and review notes. Includes a file picker for uploading new documents (National ID, Passport, Business Registration, Tax Clearance, Proof of Address). Requires the documents component.',
-            params: [
-                { name: 'document_type (form field)', type: 'string', required: true, desc: 'national_id | passport | business_registration | tax_clearance | proof_of_address' },
-                { name: 'file (form field)', type: 'file', required: true, desc: 'Image (JPEG/PNG) or PDF, max 10 MB' },
-            ],
-            response: `{
-  "documents": [
-    { "id": "doc_xxx", "document_type": "national_id", "status": "APPROVED", "created_at": "2025-01-10T09:00:00Z" },
-    { "id": "doc_yyy", "document_type": "business_registration", "status": "PENDING", "review_notes": null, "created_at": "2025-01-15T11:00:00Z" }
-  ]
-}`,
-            snippets: {
-                node: `import { ConnectDocuments } from '@flapapay/connect-js/react';
-
-<ConnectDocuments
-  onLoadError={(err) => console.error('Documents failed to load', err)}
-/>`,
-                python: `# List documents
-res = requests.get('http://localhost:3005/v1/connect/portal/kyc',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})
-
-# Upload a document (multipart form)
-with open('national_id.jpg', 'rb') as f:
-    res = requests.post('http://localhost:3005/v1/connect/portal/kyc',
-        files={'file': f},
-        data={'document_type': 'national_id'},
-        headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `# List documents
-curl http://localhost:3005/v1/connect/portal/kyc \\
-  -H "Authorization: Bearer PORTAL_TOKEN"
-
-# Upload document
-curl -X POST http://localhost:3005/v1/connect/portal/kyc \\
-  -H "Authorization: Bearer PORTAL_TOKEN" \\
-  -F "document_type=national_id" \\
-  -F "file=@/path/to/national_id.jpg"`
-            }
-        },
-        {
-            id: 'connect-notification-banner',
-            method: 'GET',
-            path: '— Derived from /portal/me',
-            title: 'ConnectNotificationBanner Component',
-            description: 'Displays contextual alert banners derived from the seller\'s account state (KYC pending, KYC rejected, restricted, verification needed, or funds available). Banners are dismissible and styled by the appearance theme. Requires the notification_banner component.',
-            params: [],
-            response: `// No dedicated API call — banners are computed from /v1/connect/portal/me
-// Banner types: "warning" (KYC pending), "error" (restricted/rejected), "info" (verify), "success" (funds available)`,
-            snippets: {
-                node: `import { ConnectNotificationBanner } from '@flapapay/connect-js/react';
-
-// Place at the top of the seller dashboard — shows relevant alerts
-<ConnectNotificationBanner />`,
-                python: `# No separate endpoint — see /v1/connect/portal/me`,
-                curl: `# No separate endpoint — banners are derived from account state`
-            }
-        },
-
-        // ── KYC MANAGEMENT (PLATFORM ADMIN) ──────────────────────────────────────
-        {
-            id: 'list-kyc-documents',
-            method: 'GET',
-            path: '/v1/connect/kyc',
-            title: 'List All KYC Documents',
-            description: 'Returns all KYC documents submitted across all sub-merchants. Filter by status (PENDING, APPROVED, REJECTED) or account ID. Use this to build a KYC review queue.',
-            params: [
-                { name: 'status', type: 'string', required: false, desc: 'Filter by PENDING | APPROVED | REJECTED' },
-                { name: 'account_id', type: 'string', required: false, desc: 'Filter to a specific sub-merchant' },
-            ],
-            response: `{
-  "documents": [
-    { "id": "doc_xxx", "account_id": "acct_abc123", "document_type": "national_id", "status": "PENDING", "file_url": "https://...", "created_at": "..." }
-  ]
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/kyc?status=PENDING', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});
-const { documents } = await res.json();`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/kyc?status=PENDING',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/kyc?status=PENDING" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'review-kyc-document',
-            method: 'PATCH',
-            path: '/v1/connect/kyc/:documentId',
-            title: 'Approve / Reject KYC Document',
-            description: 'Update the review status of a KYC document. On approval the document status is set to APPROVED. On rejection, supply review_notes explaining what is wrong so the seller can resubmit.',
-            params: [
-                { name: 'status', type: 'string', required: true, desc: 'APPROVED or REJECTED' },
-                { name: 'review_notes', type: 'string', required: false, desc: 'Required when rejecting — shown to the seller in ConnectDocuments' },
-            ],
-            response: `{ "id": "doc_xxx", "status": "APPROVED", "reviewed_at": "2025-01-15T12:00:00Z" }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/kyc/doc_xxx', {
-  method: 'PATCH',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ status: 'REJECTED', review_notes: 'Document is blurry — please resubmit a clear photo.' })
-});`,
-                python: `requests.patch('http://localhost:3005/v1/connect/kyc/doc_xxx',
-  json={'status': 'REJECTED', 'review_notes': 'Document is blurry'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X PATCH http://localhost:3005/v1/connect/kyc/doc_xxx \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"status":"REJECTED","review_notes":"Document is blurry"}'`
-            }
-        },
-        {
-            id: 'bulk-approve-kyc',
-            method: 'POST',
-            path: '/v1/connect/kyc/bulk-approve',
-            title: 'Bulk Approve KYC Documents',
-            description: 'Approve multiple KYC documents in a single request. Useful when processing a backlog or during onboarding campaigns.',
-            params: [
-                { name: 'document_ids', type: 'array', required: true, desc: 'Array of document IDs to approve' },
-            ],
-            response: `{ "approved": 5, "failed": 0 }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/kyc/bulk-approve', {
+                node: `const res = await fetch('http://localhost:3005/v1/resolve/bank-account', {
   method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ document_ids: ['doc_1', 'doc_2', 'doc_3'] })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/kyc/bulk-approve',
-  json={'document_ids': ['doc_1', 'doc_2', 'doc_3']},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/kyc/bulk-approve \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"document_ids":["doc_1","doc_2","doc_3"]}'`
-            }
-        },
-
-        // ── PAYOUT METHODS ────────────────────────────────────────────────────────
-        {
-            id: 'add-payout-method',
-            method: 'POST',
-            path: '/v1/connect/accounts/:id/payout-methods',
-            title: 'Add Payout Method',
-            description: 'Register a mobile money wallet or bank account as the sub-merchant\'s payout destination. Supported networks: MTN_MOMO, AIRTEL_MONEY, ZAMTEL_KWACHA (Zambia), and bank via LENCO.',
-            params: [
-                { name: 'type', type: 'string', required: true, desc: 'mobile_money or bank_account' },
-                { name: 'network', type: 'string', required: false, desc: 'MTN_MOMO | AIRTEL_MONEY | ZAMTEL_KWACHA (required for mobile_money)' },
-                { name: 'phone_number', type: 'string', required: false, desc: 'E.164 phone number e.g. +260976XXXXXX' },
-                { name: 'bank_code', type: 'string', required: false, desc: 'Bank sort code (required for bank_account)' },
-                { name: 'account_number', type: 'string', required: false, desc: 'Bank account number' },
-                { name: 'account_name', type: 'string', required: false, desc: 'Account holder name (bank only)' },
-            ],
-            response: `{ "id": "pm_xxx", "type": "mobile_money", "network": "MTN_MOMO", "phone_number": "+260976XXXXXX", "is_default": true }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ type: 'mobile_money', network: 'MTN_MOMO', phone_number: '+260976XXXXXX' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods',
-  json={'type': 'mobile_money', 'network': 'MTN_MOMO', 'phone_number': '+260976XXXXXX'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"type":"mobile_money","network":"MTN_MOMO","phone_number":"+260976XXXXXX"}'`
-            }
-        },
-        {
-            id: 'list-payout-methods',
-            method: 'GET',
-            path: '/v1/connect/accounts/:id/payout-methods',
-            title: 'List Payout Methods',
-            description: 'Retrieve all registered payout destinations for a sub-merchant.',
-            params: [],
-            response: `[{ "id": "pm_xxx", "type": "mobile_money", "network": "MTN_MOMO", "phone_number": "+260976XXXXXX", "is_default": true }]`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl http://localhost:3005/v1/connect/accounts/acct_abc123/payout-methods \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-
-        // ── BULK PAYOUTS ──────────────────────────────────────────────────────────
-        {
-            id: 'bulk-payout',
-            method: 'POST',
-            path: '/v1/connect/payouts/bulk',
-            title: 'Bulk Payout',
-            description: 'Disburse funds to multiple sub-merchants in a single API call. The platform wallet is debited atomically. Returns a batch ID for tracking.',
-            params: [
-                { name: 'payouts', type: 'array', required: true, desc: 'Array of { account_id, amount, currency, note? }' },
-            ],
-            response: `{ "batch_id": "batch_xxx", "total_count": 10, "total_amount": 5000.00, "currency": "ZMW", "status": "PROCESSING" }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/payouts/bulk', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    payouts: [
-      { account_id: 'acct_1', amount: 500, currency: 'ZMW' },
-      { account_id: 'acct_2', amount: 750, currency: 'ZMW' },
-    ]
-  })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/payouts/bulk',
-  json={'payouts': [{'account_id': 'acct_1', 'amount': 500, 'currency': 'ZMW'}]},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/payouts/bulk \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"payouts":[{"account_id":"acct_1","amount":500,"currency":"ZMW"}]}'`
-            }
-        },
-        {
-            id: 'auto-payout-schedule',
-            method: 'POST',
-            path: '/v1/connect/accounts/:id/auto-payout',
-            title: 'Set Auto-Payout Schedule',
-            description: 'Configure an automatic recurring payout schedule for a specific sub-merchant. Overrides the platform-wide default for this account.',
-            params: [
-                { name: 'enabled', type: 'boolean', required: true, desc: 'Enable or disable auto-payout' },
-                { name: 'schedule', type: 'string', required: true, desc: 'daily | weekly | monthly' },
-                { name: 'min_threshold', type: 'number', required: false, desc: 'Minimum balance required before triggering payout' },
-            ],
-            response: `{ "account_id": "acct_abc123", "auto_payout_enabled": true, "schedule": "weekly", "min_threshold": 100.00 }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/auto-payout', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ enabled: true, schedule: 'weekly', min_threshold: 100 })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/accounts/acct_abc123/auto-payout',
-  json={'enabled': True, 'schedule': 'weekly', 'min_threshold': 100},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/accounts/acct_abc123/auto-payout \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"enabled":true,"schedule":"weekly","min_threshold":100}'`
-            }
-        },
-
-        // ── CHARGES & SPLITS ──────────────────────────────────────────────────────
-        {
-            id: 'list-connect-charges',
-            method: 'GET',
-            path: '/v1/connect/charges',
-            title: 'List All Charges',
-            description: 'Retrieve all charges processed through your marketplace, including split details, platform fees, and per-transaction sub-merchant credits.',
-            params: [
-                { name: 'account_id', type: 'string', required: false, desc: 'Filter to a specific sub-merchant' },
-                { name: 'from', type: 'string', required: false, desc: 'ISO 8601 start date' },
-                { name: 'to', type: 'string', required: false, desc: 'ISO 8601 end date' },
-                { name: 'limit', type: 'number', required: false, desc: 'Default 20, max 100' },
-            ],
-            response: `{
-  "charges": [{ "id": "ch_xxx", "amount": 1000, "platform_fee": 50, "net_to_seller": 950, "account_id": "acct_abc123", "status": "COMPLETED" }],
-  "total": 150
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/charges?account_id=acct_abc123&limit=20', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/charges',
-  params={'account_id': 'acct_abc123', 'limit': 20},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/charges?account_id=acct_abc123&limit=20" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-
-        // ── DISPUTES ──────────────────────────────────────────────────────────────
-        {
-            id: 'create-dispute',
-            method: 'POST',
-            path: '/v1/connect/disputes',
-            title: 'Create Dispute',
-            description: 'Open a dispute on behalf of a buyer against a charge. The charge amount is held pending resolution. The marketplace owner arbitrates by calling the update endpoint.',
-            params: [
-                { name: 'charge_id', type: 'string', required: true, desc: 'Charge ID to dispute' },
-                { name: 'reason', type: 'string', required: true, desc: 'product_not_received | product_unacceptable | fraudulent | duplicate' },
-                { name: 'description', type: 'string', required: false, desc: 'Buyer\'s description of the issue' },
-            ],
-            response: `{ "id": "dis_xxx", "charge_id": "ch_xxx", "status": "OPEN", "reason": "product_not_received", "created_at": "..." }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/disputes', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ charge_id: 'ch_xxx', reason: 'product_not_received', description: 'Item never arrived' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/disputes',
-  json={'charge_id': 'ch_xxx', 'reason': 'product_not_received', 'description': 'Item never arrived'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/disputes \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"charge_id":"ch_xxx","reason":"product_not_received","description":"Item never arrived"}'`
-            }
-        },
-        {
-            id: 'update-dispute',
-            method: 'PATCH',
-            path: '/v1/connect/disputes/:id',
-            title: 'Update / Resolve Dispute',
-            description: 'Marketplace owner resolves a dispute. Set status to WON (refund buyer, claw back seller funds) or LOST (release funds to seller). Optionally upload evidence files via the evidence_files endpoint first.',
-            params: [
-                { name: 'status', type: 'string', required: true, desc: 'WON | LOST | UNDER_REVIEW' },
-                { name: 'resolution_notes', type: 'string', required: false, desc: 'Internal notes about the decision' },
-            ],
-            response: `{ "id": "dis_xxx", "status": "WON", "resolution_notes": "Buyer provided shipping evidence", "resolved_at": "..." }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/disputes/dis_xxx', {
-  method: 'PATCH',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ status: 'WON', resolution_notes: 'Buyer confirmed non-delivery' })
-});`,
-                python: `requests.patch('http://localhost:3005/v1/connect/disputes/dis_xxx',
-  json={'status': 'WON', 'resolution_notes': 'Buyer confirmed non-delivery'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X PATCH http://localhost:3005/v1/connect/disputes/dis_xxx \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"status":"WON","resolution_notes":"Buyer confirmed non-delivery"}'`
-            }
-        },
-
-        // ── RISK MANAGEMENT ───────────────────────────────────────────────────────
-        {
-            id: 'risk-rules',
-            method: 'GET',
-            path: '/v1/connect/risk/rules',
-            title: 'List Risk Rules',
-            description: 'Retrieve all fraud and risk rules configured for your marketplace. Rules automatically flag or block transactions based on velocity, amount, country, or account status.',
-            params: [],
-            response: `{
-  "rules": [
-    { "id": "rule_xxx", "name": "High amount block", "condition": "amount > 50000", "action": "BLOCK", "enabled": true }
-  ]
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/risk/rules', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/risk/rules',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl http://localhost:3005/v1/connect/risk/rules \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'create-risk-rule',
-            method: 'POST',
-            path: '/v1/connect/risk/rules',
-            title: 'Create Risk Rule',
-            description: 'Define a new automated risk rule. Supports amount thresholds, velocity limits (transactions per hour), country blocklists, and account-status checks.',
-            params: [
-                { name: 'name', type: 'string', required: true, desc: 'Rule name' },
-                { name: 'condition', type: 'string', required: true, desc: 'Rule expression e.g. "amount > 50000" or "tx_per_hour > 20"' },
-                { name: 'action', type: 'string', required: true, desc: 'BLOCK | FLAG | NOTIFY' },
-                { name: 'enabled', type: 'boolean', required: false, desc: 'Default true' },
-            ],
-            response: `{ "id": "rule_yyy", "name": "Velocity limit", "condition": "tx_per_hour > 20", "action": "FLAG", "enabled": true }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/risk/rules', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ name: 'Velocity limit', condition: 'tx_per_hour > 20', action: 'FLAG' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/risk/rules',
-  json={'name': 'Velocity limit', 'condition': 'tx_per_hour > 20', 'action': 'FLAG'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/risk/rules \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"name":"Velocity limit","condition":"tx_per_hour > 20","action":"FLAG"}'`
-            }
-        },
-
-        // ── FEE CONFIGURATION ─────────────────────────────────────────────────────
-        {
-            id: 'fee-tiers',
-            method: 'GET',
-            path: '/v1/connect/fee-tiers',
-            title: 'List Fee Tiers',
-            description: 'Retrieve volume-based fee tiers. Sub-merchants automatically move to lower fee brackets as their monthly GMV increases.',
-            params: [],
-            response: `{
-  "tiers": [
-    { "id": "tier_1", "min_volume": 0, "max_volume": 10000, "fee_percent": 3.0 },
-    { "id": "tier_2", "min_volume": 10001, "max_volume": 100000, "fee_percent": 2.0 },
-    { "id": "tier_3", "min_volume": 100001, "max_volume": null, "fee_percent": 1.5 }
-  ]
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/fee-tiers', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/fee-tiers',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl http://localhost:3005/v1/connect/fee-tiers \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'per-account-fee-override',
-            method: 'POST',
-            path: '/v1/connect/accounts/:id/fee-override',
-            title: 'Set Per-account Fee Override',
-            description: 'Override the platform fee percentage for a specific sub-merchant. Useful for VIP sellers, negotiated rates, or promotional periods.',
-            params: [
-                { name: 'fee_percent', type: 'number', required: true, desc: 'Custom fee % (0–20)' },
-                { name: 'reason', type: 'string', required: false, desc: 'Internal note about why the override was applied' },
-                { name: 'expires_at', type: 'string', required: false, desc: 'ISO 8601 date when the override expires' },
-            ],
-            response: `{ "account_id": "acct_abc123", "fee_percent": 1.0, "reason": "VIP seller", "expires_at": "2026-01-01T00:00:00Z" }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/fee-override', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ fee_percent: 1.0, reason: 'VIP seller', expires_at: '2026-01-01T00:00:00Z' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/accounts/acct_abc123/fee-override',
-  json={'fee_percent': 1.0, 'reason': 'VIP seller'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/accounts/acct_abc123/fee-override \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"fee_percent":1.0,"reason":"VIP seller"}'`
-            }
-        },
-
-        // ── WEBHOOKS ──────────────────────────────────────────────────────────────
-        {
-            id: 'register-connect-webhook',
-            method: 'POST',
-            path: '/v1/connect/webhooks',
-            title: 'Register Connect Webhook',
-            description: 'Subscribe to Connect platform events. FlapaPay will POST a signed JSON payload to your endpoint when events occur. Sign verification uses HMAC-SHA256 with your webhook secret.',
-            params: [
-                { name: 'url', type: 'string', required: true, desc: 'HTTPS endpoint that will receive events' },
-                { name: 'events', type: 'array', required: true, desc: 'Event types: account.created, kyc.approved, kyc.rejected, payout.completed, payout.failed, charge.completed, dispute.opened, dispute.resolved' },
-                { name: 'description', type: 'string', required: false, desc: 'Human-readable label' },
-            ],
-            response: `{ "id": "wh_xxx", "url": "https://yourapp.com/webhooks/connect", "events": ["kyc.approved", "payout.completed"], "secret": "whsec_xxx" }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/webhooks', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    url: 'https://yourapp.com/webhooks/connect',
-    events: ['kyc.approved', 'kyc.rejected', 'payout.completed', 'payout.failed', 'dispute.opened']
-  })
-});
-const { secret } = await res.json(); // store this securely`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/webhooks',
-  json={
-    'url': 'https://yourapp.com/webhooks/connect',
-    'events': ['kyc.approved', 'payout.completed']
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
   },
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-secret = res.json()['secret']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/webhooks \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"url":"https://yourapp.com/webhooks/connect","events":["kyc.approved","payout.completed"]}'`
+  body: JSON.stringify({
+    accountNumber: '9130000000000',
+    bankId: '002',
+    country: 'zm'
+  })
+});
+const resolved = await res.json();`,
+                python: `import requests, os
+resolved = requests.post(
+  'http://localhost:3005/v1/resolve/bank-account',
+  json={'accountNumber': '9130000000000', 'bankId': '002', 'country': 'zm'},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/resolve/bank-account \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"accountNumber":"9130000000000","bankId":"002","country":"zm"}'`
             }
         },
         {
-            id: 'connect-webhook-events',
-            method: 'GET',
-            path: '/v1/connect/webhooks/:id/deliveries',
-            title: 'Webhook Delivery Logs',
-            description: 'Inspect delivery history for a webhook endpoint — request/response bodies, HTTP status codes, and retry attempts. Essential for debugging integration issues.',
+            id: 'resolve-mobile-money',
+            method: 'POST',
+            path: '/v1/resolve/mobile-money',
+            title: 'Resolve Mobile Money',
+            badge: 'Accounts',
+            description: 'Resolve a mobile money account name before collection or transfer. Supported operators depend on country.',
             params: [
-                { name: 'status', type: 'string', required: false, desc: 'Filter by delivered | failed | pending' },
+                { name: 'phone', type: 'string', required: true, desc: 'Customer mobile money number' },
+                { name: 'operator', type: 'string', required: true, desc: 'Operator like "mtn", "airtel", or "zamtel"' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
             ],
             response: `{
-  "deliveries": [
-    { "id": "del_xxx", "event": "payout.completed", "status": "delivered", "http_status": 200, "delivered_at": "...", "attempts": 1 }
+  "status": true,
+  "message": "",
+  "data": {
+    "type": "mobile-money",
+    "accountName": "Beata Jean",
+    "phone": "0750000000",
+    "operator": "zamtel",
+    "country": "zm"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/resolve/mobile-money', {
+  method: 'POST',
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    phone: '0961111111',
+    operator: 'mtn',
+    country: 'zm'
+  })
+});
+const resolved = await res.json();`,
+                python: `import requests, os
+resolved = requests.post(
+  'http://localhost:3005/v1/resolve/mobile-money',
+  json={'phone': '0961111111', 'operator': 'mtn', 'country': 'zm'},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/resolve/mobile-money \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"phone":"0961111111","operator":"mtn","country":"zm"}'`
+            }
+        },
+        {
+            id: 'transfer-bank-account',
+            method: 'POST',
+            path: '/v1/transfers/bank-account',
+            title: 'Transfer To Bank Account',
+            badge: 'Transfers',
+            description: 'Initiate an outbound bank-account transfer from a merchant wallet. FlapaPay debits the wallet, writes ledger entries, and tracks provider status under the same transfer reference.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: true, desc: 'Merchant wallet to debit' },
+                { name: 'amount', type: 'number', required: true, desc: 'Transfer amount in wallet currency' },
+                { name: 'reference', type: 'string', required: true, desc: 'Unique client transfer reference' },
+                { name: 'accountNumber', type: 'string', required: true, desc: 'Destination account number' },
+                { name: 'bankId', type: 'string', required: true, desc: 'Destination bank ID from GET /v1/banks' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
+                { name: 'narration', type: 'string', required: false, desc: 'Transfer narration shown in processor rails where supported' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "9525b4c6-502b-45be-90e1-81eb81a3f424",
+    "amount": "20.00",
+    "fee": "8.50",
+    "currency": "ZMW",
+    "narration": "Vendor payout",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": null,
+    "walletId": "wal_xxx",
+    "creditAccount": {
+      "type": "bank-account",
+      "accountName": "Beata Jean",
+      "accountNumber": "9130000000000",
+      "bank": { "id": "002", "name": "Absa Bank", "country": "zm" }
+    },
+    "status": "pending",
+    "reasonForFailure": null,
+    "reference": "trf_001",
+    "settlementStatus": "pending",
+    "source": "api"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/transfers/bank-account', {
+  method: 'POST',
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    wallet_id: 'wal_123',
+    amount: 20,
+    reference: 'trf_001',
+    narration: 'Vendor payout',
+    accountNumber: '9130000000000',
+    bankId: '002',
+    country: 'zm'
+  })
+});
+const transfer = await res.json();`,
+                python: `import requests, os
+transfer = requests.post(
+  'http://localhost:3005/v1/transfers/bank-account',
+  json={
+    'wallet_id': 'wal_123',
+    'amount': 20,
+    'reference': 'trf_001',
+    'narration': 'Vendor payout',
+    'accountNumber': '9130000000000',
+    'bankId': '002',
+    'country': 'zm'
+  },
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/transfers/bank-account \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "wallet_id": "wal_123",
+    "amount": 20,
+    "reference": "trf_001",
+    "narration": "Vendor payout",
+    "accountNumber": "9130000000000",
+    "bankId": "002",
+    "country": "zm"
+  }'`
+            }
+        },
+        {
+            id: 'list-transfer-recipients',
+            method: 'GET',
+            path: '/v1/transfer-recipients',
+            title: 'List Transfer Recipients',
+            badge: 'Recipients',
+            description: 'Fetch reusable bank recipients saved under your merchant profile for payout setup and repeat transfers.',
+            params: [],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": [
+    {
+      "id": "rcp_123",
+      "type": "bank-account",
+      "accountName": "Beata Jean",
+      "accountNumber": "9130000000000",
+      "bank": { "id": "002", "name": "Absa Bank", "country": "zm" },
+      "isDefault": true,
+      "createdAt": "2026-07-30T10:00:00.000Z"
+    }
   ]
 }`,
             snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/webhooks/wh_xxx/deliveries?status=failed', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/webhooks/wh_xxx/deliveries',
-  params={'status': 'failed'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/webhooks/wh_xxx/deliveries?status=failed" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'retry-webhook',
-            method: 'POST',
-            path: '/v1/connect/webhooks/:id/retry',
-            title: 'Retry Failed Webhook Delivery',
-            description: 'Immediately retry a specific failed webhook delivery. FlapaPay also automatically retries failed deliveries with exponential backoff (5 attempts, up to 24 hours).',
-            params: [
-                { name: 'delivery_id', type: 'string', required: true, desc: 'Delivery ID to retry' },
-            ],
-            response: `{ "delivery_id": "del_xxx", "status": "retrying" }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/webhooks/wh_xxx/retry', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ delivery_id: 'del_xxx' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/webhooks/wh_xxx/retry',
-  json={'delivery_id': 'del_xxx'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/webhooks/wh_xxx/retry \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"delivery_id":"del_xxx"}'`
-            }
-        },
-
-        // ── INVITES & ONBOARDING ──────────────────────────────────────────────────
-        {
-            id: 'create-invite',
-            method: 'POST',
-            path: '/v1/connect/invites',
-            title: 'Create Seller Invite',
-            description: 'Generate a one-time invite link that a prospective seller uses to register on your marketplace. The invite pre-populates their email and links their account to your platform.',
-            params: [
-                { name: 'email', type: 'string', required: true, desc: 'Prospective seller\'s email address' },
-                { name: 'business_name', type: 'string', required: false, desc: 'Pre-fill their business name' },
-                { name: 'expires_in', type: 'number', required: false, desc: 'Invite validity in seconds (default 604800 = 7 days)' },
-                { name: 'metadata', type: 'object', required: false, desc: 'Any key-value data to attach to the invite (e.g., referral source)' },
-            ],
-            response: `{ "id": "inv_xxx", "email": "seller@example.com", "invite_url": "https://yourmarketplace.com/join?token=abc123", "expires_at": "...", "status": "PENDING" }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/invites', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: 'seller@example.com', business_name: 'ABC Suppliers', expires_in: 604800 })
+                node: `const res = await fetch('http://localhost:3005/v1/transfer-recipients', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
 });
-const { invite_url } = await res.json();
-// Email invite_url to the seller`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/invites',
-  json={'email': 'seller@example.com', 'business_name': 'ABC Suppliers'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-invite_url = res.json()['invite_url']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/invites \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"email":"seller@example.com","business_name":"ABC Suppliers"}'`
+const recipients = await res.json();`,
+                python: `import requests, os
+recipients = requests.get(
+  'http://localhost:3005/v1/transfer-recipients',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/transfer-recipients" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
             }
         },
         {
-            id: 'hosted-onboarding',
+            id: 'create-transfer-recipient',
             method: 'POST',
-            path: '/v1/connect/accounts/:id/onboarding-link',
-            title: 'Create Hosted Onboarding Link',
-            description: 'Generate a time-limited URL that takes an existing sub-merchant through the FlapaPay hosted onboarding flow (KYC upload, payout method setup, T&C acceptance). Redirect the seller to this URL.',
+            path: '/v1/transfer-recipients',
+            title: 'Create Transfer Recipient',
+            badge: 'Recipients',
+            description: 'Resolve a bank account and store it as a reusable FlapaPay transfer recipient under the merchant account.',
             params: [
-                { name: 'return_url', type: 'string', required: true, desc: 'URL to redirect the seller back to after completing onboarding' },
-                { name: 'refresh_url', type: 'string', required: true, desc: 'URL FlapaPay calls if the link expires before completion' },
+                { name: 'accountNumber', type: 'string', required: true, desc: 'Destination bank account number' },
+                { name: 'bankId', type: 'string', required: true, desc: 'Bank identifier returned by GET /v1/banks' },
+                { name: 'bankName', type: 'string', required: false, desc: 'Bank display name if you want to store it alongside the bank ID' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
+                { name: 'isDefault', type: 'boolean', required: false, desc: 'Mark this recipient as the default payout destination' },
             ],
-            response: `{ "url": "https://connect.flapapay.com/onboard/acs_xxx", "expires_at": 1716003600 }`,
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "rcp_123",
+    "type": "bank-account",
+    "accountName": "Beata Jean",
+    "accountNumber": "9130000000000",
+    "bank": { "id": "002", "name": "Absa Bank", "country": "zm" },
+    "isDefault": true,
+    "createdAt": "2026-07-30T10:00:00.000Z"
+  }
+}`,
             snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/onboarding-link', {
+                node: `const res = await fetch('http://localhost:3005/v1/transfer-recipients', {
   method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({
-    return_url: 'https://yourapp.com/seller/onboarding-complete',
-    refresh_url: 'https://yourapp.com/seller/onboarding-refresh'
+    accountNumber: '9130000000000',
+    bankId: '002',
+    bankName: 'Absa Bank',
+    country: 'zm',
+    isDefault: true
   })
 });
-const { url } = await res.json();
-// Redirect the seller to url`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/accounts/acct_abc123/onboarding-link',
+const recipient = await res.json();`,
+                python: `import requests, os
+recipient = requests.post(
+  'http://localhost:3005/v1/transfer-recipients',
   json={
-    'return_url': 'https://yourapp.com/seller/onboarding-complete',
-    'refresh_url': 'https://yourapp.com/seller/onboarding-refresh'
+    'accountNumber': '9130000000000',
+    'bankId': '002',
+    'bankName': 'Absa Bank',
+    'country': 'zm',
+    'isDefault': True
   },
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-url = res.json()['url']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/accounts/acct_abc123/onboarding-link \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"return_url":"https://yourapp.com/seller/onboarding-complete","refresh_url":"https://yourapp.com/seller/onboarding-refresh"}'`
-            }
-        },
-
-        // ── ANALYTICS & REPORTING ─────────────────────────────────────────────────
-        {
-            id: 'connect-analytics',
-            method: 'GET',
-            path: '/v1/connect/analytics',
-            title: 'Platform Analytics',
-            description: 'Aggregated marketplace analytics: GMV, platform fee revenue, active seller count, payout totals, and dispute rate — broken down by time period.',
-            params: [
-                { name: 'from', type: 'string', required: false, desc: 'ISO 8601 start date' },
-                { name: 'to', type: 'string', required: false, desc: 'ISO 8601 end date' },
-                { name: 'granularity', type: 'string', required: false, desc: 'day | week | month (default day)' },
-            ],
-            response: `{
-  "period": { "from": "2025-01-01", "to": "2025-01-31" },
-  "gmv": 1250000,
-  "platform_revenue": 31250,
-  "active_sellers": 38,
-  "payouts_total": 1100000,
-  "dispute_rate": 0.012,
-  "series": [{ "date": "2025-01-01", "gmv": 45000, "revenue": 1125 }]
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/analytics?from=2025-01-01&to=2025-01-31&granularity=day', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/analytics',
-  params={'from': '2025-01-01', 'to': '2025-01-31', 'granularity': 'day'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/analytics?from=2025-01-01&to=2025-01-31&granularity=day" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'connect-ledger',
-            method: 'GET',
-            path: '/v1/connect/accounts/:id/ledger',
-            title: 'Account Ledger',
-            description: 'Full transaction-by-transaction ledger for a sub-merchant account — credits, debits, fees, payouts, and running balance.',
-            params: [
-                { name: 'from', type: 'string', required: false, desc: 'ISO 8601 start date' },
-                { name: 'to', type: 'string', required: false, desc: 'ISO 8601 end date' },
-                { name: 'limit', type: 'number', required: false, desc: 'Default 50, max 500' },
-            ],
-            response: `{
-  "entries": [
-    { "id": "led_xxx", "type": "CREDIT", "amount": 950, "fee": 50, "balance_after": 4750, "description": "Payment from customer", "created_at": "..." }
-  ],
-  "opening_balance": 3800,
-  "closing_balance": 4750
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/accounts/acct_abc123/ledger?from=2025-01-01', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/accounts/acct_abc123/ledger',
-  params={'from': '2025-01-01', 'limit': 100},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/accounts/acct_abc123/ledger?from=2025-01-01" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'export-report',
-            method: 'POST',
-            path: '/v1/connect/reports/export',
-            title: 'Export Report (CSV / PDF)',
-            description: 'Queue an async report export for a date range. The response includes a download_url that becomes available once the report is generated (poll GET /v1/connect/reports/:id).',
-            params: [
-                { name: 'type', type: 'string', required: true, desc: 'transactions | payouts | fees | kyc | disputes' },
-                { name: 'format', type: 'string', required: true, desc: 'csv | pdf' },
-                { name: 'from', type: 'string', required: true, desc: 'ISO 8601 start date' },
-                { name: 'to', type: 'string', required: true, desc: 'ISO 8601 end date' },
-                { name: 'account_id', type: 'string', required: false, desc: 'Limit to a single sub-merchant' },
-            ],
-            response: `{ "report_id": "rpt_xxx", "status": "PENDING", "download_url": null }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/reports/export', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ type: 'transactions', format: 'csv', from: '2025-01-01', to: '2025-01-31' })
-});
-const { report_id } = await res.json();
-// Poll GET /v1/connect/reports/report_id until status === 'READY'`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/reports/export',
-  json={'type': 'transactions', 'format': 'csv', 'from': '2025-01-01', 'to': '2025-01-31'},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})
-report_id = res.json()['report_id']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/reports/export \\
-  -H "Authorization: Bearer MERCHANT_API_KEY" \\
-  -d '{"type":"transactions","format":"csv","from":"2025-01-01","to":"2025-01-31"}'`
-            }
-        },
-
-        // ── SELLER PORTAL ENDPOINTS ───────────────────────────────────────────────
-        {
-            id: 'portal-login',
-            method: 'POST',
-            path: '/v1/connect/portal/login',
-            title: 'Portal Login (Direct)',
-            description: 'Authenticate a sub-merchant directly using email + password if they have standalone portal credentials. Returns a portal_token for subsequent portal API calls. For embedded components, prefer the Account Session flow instead.',
-            params: [
-                { name: 'email', type: 'string', required: true, desc: 'Sub-merchant email' },
-                { name: 'password', type: 'string', required: true, desc: 'Sub-merchant password' },
-            ],
-            response: `{ "portal_token": "pt_live_...", "account_id": "acct_abc123", "expires_at": 1716003600 }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/portal/login', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: 'seller@example.com', password: 'password' })
-});
-const { portal_token } = await res.json();`,
-                python: `res = requests.post('http://localhost:3005/v1/connect/portal/login',
-  json={'email': 'seller@example.com', 'password': 'password'})
-portal_token = res.json()['portal_token']`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/portal/login \\
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/transfer-recipients \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"email":"seller@example.com","password":"password"}'`
+  -d '{"accountNumber":"9130000000000","bankId":"002","bankName":"Absa Bank","country":"zm","isDefault":true}'`
             }
         },
         {
-            id: 'portal-me',
+            id: 'get-transfer-recipient',
             method: 'GET',
-            path: '/v1/connect/portal/me',
-            title: 'Portal — Get My Account',
-            description: 'Returns the authenticated seller\'s account details — balance, KYC status, business information, and enabled capabilities. This is the primary data source for ConnectBalances and ConnectNotificationBanner.',
-            params: [],
-            response: `{
-  "account_id": "acct_abc123",
-  "business_name": "Lusaka Crafts Ltd",
-  "email": "seller@example.com",
-  "kyc_status": "VERIFIED",
-  "status": "ACTIVE",
-  "available_balance": 18750.00,
-  "pending_balance": 2500.00,
-  "currency": "ZMW",
-  "capabilities": { "transfers": true, "payouts": true }
-}`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/portal/me', {
-  headers: { 'Authorization': 'Bearer PORTAL_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/me',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl http://localhost:3005/v1/connect/portal/me \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-        {
-            id: 'portal-charges',
-            method: 'GET',
-            path: '/v1/connect/portal/charges',
-            title: 'Portal — My Charges',
-            description: 'List transactions processed for the authenticated seller — scoped to their account only. Supports pagination and date filters.',
+            path: '/v1/transfer-recipients/:id',
+            title: 'Get Transfer Recipient',
+            badge: 'Recipients',
+            description: 'Fetch one saved bank recipient by FlapaPay recipient ID.',
             params: [
-                { name: 'limit', type: 'number', required: false, desc: 'Default 10, max 100' },
-                { name: 'offset', type: 'number', required: false, desc: 'Pagination offset' },
-            ],
-            response: `{ "charges": [{ "id": "ch_xxx", "amount": 500, "currency": "ZMW", "status": "COMPLETED", "created_at": "..." }], "total": 42 }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/portal/charges?limit=10', {
-  headers: { 'Authorization': 'Bearer PORTAL_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/charges?limit=10',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl "http://localhost:3005/v1/connect/portal/charges?limit=10" \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-        {
-            id: 'portal-payouts',
-            method: 'GET',
-            path: '/v1/connect/portal/payouts',
-            title: 'Portal — My Payouts',
-            description: 'List payout history for the authenticated seller. Shows amount, destination network, and status.',
-            params: [
-                { name: 'limit', type: 'number', required: false, desc: 'Default 10' },
-            ],
-            response: `{ "payouts": [{ "id": "po_xxx", "amount": 2000, "currency": "ZMW", "status": "COMPLETED", "method": "MTN_MOMO", "created_at": "..." }] }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/portal/payouts?limit=10', {
-  headers: { 'Authorization': 'Bearer PORTAL_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/payouts?limit=10',
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl "http://localhost:3005/v1/connect/portal/payouts?limit=10" \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-        {
-            id: 'portal-payout-request',
-            method: 'POST',
-            path: '/v1/connect/portal/payout-requests',
-            title: 'Portal — Request Payout',
-            description: 'Seller initiates a withdrawal of their available balance to their registered payout method. The marketplace owner reviews and approves via the Connect Dashboard, or auto-approval fires if auto_payout_enabled.',
-            params: [
-                { name: 'amount', type: 'number', required: false, desc: 'Amount to withdraw — defaults to full available balance' },
-                { name: 'currency', type: 'string', required: false, desc: 'Default: account currency (ZMW)' },
-            ],
-            response: `{ "id": "pr_xxx", "amount": 18750.00, "currency": "ZMW", "status": "PENDING", "created_at": "..." }`,
-            snippets: {
-                node: `await fetch('http://localhost:3005/v1/connect/portal/payout-requests', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer PORTAL_TOKEN', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ amount: 5000, currency: 'ZMW' })
-});`,
-                python: `requests.post('http://localhost:3005/v1/connect/portal/payout-requests',
-  json={'amount': 5000, 'currency': 'ZMW'},
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl -X POST http://localhost:3005/v1/connect/portal/payout-requests \\
-  -H "Authorization: Bearer PORTAL_TOKEN" \\
-  -d '{"amount":5000,"currency":"ZMW"}'`
-            }
-        },
-        {
-            id: 'portal-statements',
-            method: 'GET',
-            path: '/v1/connect/portal/statements',
-            title: 'Portal — Account Statements',
-            description: 'Monthly account statements for the seller — downloadable as PDF. Each statement summarises opening balance, credits, debits, fees, payouts, and closing balance.',
-            params: [
-                { name: 'year', type: 'number', required: false, desc: 'Filter by year (e.g., 2025)' },
-                { name: 'month', type: 'number', required: false, desc: 'Filter by month (1–12)' },
-            ],
-            response: `{ "statements": [{ "id": "stmt_xxx", "period": "2025-01", "download_url": "https://...", "status": "READY" }] }`,
-            snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/portal/statements?year=2025', {
-  headers: { 'Authorization': 'Bearer PORTAL_TOKEN' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/portal/statements',
-  params={'year': 2025},
-  headers={'Authorization': 'Bearer PORTAL_TOKEN'})`,
-                curl: `curl "http://localhost:3005/v1/connect/portal/statements?year=2025" \\
-  -H "Authorization: Bearer PORTAL_TOKEN"`
-            }
-        },
-
-        // ── NOTIFICATIONS ─────────────────────────────────────────────────────────
-        {
-            id: 'connect-notifications',
-            method: 'GET',
-            path: '/v1/connect/notifications',
-            title: 'List Platform Notifications',
-            description: 'Retrieve notifications for the marketplace owner — KYC review alerts, payout completions, disputes opened, and risk events. Supports unread-only filtering.',
-            params: [
-                { name: 'unread_only', type: 'boolean', required: false, desc: 'Return only unread notifications' },
-                { name: 'limit', type: 'number', required: false, desc: 'Default 20' },
+                { name: 'id', type: 'string', required: true, desc: 'Transfer recipient identifier returned by creation or list calls' },
             ],
             response: `{
-  "notifications": [
-    { "id": "notif_xxx", "type": "kyc.submitted", "message": "Lusaka Crafts Ltd submitted a National ID", "read": false, "created_at": "..." }
-  ],
-  "unread_count": 4
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "rcp_123",
+    "type": "bank-account",
+    "accountName": "Beata Jean",
+    "accountNumber": "9130000000000",
+    "bank": { "id": "002", "name": "Absa Bank", "country": "zm" },
+    "isDefault": true,
+    "createdAt": "2026-07-30T10:00:00.000Z"
+  }
 }`,
             snippets: {
-                node: `const res = await fetch('http://localhost:3005/v1/connect/notifications?unread_only=true', {
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
-});`,
-                python: `res = requests.get('http://localhost:3005/v1/connect/notifications',
-  params={'unread_only': True},
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl "http://localhost:3005/v1/connect/notifications?unread_only=true" \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
-            }
-        },
-        {
-            id: 'mark-notification-read',
-            method: 'PATCH',
-            path: '/v1/connect/notifications/:id/read',
-            title: 'Mark Notification as Read',
-            description: 'Mark a single notification as read, or pass { all: true } in the body to mark all as read.',
-            params: [
-                { name: 'all', type: 'boolean', required: false, desc: 'Set to true to mark ALL notifications as read' },
-            ],
-            response: `{ "updated": 1 }`,
-            snippets: {
-                node: `// Mark one
-await fetch('http://localhost:3005/v1/connect/notifications/notif_xxx/read', {
-  method: 'PATCH',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY' }
+                node: `const res = await fetch('http://localhost:3005/v1/transfer-recipients/rcp_123', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
 });
-
-// Mark all
-await fetch('http://localhost:3005/v1/connect/notifications/all/read', {
-  method: 'PATCH',
-  headers: { 'Authorization': 'Bearer MERCHANT_API_KEY', 'Content-Type': 'application/json' },
-  body: JSON.stringify({ all: true })
-});`,
-                python: `requests.patch('http://localhost:3005/v1/connect/notifications/notif_xxx/read',
-  headers={'Authorization': 'Bearer MERCHANT_API_KEY'})`,
-                curl: `curl -X PATCH http://localhost:3005/v1/connect/notifications/notif_xxx/read \\
-  -H "Authorization: Bearer MERCHANT_API_KEY"`
+const recipient = await res.json();`,
+                python: `import requests, os
+recipient = requests.get(
+  'http://localhost:3005/v1/transfer-recipients/rcp_123',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/transfer-recipients/rcp_123" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
             }
         },
+        {
+            id: 'delete-transfer-recipient',
+            method: 'DELETE',
+            path: '/v1/transfer-recipients/:id',
+            title: 'Delete Transfer Recipient',
+            badge: 'Recipients',
+            description: 'Delete a saved bank recipient from the merchant recipient vault.',
+            params: [
+                { name: 'id', type: 'string', required: true, desc: 'Transfer recipient identifier to remove' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "rcp_123",
+    "deleted": true
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/transfer-recipients/rcp_123', {
+  method: 'DELETE',
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const result = await res.json();`,
+                python: `import requests, os
+result = requests.delete(
+  'http://localhost:3005/v1/transfer-recipients/rcp_123',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X DELETE "http://localhost:3005/v1/transfer-recipients/rcp_123" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'transfer-mobile-money',
+            method: 'POST',
+            path: '/v1/transfers/mobile-money',
+            title: 'Transfer To Mobile Money',
+            badge: 'Transfers',
+            description: 'Initiate an outbound mobile money transfer from a merchant wallet. FlapaPay debits the wallet, writes ledger entries, and tracks the payout reference.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: true, desc: 'Merchant wallet to debit' },
+                { name: 'amount', type: 'number', required: true, desc: 'Transfer amount in wallet currency' },
+                { name: 'reference', type: 'string', required: true, desc: 'Unique client transfer reference' },
+                { name: 'phone', type: 'string', required: true, desc: 'Destination mobile money phone number' },
+                { name: 'operator', type: 'string', required: true, desc: 'Operator like "mtn", "airtel", or "zamtel"' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
+                { name: 'narration', type: 'string', required: false, desc: 'Narration for the payout where supported' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "trf_123",
+    "amount": "20.00",
+    "fee": "8.50",
+    "currency": "ZMW",
+    "narration": "Agent payout",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": null,
+    "walletId": "wal_123",
+    "creditAccount": {
+      "type": "mobile-money",
+      "accountName": null,
+      "phone": "260961111111",
+      "operator": "mtn",
+      "country": "zm"
+    },
+    "status": "pending",
+    "reasonForFailure": null,
+    "reference": "trf_momo_001",
+    "settlementStatus": "pending",
+    "providerReference": null,
+    "source": "api"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/transfers/mobile-money', {
+  method: 'POST',
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    wallet_id: 'wal_123',
+    amount: 20,
+    reference: 'trf_momo_001',
+    narration: 'Agent payout',
+    phone: '0961111111',
+    operator: 'mtn',
+    country: 'zm'
+  })
+});
+const transfer = await res.json();`,
+                python: `import requests, os
+transfer = requests.post(
+  'http://localhost:3005/v1/transfers/mobile-money',
+  json={
+    'wallet_id': 'wal_123',
+    'amount': 20,
+    'reference': 'trf_momo_001',
+    'narration': 'Agent payout',
+    'phone': '0961111111',
+    'operator': 'mtn',
+    'country': 'zm'
+  },
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/transfers/mobile-money \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"wallet_id":"wal_123","amount":20,"reference":"trf_momo_001","narration":"Agent payout","phone":"0961111111","operator":"mtn","country":"zm"}'`
+            }
+        },
+        {
+            id: 'list-transfers',
+            method: 'GET',
+            path: '/v1/transfers',
+            title: 'List Transfers',
+            badge: 'Transfers',
+            description: 'List merchant wallet payouts across bank-account and mobile-money rails, with FlapaPay status synchronization on pending records.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: false, desc: 'Filter to one wallet' },
+                { name: 'status', type: 'string', required: false, desc: 'Filter by local status such as PENDING, COMPLETED, or FAILED' },
+                { name: 'limit', type: 'number', required: false, desc: 'Number of records to return. Defaults to 20.' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": [
+    {
+      "id": "trf_123",
+      "amount": "20.00",
+      "fee": "8.50",
+      "currency": "ZMW",
+      "narration": "Transfer",
+      "initiatedAt": "2026-07-30T10:00:00.000Z",
+      "completedAt": null,
+      "walletId": "wal_123",
+      "creditAccount": {
+        "type": "bank-account",
+        "accountName": "",
+        "accountNumber": "9130000000000",
+        "bank": { "id": "002", "name": "Absa Bank", "country": "zm" }
+      },
+      "status": "pending",
+      "reasonForFailure": null,
+      "reference": "trf_001",
+      "settlementStatus": "pending",
+      "providerReference": "240010002",
+      "source": "api"
+    }
+  ]
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/transfers?limit=10', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const transfers = await res.json();`,
+                python: `import requests, os
+transfers = requests.get(
+  'http://localhost:3005/v1/transfers',
+  params={'limit': 10},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/transfers?limit=10" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'get-transfer',
+            method: 'GET',
+            path: '/v1/transfers/:reference',
+            title: 'Get Transfer',
+            badge: 'Transfers',
+            description: 'Fetch one transfer by FlapaPay reference and re-sync pending status before returning the latest payout state.',
+            params: [
+                { name: 'reference', type: 'string', required: true, desc: 'FlapaPay transfer reference' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "trf_123",
+    "amount": "20.00",
+    "fee": "8.50",
+    "currency": "ZMW",
+    "narration": "Transfer",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": null,
+    "walletId": "wal_123",
+    "creditAccount": {
+      "type": "mobile-money",
+      "accountName": null,
+      "phone": "260961111111",
+      "operator": "mtn",
+      "country": "zm"
+    },
+    "status": "pending",
+    "reasonForFailure": null,
+    "reference": "trf_momo_001",
+    "settlementStatus": "pending",
+    "providerReference": null,
+    "source": "api"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/transfers/trf_momo_001', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const transfer = await res.json();`,
+                python: `import requests, os
+transfer = requests.get(
+  'http://localhost:3005/v1/transfers/trf_momo_001',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/transfers/trf_momo_001" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'create-mobile-money-collection',
+            method: 'POST',
+            path: '/v1/collections/mobile-money',
+            title: 'Create Mobile Money Collection',
+            badge: 'Collections',
+            description: 'Initiate a customer mobile money collection into a merchant wallet. FlapaPay tracks the provider lifecycle and credits the wallet when settlement completes.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: true, desc: 'Merchant wallet to credit on successful settlement' },
+                { name: 'amount', type: 'number', required: true, desc: 'Requested collection amount in wallet currency' },
+                { name: 'reference', type: 'string', required: true, desc: 'Unique merchant collection reference' },
+                { name: 'phone', type: 'string', required: true, desc: 'Customer mobile money phone number' },
+                { name: 'operator', type: 'string', required: true, desc: 'Operator like "mtn", "airtel", or "zamtel"' },
+                { name: 'country', type: 'string', required: false, desc: 'Country code like "zm"' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "col_123",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": null,
+    "amount": "50.00",
+    "fee": "0.90",
+    "bearer": "merchant",
+    "currency": "ZMW",
+    "reference": "col_001",
+    "type": "mobile-money",
+    "status": "pay-offline",
+    "source": "api",
+    "reasonForFailure": null,
+    "settlementStatus": "pending",
+    "walletId": "wal_123",
+    "mobileMoneyDetails": {
+      "country": "zm",
+      "phone": "0961111111",
+      "operator": "mtn",
+      "accountName": null,
+      "operatorTransactionId": null
+    },
+    "ledgerReference": null
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/collections/mobile-money', {
+  method: 'POST',
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    wallet_id: 'wal_123',
+    amount: 50,
+    reference: 'col_001',
+    phone: '0961111111',
+    operator: 'mtn',
+    country: 'zm'
+  })
+});
+const collection = await res.json();`,
+                python: `import requests, os
+collection = requests.post(
+  'http://localhost:3005/v1/collections/mobile-money',
+  json={
+    'wallet_id': 'wal_123',
+    'amount': 50,
+    'reference': 'col_001',
+    'phone': '0961111111',
+    'operator': 'mtn',
+    'country': 'zm'
+  },
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/collections/mobile-money \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"wallet_id":"wal_123","amount":50,"reference":"col_001","phone":"0961111111","operator":"mtn","country":"zm"}'`
+            }
+        },
+        {
+            id: 'create-card-collection',
+            method: 'POST',
+            path: '/v1/collections/card',
+            title: 'Create Card Collection',
+            badge: 'Collections',
+            description: 'Charge a customer card through FlapaPay secure card capture and settle the successful collection directly into the merchant wallet.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: true, desc: 'Merchant wallet to credit on successful settlement' },
+                { name: 'amount', type: 'number', required: true, desc: 'Requested collection amount in wallet currency' },
+                { name: 'currency', type: 'string', required: true, desc: 'Wallet currency for the collection, for example "ZMW"' },
+                { name: 'reference', type: 'string', required: true, desc: 'Unique merchant collection reference' },
+                { name: 'description', type: 'string', required: false, desc: 'Collection description for reconciliation' },
+                { name: 'transientToken', type: 'string', required: false, desc: 'Secure single-use card token from FlapaPay card capture' },
+                { name: 'customerId', type: 'string', required: false, desc: 'Stored customer card identity if you are charging a previously linked payment method' },
+                { name: 'billingDetails', type: 'object', required: false, desc: 'Optional cardholder billing object with name, email, phone, and address fields' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "card_123",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": "2026-07-30T10:00:00.000Z",
+    "amount": "50.00",
+    "fee": "0.00",
+    "bearer": "merchant",
+    "currency": "ZMW",
+    "reference": "card_col_001",
+    "type": "card",
+    "status": "authorized",
+    "source": "api",
+    "reasonForFailure": null,
+    "settlementStatus": "settled",
+    "walletId": "wal_123",
+    "cardDetails": {
+      "brand": "card",
+      "last4": "4242"
+    },
+    "ledgerReference": "COLCARD-card_col_001"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/collections/card', {
+  method: 'POST',
+  headers: {
+    'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    wallet_id: 'wal_123',
+    amount: 50,
+    currency: 'ZMW',
+    reference: 'card_col_001',
+    description: 'Card checkout collection',
+    transientToken: 'eyJhbGciOi...',
+    billingDetails: {
+      name: 'Jane Doe',
+      email: 'jane@example.com',
+      phone: '0977000000',
+      country: 'ZM'
+    }
+  })
+});
+const collection = await res.json();`,
+                python: `import requests, os
+collection = requests.post(
+  'http://localhost:3005/v1/collections/card',
+  json={
+    'wallet_id': 'wal_123',
+    'amount': 50,
+    'currency': 'ZMW',
+    'reference': 'card_col_001',
+    'description': 'Card checkout collection',
+    'transientToken': 'eyJhbGciOi...',
+    'billingDetails': {
+      'name': 'Jane Doe',
+      'email': 'jane@example.com',
+      'phone': '0977000000',
+      'country': 'ZM'
+    }
+  },
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl -X POST http://localhost:3005/v1/collections/card \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "wallet_id": "wal_123",
+    "amount": 50,
+    "currency": "ZMW",
+    "reference": "card_col_001",
+    "description": "Card checkout collection",
+    "transientToken": "eyJhbGciOi...",
+    "billingDetails": {
+      "name": "Jane Doe",
+      "email": "jane@example.com",
+      "phone": "0977000000",
+      "country": "ZM"
+    }
+  }'`
+            }
+        },
+        {
+            id: 'list-collections',
+            method: 'GET',
+            path: '/v1/collections',
+            title: 'List Collections',
+            badge: 'Collections',
+            description: 'List mobile money collections created through FlapaPay and inspect their processing or settlement lifecycle.',
+            params: [
+                { name: 'wallet_id', type: 'string', required: false, desc: 'Filter to a specific wallet' },
+                { name: 'status', type: 'string', required: false, desc: 'Filter by local settlement status such as PENDING, COMPLETED, or FAILED' },
+                { name: 'limit', type: 'number', required: false, desc: 'Number of records to return. Defaults to 20.' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": [
+    {
+      "id": "col_123",
+      "initiatedAt": "2026-07-30T10:00:00.000Z",
+      "completedAt": null,
+      "amount": "50.00",
+      "fee": "0.90",
+      "bearer": "merchant",
+      "currency": "ZMW",
+      "reference": "col_001",
+      "type": "mobile-money",
+      "status": "pay-offline",
+      "source": "api",
+      "reasonForFailure": null,
+      "settlementStatus": "pending",
+      "walletId": "wal_123",
+      "mobileMoneyDetails": {
+        "country": "zm",
+        "phone": "0961111111",
+        "operator": "mtn",
+        "accountName": null,
+        "operatorTransactionId": null
+      },
+      "ledgerReference": null
+    }
+  ]
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/collections?limit=10', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const collections = await res.json();`,
+                python: `import requests, os
+collections = requests.get(
+  'http://localhost:3005/v1/collections',
+  params={'limit': 10},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/collections?limit=10" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'get-collection',
+            method: 'GET',
+            path: '/v1/collections/:reference',
+            title: 'Get Collection',
+            badge: 'Collections',
+            description: 'Fetch one collection by reference and re-sync its status so wallet settlement is reflected as soon as it completes.',
+            params: [
+                { name: 'reference', type: 'string', required: true, desc: 'FlapaPay collection reference from collection creation' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "id": "col_123",
+    "initiatedAt": "2026-07-30T10:00:00.000Z",
+    "completedAt": "2026-07-30T10:02:00.000Z",
+    "amount": "50.00",
+    "fee": "0.90",
+    "bearer": "merchant",
+    "currency": "ZMW",
+    "reference": "col_001",
+    "type": "mobile-money",
+    "status": "successful",
+    "source": "api",
+    "reasonForFailure": null,
+    "settlementStatus": "settled",
+    "walletId": "wal_123",
+    "mobileMoneyDetails": {
+      "country": "zm",
+      "phone": "0961111111",
+      "operator": "mtn",
+      "accountName": "Jane Doe",
+      "operatorTransactionId": "op_123"
+    },
+    "ledgerReference": "LMMDEP-ABC123"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/collections/col_001', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const collection = await res.json();`,
+                python: `import requests, os
+collection = requests.get(
+  'http://localhost:3005/v1/collections/col_001',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/collections/col_001" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'list-settlements',
+            method: 'GET',
+            path: '/v1/settlements',
+            title: 'List Settlements',
+            badge: 'Settlements',
+            description: 'Read the normalized FlapaPay settlement stream across inbound mobile money collections and outbound wallet transfers.',
+            params: [
+                { name: 'limit', type: 'number', required: false, desc: 'Number of records to return. Defaults to 20.' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": [
+    {
+      "type": "collection",
+      "reference": "col_001",
+      "walletId": "wal_123",
+      "amount": "50.00",
+      "fee": "0.90",
+      "grossAmount": "50.90",
+      "currency": "ZMW",
+      "status": "completed",
+      "settlementStatus": "settled",
+      "ledgerReference": "LMMDEP-ABC123",
+      "reasonForFailure": null,
+      "createdAt": "2026-07-30T10:00:00.000Z",
+      "settledAt": "2026-07-30T10:02:00.000Z"
+    },
+    {
+      "type": "transfer",
+      "reference": "trf_001",
+      "walletId": "wal_123",
+      "amount": "20.00",
+      "fee": "8.50",
+      "grossAmount": "28.50",
+      "currency": "ZMW",
+      "status": "pending",
+      "settlementStatus": "pending",
+      "ledgerReference": "trf_001",
+      "reasonForFailure": null,
+      "destinationType": "bank_account",
+      "providerReference": "240010002",
+      "createdAt": "2026-07-30T10:00:00.000Z",
+      "settledAt": null
+    }
+  ]
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/settlements?limit=10', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const settlements = await res.json();`,
+                python: `import requests, os
+settlements = requests.get(
+  'http://localhost:3005/v1/settlements',
+  params={'limit': 10},
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/settlements?limit=10" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        },
+        {
+            id: 'get-settlement',
+            method: 'GET',
+            path: '/v1/settlements/:reference',
+            title: 'Get Settlement',
+            badge: 'Settlements',
+            description: 'Fetch one normalized settlement record by FlapaPay reference across collection and transfer flows.',
+            params: [
+                { name: 'reference', type: 'string', required: true, desc: 'Collection or transfer reference' },
+            ],
+            response: `{
+  "status": true,
+  "message": "",
+  "data": {
+    "type": "collection",
+    "reference": "col_001",
+    "walletId": "wal_123",
+    "amount": "50.00",
+    "fee": "0.90",
+    "grossAmount": "50.90",
+    "currency": "ZMW",
+    "status": "completed",
+    "settlementStatus": "settled",
+    "ledgerReference": "LMMDEP-ABC123",
+    "reasonForFailure": null,
+    "createdAt": "2026-07-30T10:00:00.000Z",
+    "settledAt": "2026-07-30T10:02:00.000Z"
+  }
+}`,
+            snippets: {
+                node: `const res = await fetch('http://localhost:3005/v1/settlements/col_001', {
+  headers: { 'Authorization': \`Bearer \${process.env.FLAPAPAY_SECRET_KEY}\` }
+});
+const settlement = await res.json();`,
+                python: `import requests, os
+settlement = requests.get(
+  'http://localhost:3005/v1/settlements/col_001',
+  headers={'Authorization': f"Bearer {os.environ['FLAPAPAY_SECRET_KEY']}"}
+).json()`,
+                curl: `curl "http://localhost:3005/v1/settlements/col_001" \\
+  -H "Authorization: Bearer $FLAPAPAY_SECRET_KEY"`
+            }
+        }
     ];
+    const connectEndpoints: any[] = [];
 
     const LANG_LABELS: Record<string, string> = { node: 'Node.js', python: 'Python', curl: 'cURL' };
 
     const renderEndpointCard = (endpoint: any) => {
         const lang = getLang(endpoint.id);
-        const code = endpoint.snippets[lang] || endpoint.snippets.node;
+        const code = normalizeDocExample(endpoint.snippets[lang] || endpoint.snippets.node);
+        const responseExample = normalizeDocExample(endpoint.response);
         return (
             <div key={endpoint.id} id={endpoint.id} className="rounded-2xl border border-gray-800 bg-gray-950 overflow-hidden shadow-xl">
                 {/* Card Header */}
@@ -2496,10 +1915,10 @@ await fetch('http://localhost:3005/v1/connect/notifications/all/read', {
                             </p>
                             <div className="relative">
                                 <pre className="p-4 rounded-xl bg-black border border-gray-800 text-xs text-emerald-400 font-mono overflow-x-auto leading-relaxed max-h-64 scrollbar-thin">
-                                    {endpoint.response}
+                                    {responseExample}
                                 </pre>
                                 <button
-                                    onClick={() => copyCode(endpoint.response, `${endpoint.id}-res`)}
+                                    onClick={() => copyCode(responseExample, `${endpoint.id}-res`)}
                                     className="absolute top-2.5 right-2.5 p-1.5 rounded-lg bg-gray-800/80 text-gray-500 hover:text-white transition-colors"
                                 >
                                     {copiedCode === `${endpoint.id}-res` ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
@@ -2560,6 +1979,32 @@ await fetch('http://localhost:3005/v1/connect/notifications/all/read', {
         </div>
     );
 
+    const sidebarGroups = [
+        {
+            label: 'Overview',
+            items: [
+                { id: 'introduction', label: 'Introduction', icon: <Book className="w-4 h-4" />, anchor: '#introduction' },
+                { id: 'quickstart', label: 'Quick Start', icon: <Zap className="w-4 h-4" />, anchor: '#quickstart' },
+                { id: 'authentication', label: 'Authentication', icon: <Key className="w-4 h-4" />, anchor: '#auth' },
+            ]
+        },
+        {
+            label: 'Accept Payments',
+            items: [
+                { id: 'banking', label: 'Banks & Settlement', icon: <Database className="w-4 h-4" />, anchor: '#banking', count: infrastructureEndpoints.length },
+                { id: 'checkout', label: 'Checkout Sessions', icon: <CreditCard className="w-4 h-4" />, anchor: '#checkout', count: checkoutEndpoints.length },
+                { id: 'webhooks', label: 'Webhooks', icon: <Webhook className="w-4 h-4" />, anchor: '#webhooks' },
+            ]
+        },
+        {
+            label: 'Platform',
+            items: [
+                { id: 'subscriptions', label: 'Subscriptions', icon: <RefreshCw className="w-4 h-4" />, anchor: '#subscriptions' },
+                { id: 'sdks', label: 'SDKs', icon: <Code className="w-4 h-4" />, anchor: '#sdks' },
+            ]
+        }
+    ];
+
     return (
         <div className="min-h-screen bg-[#080808] font-sans">
             <Navbar />
@@ -2586,13 +2031,12 @@ await fetch('http://localhost:3005/v1/connect/notifications/all/read', {
                                     <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-yellow-400">with FlapaPay</span>
                                 </h1>
                                 <p className="text-gray-400 text-lg leading-relaxed mb-8 max-w-xl">
-                                    Complete API reference, integration guides, and code examples for payments, subscriptions, marketplace payouts, virtual cards, and more.
+                                    Complete API reference, integration guides, and code examples for payments, subscriptions, wallets, ledgers, and more.
                                 </p>
                                 <div className="flex flex-wrap gap-3">
                                     {[
                                         { label: 'Quick Start', href: '#quickstart' },
                                         { label: 'Checkout', href: '#checkout' },
-                                        { label: 'Connect', href: '#connect' },
                                         { label: 'Webhooks', href: '#webhooks' },
                                     ].map(l => (
                                         <a key={l.label} href={l.href}
@@ -2613,7 +2057,7 @@ await fetch('http://localhost:3005/v1/connect/notifications/all/read', {
                                             <div className="w-3 h-3 rounded-full bg-green-500/50"></div>
                                         </div>
                                         <span className="text-[10px] font-bold text-gray-600">quickstart.js</span>
-                                        <button onClick={() => copyCode(codeExamples.createPayment, 'hero')} className="text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors flex items-center gap-1">
+                                        <button onClick={() => copyCode(normalizeDocExample(codeExamples.createPayment), 'hero')} className="text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors flex items-center gap-1">
                                             {copiedCode === 'hero' ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
                                         </button>
                                     </div>
@@ -2691,49 +2135,67 @@ window.location.href = session.url;`}
                     {/* ─── Sidebar ─── */}
                     <aside className="hidden xl:flex w-72 shrink-0 flex-col">
                         <div className="sticky top-20 h-[calc(100vh-80px)] overflow-y-auto py-8 px-5 border-r border-gray-800/60 scrollbar-thin">
-                            <p className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em] mb-5 px-2">Documentation</p>
-                            <nav className="space-y-1">
-                                {[
-                                    { id: 'introduction', label: 'Introduction', icon: <Book className="w-4 h-4" />, anchor: '#introduction' },
-                                    { id: 'quickstart', label: 'Quick Start', icon: <Zap className="w-4 h-4" />, anchor: '#quickstart' },
-                                    { id: 'authentication', label: 'Authentication', icon: <Key className="w-4 h-4" />, anchor: '#auth' },
-                                    { id: 'checkout', label: 'Checkout Sessions', icon: <CreditCard className="w-4 h-4" />, anchor: '#checkout', count: checkoutEndpoints.length },
-                                    { id: 'escrow', label: 'Escrow', icon: <Shield className="w-4 h-4" />, anchor: '#escrow', count: escrowEndpoints.length },
-                                    { id: 'connect', label: 'Connect / Marketplace', icon: <Globe className="w-4 h-4" />, anchor: '#connect', count: connectEndpoints.length },
-                                    { id: 'webhooks', label: 'Webhooks', icon: <Webhook className="w-4 h-4" />, anchor: '#webhooks' },
-                                    { id: 'subscriptions', label: 'Subscriptions', icon: <RefreshCw className="w-4 h-4" />, anchor: '#subscriptions' },
-                                    { id: 'sdks', label: 'SDKs', icon: <Code className="w-4 h-4" />, anchor: '#sdks' },
-                                ].map(item => (
-                                    <a key={item.id} href={item.anchor}
-                                        onClick={() => setActiveSection(item.id)}
-                                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all group ${
-                                            activeSection === item.id
-                                                ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
-                                                : 'text-gray-500 hover:text-gray-200 hover:bg-gray-900'
-                                        }`}>
-                                        <div className="flex items-center gap-2.5">
-                                            <span className={activeSection === item.id ? 'text-orange-400' : 'text-gray-600 group-hover:text-gray-400'}>
-                                                {item.icon}
-                                            </span>
-                                            {item.label}
+                            <div className="mb-6 px-2">
+                                <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.22em]">API Reference</p>
+                                <div className="mt-3 flex items-center gap-2">
+                                    <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400"></span>
+                                    <span className="text-xs font-semibold text-gray-300">FlapaPay Docs</span>
+                                    <span className="rounded-full border border-orange-500/20 bg-orange-500/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-orange-400">v1</span>
+                                </div>
+                            </div>
+
+                            <nav className="space-y-5">
+                                {sidebarGroups.map((group) => (
+                                    <div key={group.label}>
+                                        <p className="mb-2 px-2 text-[10px] font-black uppercase tracking-[0.18em] text-gray-600">{group.label}</p>
+                                        <div className="rounded-2xl border border-gray-800/70 bg-gray-950/60 p-2">
+                                            {group.items.map((item) => (
+                                                <a
+                                                    key={item.id}
+                                                    href={item.anchor}
+                                                    onClick={() => setActiveSection(item.id)}
+                                                    className={`group flex items-center justify-between rounded-xl border-l-2 px-3 py-2.5 text-sm transition-all ${
+                                                        activeSection === item.id
+                                                            ? 'border-orange-500 bg-orange-500/8 text-white'
+                                                            : 'border-transparent text-gray-400 hover:bg-white/[0.03] hover:text-gray-100'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-3 min-w-0">
+                                                        <span className={activeSection === item.id ? 'text-orange-400' : 'text-gray-600 group-hover:text-gray-300'}>
+                                                            {item.icon}
+                                                        </span>
+                                                        <span className="truncate font-semibold">{item.label}</span>
+                                                    </div>
+                                                    {item.count && (
+                                                        <span className={`ml-3 rounded-md px-1.5 py-0.5 text-[10px] font-black ${
+                                                            activeSection === item.id
+                                                                ? 'bg-orange-500/15 text-orange-300'
+                                                                : 'bg-gray-900 text-gray-500'
+                                                        }`}>
+                                                            {item.count}
+                                                        </span>
+                                                    )}
+                                                </a>
+                                            ))}
                                         </div>
-                                        {item.count && (
-                                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded-md bg-gray-800 text-gray-500">{item.count}</span>
-                                        )}
-                                    </a>
+                                    </div>
                                 ))}
                             </nav>
 
                             {/* Base URL box */}
-                            <div className="mt-8 p-4 rounded-2xl bg-gray-900/80 border border-gray-800">
-                                <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2">Base URL</p>
-                                <code className="text-xs font-mono text-orange-400">https://api.flapapay.com</code>
-                                <p className="text-[10px] text-gray-600 mt-2">Test: <code className="text-gray-500">https://sandbox.flapapay.com</code></p>
+                            <div className="mt-8 rounded-2xl border border-gray-800 bg-black/30 overflow-hidden">
+                                <div className="border-b border-gray-800 px-4 py-3">
+                                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-600">Base URL</p>
+                                </div>
+                                <div className="px-4 py-4">
+                                    <code className="block text-xs font-mono text-orange-400">{PUBLIC_API_BASE}</code>
+                                    <p className="mt-2 text-[11px] text-gray-600">Test keys and live keys both authenticate against the same API domain.</p>
+                                </div>
                             </div>
 
-                            <div className="mt-4 p-4 rounded-2xl bg-gradient-to-br from-orange-500/8 to-yellow-500/8 border border-orange-500/15">
+                            <div className="mt-4 rounded-2xl border border-orange-500/15 bg-gradient-to-br from-orange-500/8 to-yellow-500/6 p-4">
                                 <p className="text-sm font-black text-white mb-1">Need help?</p>
-                                <p className="text-xs text-gray-500 mb-3 leading-relaxed">Our developer support team responds within 2 hours on business days.</p>
+                                <p className="text-xs text-gray-500 mb-3 leading-relaxed">Developer support responds during business hours for integration issues and launch blockers.</p>
                                 <a href="/contact" className="text-xs font-bold text-orange-400 hover:text-orange-300 flex items-center gap-1.5 transition-colors">
                                     Contact support <ChevronRight className="w-3 h-3" />
                                 </a>
@@ -2763,14 +2225,14 @@ window.location.href = session.url;`}
 
                             <div className="rounded-2xl border border-gray-800 bg-gray-950 p-6">
                                 <p className="text-gray-400 leading-relaxed text-[15px] mb-4">
-                                    FlapaPay is a complete financial infrastructure platform. You can use it to build any kind of payments product — from a simple e-commerce checkout to a complex multi-sided marketplace with embedded seller portals.
+                                    FlapaPay is a complete financial infrastructure platform. You can use it to build payment, subscription, payout, and reconciliation flows on a single API surface.
                                 </p>
                                 <div className="grid sm:grid-cols-2 gap-4">
                                     {[
                                         { title: 'Payments & Checkout', desc: 'One-time and recurring payments, checkout sessions, payment links' },
-                                        { title: 'Connect / Marketplace', desc: 'Onboard sellers, split payments, embedded portals, KYC' },
+                                        { title: 'Wallets & Settlement', desc: 'Direct wallet settlement, ledger entries, and reporting flows' },
                                         { title: 'Virtual Cards', desc: 'Issue and control prepaid virtual Visa/Mastercard cards' },
-                                        { title: 'Escrow', desc: 'Hold funds securely with buyer/seller dispute resolution' },
+                                        { title: 'Subscriptions', desc: 'Recurring billing with products, prices, and customer lifecycle handling' },
                                     ].map((f, i) => (
                                         <div key={i} className="flex items-start gap-3 p-4 rounded-xl bg-black/30 border border-gray-800/60">
                                             <div className="w-2 h-2 rounded-full bg-orange-500 mt-1.5 shrink-0"></div>
@@ -2825,11 +2287,11 @@ window.location.href = session.url;`}
                                             <div className="relative">
                                                 <div className="flex items-center justify-between px-4 py-2 bg-gray-900 rounded-t-xl border border-gray-800 border-b-0">
                                                     <span className="text-[10px] font-bold text-gray-600 uppercase">{s.lang}</span>
-                                                    <button onClick={() => copyCode(s.code, `qs-${i}`)} className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors">
+                                                    <button onClick={() => copyCode(normalizeDocExample(s.code), `qs-${i}`)} className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors">
                                                         {copiedCode === `qs-${i}` ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
                                                     </button>
                                                 </div>
-                                                <pre className="p-4 rounded-b-xl bg-black border border-gray-800 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed">{s.code}</pre>
+                                                <pre className="p-4 rounded-b-xl bg-black border border-gray-800 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed">{normalizeDocExample(s.code)}</pre>
                                             </div>
                                         </div>
                                     </div>
@@ -2885,12 +2347,40 @@ window.location.href = session.url;`}
                             </div>
                         </section>
 
+                        <section id="banking">
+                            <SectionHeader icon={<Database className="w-5 h-5" />} title="Banking, Collections & Settlements" subtitle="Provider-agnostic FlapaPay resources for bank lookup, recipients, collections, payouts, and wallet settlement" />
+                            <div className="rounded-2xl border border-gray-800 bg-gray-950 p-6 mb-8">
+                                <p className="text-gray-400 leading-relaxed text-[15px] mb-4">
+                                    FlapaPay exposes banking and settlement infrastructure as FlapaPay API resources. Merchants authenticate with FlapaPay API keys, resolve accounts, create recipients, initiate collections and transfers, and read back normalized settlement records while provider infrastructure stays behind the scenes.
+                                </p>
+                                <div className="grid sm:grid-cols-2 gap-4">
+                                    {[
+                                        { title: 'Banks', desc: 'List supported financial institutions for payout setup and validation.' },
+                                        { title: 'Resolve & Recipients', desc: 'Verify bank and mobile money destinations before collecting, storing, or transferring.' },
+                                        { title: 'Collections & Transfers', desc: 'Credit or debit merchant wallets while FlapaPay tracks lifecycle under one API contract.' },
+                                        { title: 'Settlement Model', desc: 'Wallets and ledger entries remain the source of truth for merchant balances and reporting.' },
+                                    ].map((item) => (
+                                        <div key={item.title} className="flex items-start gap-3 p-4 rounded-xl bg-black/30 border border-gray-800/60">
+                                            <div className="w-2 h-2 rounded-full bg-orange-500 mt-1.5 shrink-0"></div>
+                                            <div>
+                                                <p className="text-sm font-bold text-white">{item.title}</p>
+                                                <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="space-y-6">
+                                {infrastructureEndpoints.map(renderEndpointCard)}
+                            </div>
+                        </section>
+
                         {/* ── CHECKOUT SESSIONS ─────────────────────── */}
                         <section id="checkout">
                             <SectionHeader
                                 icon={<CreditCard className="w-5 h-5" />}
                                 title="Checkout Sessions"
-                                subtitle="Create hosted checkout pages, subscriptions, and marketplace splits"
+                                subtitle="Create hosted checkout pages, subscriptions, and direct wallet settlement flows"
                             />
 
                             {/* Conceptual flow diagram */}
@@ -2921,54 +2411,6 @@ window.location.href = session.url;`}
                             </div>
                         </section>
 
-                        {/* ── ESCROW ────────────────────────────────── */}
-                        <section id="escrow">
-                            <SectionHeader icon={<Shield className="w-5 h-5" />} title="Escrow Service" subtitle="Hold funds securely with buyer/seller protection and dispute resolution" />
-                            <div className="space-y-6">
-                                {escrowEndpoints.map(ep => renderEndpointCard({ ...ep, badge: null }))}
-                            </div>
-                        </section>
-
-                        {/* ── CONNECT / MARKETPLACE ─────────────────── */}
-                        <section id="connect">
-                            <SectionHeader icon={<Globe className="w-5 h-5" />} title="Connect — Marketplace API" subtitle="Onboard sellers, split payments, manage KYC, and embed seller portals" />
-
-                            {/* Architecture overview */}
-                            <div className="rounded-2xl border border-gray-800 bg-gray-950 p-6 mb-8">
-                                <p className="text-[10px] font-black text-gray-600 uppercase tracking-widest mb-4">Architecture</p>
-                                <pre className="text-[11px] font-mono text-gray-500 leading-relaxed overflow-x-auto">{`Your Platform (marketplace owner)
-    │
-    ├─ POST /v1/connect/accounts              → Create sub-merchant accounts
-    ├─ POST /v1/checkout/sessions             → Split payments with transfer_data
-    ├─ POST /v1/connect/account_sessions      → Create client_secret for seller
-    │
-    └─ Seller's Browser (embedded)
-           │
-           └─ loadFlapaConnect({ fetchClientSecret })
-                  │
-                  ├─ <ConnectBalances />       → Balance + KYC status
-                  ├─ <ConnectPayments />        → Transaction history
-                  ├─ <ConnectPayouts />         → Payout requests
-                  └─ <ConnectDocuments />       → KYC document upload`}</pre>
-                                <div className="mt-4 grid sm:grid-cols-3 gap-3">
-                                    {[
-                                        { label: 'Test Mode Header', val: 'x-flapapay-test-mode: true' },
-                                        { label: 'Platform Auth', val: 'Bearer sk_test_flp_...' },
-                                        { label: 'Portal Auth', val: 'Bearer pt_live_...' },
-                                    ].map((h, i) => (
-                                        <div key={i} className="p-3 rounded-xl bg-black border border-gray-800">
-                                            <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1">{h.label}</p>
-                                            <code className="text-xs font-mono text-orange-400">{h.val}</code>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="space-y-6">
-                                {connectEndpoints.map(renderEndpointCard)}
-                            </div>
-                        </section>
-
                         {/* ── WEBHOOKS ──────────────────────────────── */}
                         <section id="webhooks">
                             <SectionHeader icon={<Webhook className="w-5 h-5" />} title="Webhooks" subtitle="Receive real-time event notifications when things happen in your account" />
@@ -2988,11 +2430,8 @@ window.location.href = session.url;`}
                                             { event: 'invoice.payment_failed', desc: 'Subscription payment failed' },
                                             { event: 'customer.subscription.created', desc: 'New subscription started' },
                                             { event: 'customer.subscription.deleted', desc: 'Subscription cancelled' },
-                                            { event: 'account.created', desc: 'New sub-merchant registered' },
-                                            { event: 'payout.completed', desc: 'Seller payout succeeded' },
-                                            { event: 'payout.failed', desc: 'Seller payout failed' },
-                                            { event: 'kyc.approved', desc: 'KYC document approved' },
-                                            { event: 'dispute.opened', desc: 'Dispute created' },
+                                            { event: 'payout.completed', desc: 'Payout succeeded' },
+                                            { event: 'payout.failed', desc: 'Payout failed' },
                                         ].map((e, i) => (
                                             <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-black/40 border border-gray-800/60">
                                                 <code className="text-xs text-orange-400 font-mono shrink-0">{e.event}</code>
@@ -3004,11 +2443,11 @@ window.location.href = session.url;`}
                                     <div className="relative">
                                         <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900 rounded-t-xl border border-gray-800 border-b-0">
                                             <span className="text-[10px] font-bold text-gray-500 uppercase">Webhook Handler — Node.js</span>
-                                            <button onClick={() => copyCode(codeExamples.webhook, 'webhook-main')} className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors">
+                                            <button onClick={() => copyCode(normalizeDocExample(codeExamples.webhook), 'webhook-main')} className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500 hover:text-orange-400 transition-colors">
                                                 {copiedCode === 'webhook-main' ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
                                             </button>
                                         </div>
-                                        <pre className="p-5 rounded-b-xl bg-black border border-gray-800 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed">{codeExamples.webhook}</pre>
+                                        <pre className="p-5 rounded-b-xl bg-black border border-gray-800 text-sm font-mono text-gray-300 overflow-x-auto leading-relaxed">{normalizeDocExample(codeExamples.webhook)}</pre>
                                     </div>
                                 </div>
                             </div>
@@ -3162,33 +2601,6 @@ session = flapapay.checkout.sessions.create(
                                     </div>
                                 </div>
 
-                                {/* Connect SDK */}
-                                <div className="p-5 rounded-2xl border border-blue-800/40 bg-blue-950/20 hover:border-blue-700/60 transition-colors">
-                                    <div className="flex items-start justify-between mb-3">
-                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-blue-500/10 text-blue-400">🔗</div>
-                                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">v1.0.0 · stable</span>
-                                    </div>
-                                    <p className="font-black text-white mb-0.5">Connect SDK</p>
-                                    <p className="text-[11px] text-gray-400 mb-3">Marketplace & sub-merchant management.</p>
-                                    <div className="flex items-center justify-between p-2.5 rounded-lg bg-black border border-gray-800 mb-3">
-                                        <code className="text-[11px] text-gray-300 font-mono">npm install @flapapay/connect</code>
-                                        <button onClick={() => copyCode('npm install @flapapay/connect', 'sdk-connect')} className="ml-2 shrink-0 p-1 rounded text-gray-600 hover:text-white transition-colors">
-                                            {copiedCode === 'sdk-connect' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                                        </button>
-                                    </div>
-                                    <div className="rounded-lg bg-black border border-gray-800 p-3">
-                                        <pre className="text-[10px] text-gray-300 font-mono leading-relaxed overflow-x-auto">{`import { FlapaPayConnect } from '@flapapay/connect';
-
-const connect = new FlapaPayConnect({
-  apiKey: 'sk_test_flp_...',
-});
-
-const account = await connect.accounts.create({
-  type: 'express',
-  email: 'merchant@example.com',
-});`}</pre>
-                                    </div>
-                                </div>
                             </div>
 
                             {/* More SDKs */}

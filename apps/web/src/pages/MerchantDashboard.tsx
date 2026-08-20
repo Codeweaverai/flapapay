@@ -166,10 +166,7 @@ export const MerchantDashboard: React.FC = () => {
 
     // ─── Quick actions ────────────────────────────────────────────────────────
     const quickActions = [
-        { title: 'Escrow',         desc: 'Secure milestone payments', Icon: Layers,   path: '/escrow',                           accent: 'text-orange-600',  bg: 'bg-orange-50',  border: 'hover:border-orange-200' },
         { title: 'Subscriptions',  desc: 'Recurring billing',         Icon: RefreshCw,path: '/merchant/subscriptions',           accent: 'text-violet-600',  bg: 'bg-violet-50',  border: 'hover:border-violet-200' },
-        { title: 'Connect',        desc: 'Sub-merchants & splits',    Icon: Link2,    path: '/merchant/connect',                 accent: 'text-emerald-600', bg: 'bg-emerald-50', border: 'hover:border-emerald-200' },
-        { title: 'Webhooks',       desc: 'Event delivery',            Icon: Activity, path: '/merchant/connect/webhooks',        accent: 'text-blue-600',    bg: 'bg-blue-50',    border: 'hover:border-blue-200' },
         { title: 'Compliance',     desc: 'Business verification',     Icon: ShieldCheck,path:'/merchant/compliance-requirements',accent: 'text-indigo-600',  bg: 'bg-indigo-50',  border: 'hover:border-indigo-200' },
     ];
 
