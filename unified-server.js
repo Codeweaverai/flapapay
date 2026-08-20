@@ -19,6 +19,7 @@ const DeveloperGateway = require('./services/DeveloperGateway');
 const {
     attachApiKeyEnvironment,
     attachJwtEnvironment,
+    assertProviderRailSafe,
     environmentErrorHandler,
 } = require('./services/environmentContext');
 const CybersourceService = require('./services/CybersourceService');
@@ -6314,6 +6315,7 @@ app.get('/escrow-public/:id', async (req, res) => {
 app.post('/payments/create-payment-intent', authenticateToken, async (req, res) => {
     const { amount, currency, paymentMethodId } = req.body;
     try {
+        assertProviderRailSafe(req, 'Stripe');
         const customerId = await getOrCreateStripeCustomer(req.user.id, req.user.email);
         let paymentIntent;
         if (paymentMethodId) {
@@ -6356,6 +6358,7 @@ app.post('/payments/create-payment-intent', authenticateToken, async (req, res) 
 
 app.post('/payments/create-setup-intent', authenticateToken, async (req, res) => {
     try {
+        assertProviderRailSafe(req, 'CyberSource');
         // CyberSource Flex Microform replaces Stripe Setup Intent for card linking
         const targetOrigin = resolveFlexTargetOrigin(req);
         const captureContext = await CybersourceService.flex.getCaptureContext(targetOrigin);
@@ -6369,6 +6372,7 @@ app.post('/payments/create-setup-intent', authenticateToken, async (req, res) =>
 
 app.get('/payments/methods', authenticateToken, async (req, res) => {
     try {
+        assertProviderRailSafe(req, 'Stripe');
         const customerId = await getOrCreateStripeCustomer(req.user.id, req.user.email);
         const paymentMethods = await stripe.paymentMethods.list({ customer: customerId, type: 'card' });
         res.json({ methods: paymentMethods.data });

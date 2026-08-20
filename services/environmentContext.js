@@ -174,7 +174,14 @@ function environmentResponse(req) {
         isTestMode: req.isTestMode === true,
     };
 }
-
+function assertProviderRailSafe(context, providerName = 'provider') {
+    const kind = context?.environmentKind || (context?.isTestMode ? 'sandbox' : 'live');
+    if (ENVIRONMENT_CONTEXT_ENABLED && kind === 'sandbox' && process.env.SANDBOX_PROVIDER_ENABLED !== 'true') {
+        const error = new EnvironmentError(409, 'SANDBOX_PROVIDER_DISABLED', `Sandbox environment cannot invoke ${providerName} provider rails`);
+        throw error;
+    }
+    return true;
+}
 function environmentErrorHandler(error, res) {
     if (error instanceof EnvironmentError) {
         return res.status(error.status).json({ error: error.message, code: error.code });
@@ -193,5 +200,6 @@ module.exports = {
     attachApiKeyEnvironment,
     attachJwtEnvironment,
     environmentResponse,
+    assertProviderRailSafe,
     environmentErrorHandler,
 };
