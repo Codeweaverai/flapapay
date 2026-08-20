@@ -9,6 +9,12 @@ const pool = new Pool({
 });
 
 const jwt = require('jsonwebtoken');
+const {
+    resolveApiKey,
+    resolveEnvironment,
+    ENVIRONMENT_CONTEXT_ENABLED,
+    ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT,
+} = require('./environmentContext');
 
 class DeveloperGateway {
     static jwtSecret = process.env.JWT_SECRET || 'dev_secret_key_123';
@@ -17,7 +23,7 @@ class DeveloperGateway {
      * Authenticates an API request using the Bearer token.
      * Supports both Merchant API Keys and User JWTs (for dashboard access).
      */
-    static async authenticate(authHeader) {
+    static async authenticate(authHeader, context = {}) {
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             throw new Error('Unauthorized: Missing or invalid API Key');
         }
@@ -25,23 +31,28 @@ class DeveloperGateway {
         const tokenOrKey = authHeader.split(' ')[1];
 
         // 1. Try to find as an API Key first
-        const keyRes = await pool.query(
-            `SELECT a.*, m.business_name as merchant_name, m.user_id as owner_id 
-             FROM api_keys a 
-             JOIN merchants m ON a.merchant_id = m.id 
-             WHERE a.key_value = $1`,
-            [tokenOrKey]
-        );
-
-        if (keyRes.rows.length > 0) {
-            const keyData = keyRes.rows[0];
+        try {
+            const keyData = await resolveApiKey(pool, tokenOrKey);
+            const environment = ENVIRONMENT_CONTEXT_ENABLED
+                ? await resolveEnvironment(pool, {
+                    merchantId: keyData.merchant_id,
+                    environmentId: keyData.environment_id,
+                })
+                : null;
             return {
                 merchantId: keyData.merchant_id,
                 merchantName: keyData.merchant_name,
                 ownerId: keyData.owner_id,
-                environment: keyData.environment || 'test',
-                permissions: keyData.permissions
+                apiKeyId: keyData.api_key_id,
+                environmentId: environment?.id || null,
+                environmentSlug: environment?.slug || null,
+                environment: ENVIRONMENT_CONTEXT_ENABLED
+                    ? environment?.kind
+                    : (keyData.environment || 'test'),
+                permissions: keyData.permissions || [],
             };
+        } catch (error) {
+            if (error?.code !== 'INVALID_API_KEY') throw error;
         }
 
         // 2. Fallback: Try to verify as a JWT (Merchant User Session)
@@ -59,11 +70,21 @@ class DeveloperGateway {
             }
 
             const merchant = merchRes.rows[0];
+            if (ENVIRONMENT_CONTEXT_ENABLED && ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT && !context.environmentId) {
+                throw new Error('Environment context is required for dashboard API access');
+            }
+            const environment = await resolveEnvironment(pool, {
+                merchantId: merchant.merchant_id,
+                environmentId: context.environmentId || null,
+            });
             return {
                 merchantId: merchant.merchant_id,
                 merchantName: merchant.merchant_name,
                 ownerId: merchant.owner_id,
-                environment: 'live', // Sessions are treated as live/active environment context
+                apiKeyId: null,
+                environmentId: ENVIRONMENT_CONTEXT_ENABLED ? environment.id : null,
+                environmentSlug: ENVIRONMENT_CONTEXT_ENABLED ? environment.slug : null,
+                environment: ENVIRONMENT_CONTEXT_ENABLED ? environment.kind : 'live',
                 permissions: ['all']
             };
         } catch (err) {

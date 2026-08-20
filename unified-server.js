@@ -16,6 +16,10 @@ const MastercardCardService = require('./services/MastercardCardService');
 const PawaPayService = require('./services/PawaPayService');
 const EscrowService = require('./services/EscrowService');
 const DeveloperGateway = require('./services/DeveloperGateway');
+const {
+    attachApiKeyEnvironment,
+    environmentErrorHandler,
+} = require('./services/environmentContext');
 const CybersourceService = require('./services/CybersourceService');
 const CybersourceRecurringBillingService = require('./services/CybersourceRecurringBillingService');
 const LencoBillPaymentService = require('./services/LencoBillPaymentService');
@@ -6085,7 +6089,7 @@ app.post('/escrows/create', authenticateToken, async (req, res) => {
 // --- Marketplace API v1 (Developer Gateway) ---
 app.post('/api/v1/escrows', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const escrowData = {
             ...req.body,
             // Marketplace identifier prefixing or special flags could go here
@@ -6099,7 +6103,7 @@ app.post('/api/v1/escrows', async (req, res) => {
 
 app.get('/api/v1/escrows/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query(
             'SELECT * FROM escrows WHERE id = $1 AND (buyer_id = $2 OR seller_id = $2)',
             [req.params.id, merchant.owner_id]
@@ -10132,9 +10136,16 @@ const authenticateApiKey = async (req, res, next) => {
             return res.status(401).json({ error: 'Invalid API Key' });
         }
 
-        req.merchant = result.rows[0];
-        req.isTestMode = req.merchant.key_type.startsWith('test_');
-        next();
+        try {
+            await attachApiKeyEnvironment(req, pool, apiKey);
+            return next();
+        } catch (error) {
+            if (error?.status) {
+                return res.status(error.status).json({ error: error.message, code: error.code });
+            }
+            console.error('Environment API key resolution error:', error);
+            return res.status(500).json({ error: 'Environment resolution failed' });
+        }
     } catch (err) {
         console.error('API Key Auth Error:', err);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -10163,9 +10174,16 @@ const authenticateMerchant = async (req, res, next) => {
             `, [tokenOrKey]);
 
             if (result.rows.length > 0) {
-                req.merchant = result.rows[0];
-                req.isTestMode = req.merchant.key_type.startsWith('test_') || req.merchant.key_type === 'test';
-                return next();
+                try {
+                    await attachApiKeyEnvironment(req, pool, tokenOrKey);
+                    return next();
+                } catch (error) {
+                    if (error?.status) {
+                        return res.status(error.status).json({ error: error.message, code: error.code });
+                    }
+                    console.error('Environment merchant API key resolution error:', error);
+                    return res.status(500).json({ error: 'Environment resolution failed' });
+                }
             }
             // Not found as an API key — fall through to JWT attempt if it could be a JWT
             if (tokenOrKey.includes('.')) {
@@ -10222,16 +10240,36 @@ const authenticateMerchant = async (req, res, next) => {
         req.merchant = result.rows[0];
         req.user = { id: decoded.userId }; // Minimal user object
 
-        // 3. Mode Selection (Default to Live if enabled, but allow header override)
-        const headerMode = req.headers['x-flapapay-test-mode'];
-        if (headerMode === 'true') {
-            req.isTestMode = true;
-        } else if (headerMode === 'false') {
-            req.isTestMode = false;
+        // 3. Environment context. Compatibility mode preserves legacy behavior;
+        // enabling ENVIRONMENT_CONTEXT_ENABLED makes environment identity authoritative.
+        if (process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true') {
+            const requestedEnvironmentId = req.headers['x-flapapay-environment-id'] || null;
+            if (process.env.ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT === 'true' && !requestedEnvironmentId) {
+                return res.status(400).json({ error: 'Environment context is required', code: 'ENVIRONMENT_REQUIRED' });
+            }
+            try {
+                const environment = await require('./services/environmentContext').resolveEnvironment(pool, {
+                    merchantId: req.merchant.id,
+                    environmentId: requestedEnvironmentId,
+                });
+                req.environmentId = environment.id;
+                req.environmentKind = environment.kind;
+                req.environmentSlug = environment.slug;
+                req.isTestMode = environment.kind === 'sandbox';
+                req.environmentSource = requestedEnvironmentId ? 'jwt_header' : 'compat_live_default';
+            } catch (error) {
+                if (error?.status) {
+                    return res.status(error.status).json({ error: error.message, code: error.code });
+                }
+                throw error;
+            }
         } else {
+            req.environmentId = null;
+            req.environmentKind = 'live';
+            req.environmentSlug = null;
             req.isTestMode = !req.merchant.is_live_enabled;
+            req.environmentSource = 'legacy_jwt_default';
         }
-
         next();
     } catch (err) {
         return res.status(401).json({ error: 'Invalid or expired token' });
@@ -22772,7 +22810,7 @@ ${dynamicContext}
 
 app.post('/api/v1/escrows', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { amount, currency, description, seller_email, metadata } = req.body;
 
         if (!amount || !currency || !seller_email) {
@@ -22797,7 +22835,7 @@ app.post('/api/v1/escrows', async (req, res) => {
 
 app.get('/api/v1/escrows/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { id } = req.params;
 
         const result = await pool.query('SELECT * FROM escrows WHERE id = $1', [id]);
@@ -22820,7 +22858,7 @@ app.get('/api/v1/escrows/:id', async (req, res) => {
 // Products
 app.post('/v1/products', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { name, description, metadata } = req.body;
         if (!name) return res.status(400).json({ error: 'Missing required field: name' });
 
@@ -22837,7 +22875,7 @@ app.post('/v1/products', async (req, res) => {
 
 app.get('/v1/products', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT * FROM products WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
         res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
     } catch (err) {
@@ -22847,7 +22885,7 @@ app.get('/v1/products', async (req, res) => {
 
 app.get('/v1/products/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT * FROM products WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -22858,7 +22896,7 @@ app.get('/v1/products/:id', async (req, res) => {
 
 app.patch('/v1/products/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { name, description, status, metadata } = req.body;
         const result = await pool.query(
             'UPDATE products SET name = COALESCE($1, name), description = COALESCE($2, description), status = COALESCE($3, status), metadata = COALESCE($4, metadata), updated_at = NOW() WHERE id = $5 AND merchant_id = $6 RETURNING *',
@@ -22873,7 +22911,7 @@ app.patch('/v1/products/:id', async (req, res) => {
 
 app.delete('/v1/products/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('DELETE FROM products WHERE id = $1 AND merchant_id = $2 RETURNING id', [req.params.id, merchant.merchantId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Product not found' });
         res.json(DeveloperGateway.formatResponse({ deleted: true, id: req.params.id }, merchant.environment));
@@ -22885,7 +22923,7 @@ app.delete('/v1/products/:id', async (req, res) => {
 // Prices
 app.post('/v1/prices', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { product_id, amount, currency, interval, interval_count, trial_days } = req.body;
         if (!product_id || !amount || !currency || !interval) return res.status(400).json({ error: 'Missing req fields' });
 
@@ -22923,7 +22961,7 @@ app.get('/v1/prices', async (req, res) => {
 
 app.get('/v1/prices/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT p.* FROM prices p JOIN products pr ON p.product_id = pr.id WHERE p.id = $1 AND pr.merchant_id = $2', [req.params.id, merchant.merchantId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Price not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -22935,7 +22973,7 @@ app.get('/v1/prices/:id', async (req, res) => {
 // Customers
 app.post('/v1/customers', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { email, name } = req.body;
         if (!email) return res.status(400).json({ error: 'Missing email' });
 
@@ -22965,7 +23003,7 @@ app.post('/v1/customers', async (req, res) => {
 
 app.get('/v1/customers', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT * FROM customers WHERE merchant_id = $1 ORDER BY created_at DESC', [merchant.merchantId]);
         res.json(DeveloperGateway.formatResponse(result.rows, merchant.environment));
     } catch (err) {
@@ -22975,7 +23013,7 @@ app.get('/v1/customers', async (req, res) => {
 
 app.get('/v1/customers/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT * FROM customers WHERE id = $1 AND merchant_id = $2', [req.params.id, merchant.merchantId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -22986,7 +23024,7 @@ app.get('/v1/customers/:id', async (req, res) => {
 
 app.patch('/v1/customers/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { name, phone, mobile_money_provider } = req.body;
         const result = await pool.query(
             `UPDATE customers
@@ -23007,7 +23045,7 @@ app.patch('/v1/customers/:id', async (req, res) => {
 // Subscriptions
 app.post('/v1/subscriptions', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { customer_id, price_id } = req.body;
 
         const custCheck = await pool.query(
@@ -23062,7 +23100,7 @@ app.post('/v1/subscriptions', async (req, res) => {
 
 app.get('/v1/subscriptions', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { customer_id } = req.query;
         // Use merchant_id directly from subscriptions table (with fallback to customers join)
         let query = `SELECT s.* FROM subscriptions s 
@@ -23084,7 +23122,7 @@ app.get('/v1/subscriptions', async (req, res) => {
 // Dedicated endpoint for subscription invoices — MUST be before /:id routes
 app.get('/v1/subscriptions/invoices', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { subscription_id } = req.query;
 
         let query = `SELECT si.*, c.email as customer_email, c.name as customer_name
@@ -23109,7 +23147,7 @@ app.get('/v1/subscriptions/invoices', async (req, res) => {
 // Get single subscription invoice by ID — MUST be before /:id routes
 app.get('/v1/subscriptions/invoices/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const query = `SELECT i.*, c.email as customer_email, c.name as customer_name,
                               s.id as subscription_id, s.status as subscription_status, s.price_id,
                               p.amount as price_amount, p.currency as price_currency, p.interval,
@@ -23132,7 +23170,7 @@ app.get('/v1/subscriptions/invoices/:id', async (req, res) => {
 
 app.get('/v1/subscriptions/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query('SELECT s.* FROM subscriptions s JOIN customers c ON s.customer_id = c.id WHERE s.id = $1 AND c.merchant_id = $2', [req.params.id, merchant.merchantId]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
@@ -23143,7 +23181,7 @@ app.get('/v1/subscriptions/:id', async (req, res) => {
 
 app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const subRes = await pool.query(
             `SELECT s.*
              FROM subscriptions s
@@ -23176,7 +23214,7 @@ app.post('/v1/subscriptions/:id/cancel', async (req, res) => {
 
 app.post('/v1/payment-intents', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { amount, currency, customer_id } = req.body;
 
         let stripeCustomerId;
@@ -23200,7 +23238,7 @@ app.post('/v1/payment-intents', async (req, res) => {
 
 app.get('/v1/invoices', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { subscription_id, customer_id } = req.query;
         let query = `SELECT i.*, c.email as customer_email, c.name as customer_name 
                      FROM sub_invoice i 
@@ -23227,7 +23265,7 @@ app.get('/v1/invoices', async (req, res) => {
 
 app.post('/v1/subscriptions/:id/activate', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const subId = req.params.id;
 
         const subCheck = await pool.query(
@@ -23268,7 +23306,7 @@ app.post('/v1/subscriptions/:id/activate', async (req, res) => {
 // proration invoice charged against (new_amount − credit).
 app.patch('/v1/subscriptions/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { price_id } = req.body;
         if (!price_id) return res.status(400).json({ error: 'price_id is required' });
 
@@ -23398,7 +23436,7 @@ app.patch('/v1/subscriptions/:id', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/subscriptions/:id/pause', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         // pause_at defaults to now; caller may pass a future timestamp
         const pauseAt = req.body.pause_at ? new Date(req.body.pause_at) : new Date();
 
@@ -23441,7 +23479,7 @@ app.post('/v1/subscriptions/:id/pause', async (req, res) => {
 
 app.post('/v1/subscriptions/:id/resume', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
 
         const subCheck = await pool.query(
             `SELECT s.*
@@ -23485,7 +23523,7 @@ app.post('/v1/subscriptions/:id/resume', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/coupons', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { code, name, amount_off, percent_off, duration, duration_in_months,
                 max_redemptions, valid_until } = req.body;
 
@@ -23516,7 +23554,7 @@ app.post('/v1/coupons', async (req, res) => {
 
 app.get('/v1/coupons', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { active } = req.query;
         let query  = 'SELECT * FROM coupons WHERE merchant_id = $1';
         const params = [merchant.merchantId];
@@ -23531,7 +23569,7 @@ app.get('/v1/coupons', async (req, res) => {
 
 app.get('/v1/coupons/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         // Allow lookup by UUID or by code
         const result = await pool.query(
             `SELECT * FROM coupons WHERE merchant_id = $1 AND (id::text = $2 OR UPPER(code) = UPPER($2))`,
@@ -23546,7 +23584,7 @@ app.get('/v1/coupons/:id', async (req, res) => {
 
 app.patch('/v1/coupons/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { active, name, max_redemptions, valid_until } = req.body;
         const result = await pool.query(
             `UPDATE coupons
@@ -23566,7 +23604,7 @@ app.patch('/v1/coupons/:id', async (req, res) => {
 
 app.delete('/v1/coupons/:id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         // Soft-delete: deactivate so existing subscription discounts are unaffected
         const result = await pool.query(
             `UPDATE coupons SET active = FALSE WHERE id = $1 AND merchant_id = $2 RETURNING id`,
@@ -23585,7 +23623,7 @@ app.delete('/v1/coupons/:id', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/subscriptions/:id/discounts', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { coupon_code } = req.body;
         if (!coupon_code) return res.status(400).json({ error: 'coupon_code is required' });
 
@@ -23647,7 +23685,7 @@ app.post('/v1/subscriptions/:id/discounts', async (req, res) => {
 
 app.get('/v1/subscriptions/:id/discounts', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query(
             `SELECT sd.*, c.code, c.name AS coupon_name, c.amount_off, c.percent_off, c.duration
              FROM subscription_discounts sd
@@ -23665,7 +23703,7 @@ app.get('/v1/subscriptions/:id/discounts', async (req, res) => {
 
 app.delete('/v1/subscriptions/:id/discounts/:discount_id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query(
             `DELETE FROM subscription_discounts sd
              USING coupons c
@@ -23685,7 +23723,7 @@ app.delete('/v1/subscriptions/:id/discounts/:discount_id', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/v1/billing/settings', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query(
             'SELECT * FROM merchant_billing_settings WHERE merchant_id = $1',
             [merchant.merchantId]
@@ -23708,7 +23746,7 @@ app.get('/v1/billing/settings', async (req, res) => {
 
 app.put('/v1/billing/settings', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const {
             dunning_days, max_dunning_attempts, trial_reminder_days,
             payment_failed_email, trial_ending_email, receipt_email, cancelation_email,
@@ -23749,7 +23787,7 @@ app.put('/v1/billing/settings', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/subscriptions/:id/payment-method', async (req, res) => {
     try {
-        await DeveloperGateway.authenticate(req.headers.authorization);
+        await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         return res.status(400).json({
             error: 'Subscription payment method updates must use CyberSource card tokenization. Mobile money is not supported for subscriptions.',
         });
@@ -23763,7 +23801,7 @@ app.post('/v1/subscriptions/:id/payment-method', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/v1/analytics/subscriptions', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const mid = merchant.merchantId;
 
         const [subsRes, invoiceRes, newRes, canceledRes, recentRes] = await Promise.all([
@@ -23887,7 +23925,7 @@ app.get('/v1/analytics/subscriptions', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/v1/analytics/churn-cohorts', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const mid = merchant.merchantId;
 
         const cohortsRes = await pool.query(`
@@ -23950,7 +23988,7 @@ app.get('/v1/analytics/churn-cohorts', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/v1/meters', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { name, key, unit, aggregation } = req.body;
         if (!name || !key) return res.status(400).json({ error: 'name and key are required' });
         const result = await pool.query(
@@ -23968,7 +24006,7 @@ app.post('/v1/meters', async (req, res) => {
 
 app.get('/v1/meters', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const result = await pool.query(
             'SELECT * FROM billing_meters WHERE merchant_id=$1 ORDER BY created_at DESC',
             [merchant.merchantId]
@@ -23982,7 +24020,7 @@ app.get('/v1/meters', async (req, res) => {
 // Report usage for a metered subscription
 app.post('/v1/usage', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { subscription_id, meter_key, quantity, idempotency_key } = req.body;
         if (!subscription_id || !meter_key || quantity == null) {
             return res.status(400).json({ error: 'subscription_id, meter_key, and quantity are required' });
@@ -24015,7 +24053,7 @@ app.post('/v1/usage', async (req, res) => {
 // Get usage for a subscription's current billing period
 app.get('/v1/usage/:subscription_id', async (req, res) => {
     try {
-        const merchant = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const subRes = await pool.query(
             `SELECT s.current_period_start, s.current_period_end FROM subscriptions s
              WHERE s.id=$1 AND (s.merchant_id=$2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id=$2))`,
@@ -24060,7 +24098,7 @@ const PORTAL_TTL_HOURS  = 24;
 // Merchant creates a portal session for a customer
 app.post('/v1/customer-portal/sessions', async (req, res) => {
     try {
-        const merchant     = await DeveloperGateway.authenticate(req.headers.authorization);
+        const merchant     = await DeveloperGateway.authenticate(req.headers.authorization, { environmentId: req.headers['x-flapapay-environment-id'] || null, actorUserId: req.user?.id || null });
         const { customer_id, return_url } = req.body;
         if (!customer_id) return res.status(400).json({ error: 'customer_id is required' });
 
