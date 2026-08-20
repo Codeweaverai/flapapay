@@ -55,7 +55,7 @@ export const FXLiquidityPoolInfo: React.FC = () => {
             <main>
                 <section className="relative overflow-hidden bg-[#07110f] text-white">
                     <div className="absolute inset-0 bg-[radial-gradient(circle_at_76%_10%,rgba(251,146,60,0.26),transparent_28%),radial-gradient(circle_at_6%_74%,rgba(247,165,26,0.16),transparent_32%)]" />
-                    <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.12]" style={{ backgroundImage: 'linear-gradient(30deg, rgba(247,165,26,0.9) 12%, transparent 12.5%, transparent 87%, rgba(247,165,26,0.9) 87.5%, rgba(247,165,26,0.9)), linear-gradient(150deg, rgba(247,165,26,0.9) 12%, transparent 12.5%, transparent 87%, rgba(247,165,26,0.9) 87.5%, rgba(247,165,26,0.9)), linear-gradient(30deg, rgba(247,165,26,0.9) 12%, transparent 12.5%, transparent 87%, rgba(247,165,26,0.9) 87.5%, rgba(247,165,26,0.9)), linear-gradient(150deg, rgba(247,165,26,0.9) 12%, transparent 12.5%, transparent 87%, rgba(247,165,26,0.9) 87.5%, rgba(247,165,26,0.9)), linear-gradient(60deg, rgba(255,255,255,0.08) 25%, transparent 25.5%, transparent 75%, rgba(255,255,255,0.08) 75%)', backgroundPosition: '0 0, 0 0, 26px 45px, 26px 45px, 0 0', backgroundSize: '52px 90px' }} />
+                    <div aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.18]" style={{ backgroundImage: "url('/assets/images/cubes.png')", backgroundAttachment: 'fixed' }} />
                     <div className="absolute -right-24 top-32 h-80 w-80 rounded-full border border-[#f7b63b]/15" />
                     <div className="absolute -right-10 top-48 h-56 w-56 rounded-full border border-[#ff9f2f]/20" />
 
