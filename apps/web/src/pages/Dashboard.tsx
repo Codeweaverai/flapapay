@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { api } from '../lib/axios';
 import { useAuth } from '../contexts/AuthContext';
+import { useEnvironment } from '../contexts/EnvironmentContext';
 import { Button } from '../components/ui/Button';
 import { useNavigate } from 'react-router-dom';
 import { Sidebar } from '../components/layout/Sidebar';
@@ -197,6 +198,7 @@ export const Dashboard: React.FC = () => {
     const { user, token, logout } = useAuth();
     const navigate = useNavigate();
     const { unreadCount } = useNotifications();
+    const { environments, activeEnvironment, selectEnvironment, loading: environmentsLoading } = useEnvironment();
     const [wallets, setWallets] = useState<Wallet[]>([]);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -204,6 +206,7 @@ export const Dashboard: React.FC = () => {
     const [newCurrency, setNewCurrency] = useState('USD');
     const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
     const [showUserMenu, setShowUserMenu] = useState(false);
+    const [environmentSwitching, setEnvironmentSwitching] = useState(false);
 
     const fetchData = async () => {
         if (!token) return;
@@ -234,9 +237,23 @@ export const Dashboard: React.FC = () => {
         }
     };
 
+    const switchEnvironment = async (kind: 'live' | 'sandbox') => {
+        const target = environments.find(environment => environment.kind === kind);
+        if (!target || target.id === activeEnvironment?.id || environmentSwitching) return;
+
+        setEnvironmentSwitching(true);
+        try {
+            await selectEnvironment(target.id);
+        } catch (error: any) {
+            window.alert(error?.response?.data?.error || 'This environment is not available yet.');
+        } finally {
+            setEnvironmentSwitching(false);
+        }
+    };
+
     useEffect(() => {
         fetchData();
-    }, [token, logout]); // Added logout to dependency array
+    }, [token, logout, activeEnvironment?.id]); // Refresh data when the selected environment changes.
 
 
     if (isLoading) return <div className="flex items-center justify-center min-h-screen bg-gray-50">Loading...</div>;
@@ -271,6 +288,26 @@ export const Dashboard: React.FC = () => {
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                 </svg>
                             </button>
+                            <div className="flex items-center rounded-2xl border border-orange-200 bg-gradient-to-r from-orange-50 via-amber-50 to-yellow-50 p-1 shadow-sm" role="group" aria-label="Payment environment">
+                                <button
+                                    onClick={() => void switchEnvironment('live')}
+                                    disabled={environmentsLoading || environmentSwitching || !environments.some(environment => environment.kind === 'live')}
+                                    className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-all disabled:cursor-not-allowed disabled:opacity-50 ${activeEnvironment?.kind === 'live' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-200' : 'text-orange-700 hover:bg-white/80'}`}
+                                    title="Switch to Live environment"
+                                >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'live' ? 'bg-white' : 'bg-orange-500'}`} />
+                                    Live
+                                </button>
+                                <button
+                                    onClick={() => void switchEnvironment('sandbox')}
+                                    disabled={environmentsLoading || environmentSwitching || !environments.some(environment => environment.kind === 'sandbox')}
+                                    className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-all disabled:cursor-not-allowed disabled:opacity-50 ${activeEnvironment?.kind === 'sandbox' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-200' : 'text-amber-700 hover:bg-white/80'}`}
+                                    title="Switch to Test Sandbox environment"
+                                >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'sandbox' ? 'bg-white' : 'bg-amber-500'}`} />
+                                    Test Sandbox
+                                </button>
+                            </div>
                             <button
                                 onClick={() => navigate('/notifications')}
                                 className="p-3 bg-white border border-gray-100 rounded-2xl shadow-sm hover:shadow-md transition-all active:scale-95 group"
