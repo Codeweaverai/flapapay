@@ -1,16 +1,23 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useEnvironment } from '../../contexts/EnvironmentContext';
 
 export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ isOpen }) => {
     const navigate = useNavigate();
     const location = useLocation();
     useAuth();
+    const { environments, activeEnvironment, selectEnvironment, loading } = useEnvironment();
 
     const menuItems = [
         {
             label: 'Dashboard', path: '/dashboard', icon: (
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+            )
+        },
+        {
+            label: 'Developers', path: '/developers/api-keys', icon: (
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" /></svg>
             )
         },
         {
@@ -85,6 +92,32 @@ export const Sidebar: React.FC<{ isOpen?: boolean; onClose?: () => void }> = ({ 
 
             <div className="px-12 mb-6">
                 <div className="h-[1px] bg-gradient-to-r from-transparent via-gray-200 to-transparent w-full"></div>
+            </div>
+
+            <div className="px-6 mb-5 z-10">
+                <div className="rounded-2xl border border-gray-200 bg-white/90 p-3 shadow-sm">
+                    <div className="flex items-center justify-between mb-2">
+                        <span className="text-[9px] font-black uppercase tracking-[0.16em] text-gray-400">Environment</span>
+                        <span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'sandbox' ? 'bg-orange-500' : 'bg-amber-500'}`} />
+                    </div>
+                    <select
+                        aria-label="Select dashboard environment"
+                        value={activeEnvironment?.id || ''}
+                        disabled={loading || environments.length === 0}
+                        onChange={(event) => selectEnvironment(event.target.value).catch(() => undefined)}
+                        className="w-full appearance-none rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-gray-800 outline-none transition focus:border-orange-300 focus:ring-2 focus:ring-orange-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                        {environments.length === 0 && <option value="">Loading workspace…</option>}
+                        {environments.map(environment => (
+                            <option key={environment.id} value={environment.id}>
+                                {environment.kind === 'sandbox' ? 'Sandbox' : 'Live'}
+                            </option>
+                        ))}
+                    </select>
+                    <p className="mt-2 text-[9px] leading-relaxed text-gray-400">
+                        {activeEnvironment?.kind === 'sandbox' ? 'Safe testing workspace' : 'Production workspace'}
+                    </p>
+                </div>
             </div>
 
             <nav className="p-6 pt-2 space-y-2 flex-1 overflow-y-auto no-scrollbar z-10">

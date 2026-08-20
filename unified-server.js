@@ -22257,8 +22257,94 @@ app.get('/merchants/activity', authenticateToken, requireMerchantWorkspace, requ
 // NOTE: /merchants/transfer-to-wallet is registered earlier in this file (canonical handler).
 // This duplicate entry has been removed to avoid Express double-registration.
 
+// ---- Merchant Developer Environment Workspace ----
+app.get('/merchant/environments', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT me.id, me.name, me.slug, me.kind, me.status, me.created_at, me.updated_at,
+                    m.compliance_status, m.is_live_enabled
+               FROM merchant_environments me
+               JOIN merchants m ON m.id = me.merchant_id
+              WHERE me.merchant_id = $1
+              ORDER BY CASE WHEN me.kind = 'live' THEN 0 ELSE 1 END, me.created_at ASC`,
+            [req.currentMerchant.id]
+        );
+        res.json({
+            environments: result.rows.map(environment => ({
+                ...environment,
+                complianceStatus: environment.compliance_status,
+                isLiveEnabled: environment.is_live_enabled,
+                isSelectable: environment.kind === 'sandbox' || (environment.compliance_status === 'ACTIVE' && environment.is_live_enabled === true),
+            })),
+        });
+    } catch (err) {
+        console.error('[Merchant Environments] List Error:', err);
+        res.status(500).json({ error: 'Failed to fetch merchant environments' });
+    }
+});
+
+app.post('/merchant/environments/:id/select', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT me.id, me.name, me.slug, me.kind, me.status,
+                    m.compliance_status, m.is_live_enabled
+               FROM merchant_environments me
+               JOIN merchants m ON m.id = me.merchant_id
+              WHERE me.id = $1 AND me.merchant_id = $2 AND me.status = 'active'`,
+            [req.params.id, req.currentMerchant.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Environment not found' });
+        const environment = result.rows[0];
+        const liveBlocked = environment.kind === 'live' &&
+            (environment.compliance_status !== 'ACTIVE' || environment.is_live_enabled !== true);
+        if (liveBlocked) {
+            return res.status(409).json({
+                error: 'Live environment requires approved merchant compliance',
+                code: 'LIVE_COMPLIANCE_REQUIRED',
+                complianceStatus: environment.compliance_status,
+                isLiveEnabled: environment.is_live_enabled === true,
+            });
+        }
+        await pool.query(
+            `INSERT INTO environment_audit_log
+                (merchant_id, environment_id, actor_user_id, action, resource_type, outcome, metadata)
+             VALUES ($1, $2, $3, 'environment.selected', 'merchant_environment', 'allowed', $4)`,
+            [req.currentMerchant.id, environment.id, req.user.id, JSON.stringify({ source: 'dashboard' })]
+        );
+        res.json({ environment: {
+            id: environment.id,
+            name: environment.name,
+            slug: environment.slug,
+            kind: environment.kind,
+            status: environment.status,
+            complianceStatus: environment.compliance_status,
+            isLiveEnabled: environment.is_live_enabled === true,
+        } });
+    } catch (err) {
+        console.error('[Merchant Environments] Select Error:', err);
+        res.status(500).json({ error: 'Failed to select environment' });
+    }
+});
+
+app.get('/merchant/environment-activity', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.activity.read'), async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT id, action, resource_type, resource_id, outcome, reason, metadata, created_at
+               FROM environment_audit_log
+              WHERE merchant_id = $1 AND environment_id = $2
+              ORDER BY created_at DESC
+              LIMIT 100`,
+            [req.currentMerchant.id, req.environmentId]
+        );
+        res.json({ items: result.rows, environmentId: req.environmentId });
+    } catch (err) {
+        console.error('[Merchant Environments] Activity Error:', err);
+        res.status(500).json({ error: 'Failed to fetch environment activity' });
+    }
+});
+
 // ---- GET /merchants/keys ----
-// Returns both test and live key pairs for the authenticated merchant
+// Returns credentials only for the selected environment while retaining the legacy response shape.
 app.get('/merchants/keys', authenticateToken, requireMerchantWorkspace, requireMerchantPermission('merchant.workspace.read'), async (req, res) => {
     try {
         const merchantId = req.currentMerchant.id;
@@ -22266,8 +22352,11 @@ app.get('/merchants/keys', authenticateToken, requireMerchantWorkspace, requireM
         const canReadKeys = hasMerchantPermission(req.currentMerchant.membership_role, 'merchant.keys.read');
 
         const keysRes = await pool.query(
-            `SELECT key_type, key_value, is_active, created_at FROM api_keys WHERE merchant_id = $1 AND is_active = true ORDER BY created_at DESC`,
-            [merchantId]
+            `SELECT key_type, key_value, is_active, created_at FROM api_keys
+              WHERE merchant_id = $1 AND is_active = true
+                AND ($2::uuid IS NULL OR environment_id = $2)
+              ORDER BY created_at DESC`,
+            [merchantId, req.environmentId]
         );
 
         const keys = {};
@@ -22277,14 +22366,24 @@ app.get('/merchants/keys', authenticateToken, requireMerchantWorkspace, requireM
 
         const isApproved = complianceStatus === 'ACTIVE';
 
+        const selectedMode = req.environmentKind === 'sandbox' ? 'test' : 'live';
+        const scopedKeys = canReadKeys ? keysRes.rows : [];
         res.json({
+            environment: {
+                id: req.environmentId,
+                kind: req.environmentKind,
+                name: req.environmentKind === 'sandbox' ? 'Sandbox' : 'Live',
+                complianceStatus,
+                isLiveEnabled: req.currentMerchant.is_live_enabled === true,
+            },
+            keys: scopedKeys,
             test: {
-                public: canReadKeys ? (keys['test_public'] || '') : '',
-                secret: canReadKeys ? (keys['test_secret'] || '') : ''
+                public: selectedMode === 'test' && canReadKeys ? (keys['test_public'] || '') : '',
+                secret: selectedMode === 'test' && canReadKeys ? (keys['test_secret'] || '') : ''
             },
             live: {
-                public: canReadKeys ? (keys['live_public'] || 'pk_live_unprovisioned') : '',
-                secret: canReadKeys ? (keys['live_secret'] || 'sk_live_unprovisioned') : ''
+                public: selectedMode === 'live' && canReadKeys ? (keys['live_public'] || '') : '',
+                secret: selectedMode === 'live' && canReadKeys ? (keys['live_secret'] || '') : ''
             },
             isApproved,
             canManageKeys: hasMerchantPermission(req.currentMerchant.membership_role, 'merchant.keys.rotate'),
@@ -22303,29 +22402,21 @@ app.post('/merchants/keys/roll', authenticateToken, requireMerchantWorkspace, re
     try {
         await client.query('BEGIN');
         const merchantId = req.currentMerchant.id;
-        const { keyType, type } = req.body; // Handle both keyType and type
-        const mode = keyType || type;
-
-        // Deactivate existing keys
-        const typeFilter = mode ? `AND key_type LIKE '${mode}%'` : '';
-        await client.query(`UPDATE api_keys SET is_active = false WHERE merchant_id = $1 ${typeFilter}`, [merchantId]);
-
-        // Provision new keys
+                const mode = req.environmentKind === 'sandbox' ? 'test' : 'live';
+        if (mode === 'live' && (req.currentMerchant.compliance_status !== 'ACTIVE' || req.currentMerchant.is_live_enabled !== true)) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: 'Live API keys require approved merchant compliance', code: 'LIVE_COMPLIANCE_REQUIRED' });
+        }
+        const typeFilter = `AND key_type LIKE '${mode}%'`;
+        await client.query(`UPDATE api_keys SET is_active = false WHERE merchant_id = $1 AND environment_id = $2 ${typeFilter}`, [merchantId, req.environmentId]);
         const typesToProvision = mode === 'test'
             ? [{ type: 'test_public', value: generateMerchantApiKey('test_public') }, { type: 'test_secret', value: generateMerchantApiKey('test_secret') }]
-            : mode === 'live'
-                ? [{ type: 'live_public', value: generateMerchantApiKey('live_public') }, { type: 'live_secret', value: generateMerchantApiKey('live_secret') }]
-                : [
-                    { type: 'test_public', value: generateMerchantApiKey('test_public') },
-                    { type: 'test_secret', value: generateMerchantApiKey('test_secret') },
-                    { type: 'live_public', value: generateMerchantApiKey('live_public') },
-                    { type: 'live_secret', value: generateMerchantApiKey('live_secret') },
-                ];
+            : [{ type: 'live_public', value: generateMerchantApiKey('live_public') }, { type: 'live_secret', value: generateMerchantApiKey('live_secret') }];
 
         for (const k of typesToProvision) {
             await client.query(
-                `INSERT INTO api_keys (merchant_id, key_type, key_value) VALUES ($1, $2, $3)`,
-                [merchantId, k.type, k.value]
+                `INSERT INTO api_keys (merchant_id, key_type, key_value, environment_id, mode) VALUES ($1, $2, $3, $4, $5)`,
+                [merchantId, k.type, k.value, req.environmentId, mode]
             );
         }
 
@@ -22337,13 +22428,15 @@ app.post('/merchants/keys/roll', authenticateToken, requireMerchantWorkspace, re
 
         res.json({
             message: 'API keys rotated successfully',
+            environment: { id: req.environmentId, kind: req.environmentKind },
+            keys: typesToProvision.map(k => ({ key_type: k.type, key_value: k.value, is_active: true })),
             test: {
-                public: newKeys['test_public'] || '',
-                secret: newKeys['test_secret'] || ''
+                public: mode === 'test' ? (newKeys['test_public'] || '') : '',
+                secret: mode === 'test' ? (newKeys['test_secret'] || '') : ''
             },
             live: {
-                public: newKeys['live_public'] || '',
-                secret: newKeys['live_secret'] || ''
+                public: mode === 'live' ? (newKeys['live_public'] || '') : '',
+                secret: mode === 'live' ? (newKeys['live_secret'] || '') : ''
             }
         });
     } catch (err) {

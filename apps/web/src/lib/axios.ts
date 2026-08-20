@@ -11,6 +11,10 @@ export const api = axios.create({
 // Add a request interceptor to add the auth token if available
 api.interceptors.request.use((config) => {
     const url = config.url || '';
+    const environmentId = localStorage.getItem('flapapay_environment_id');
+    if (environmentId) {
+        config.headers['x-flapapay-environment-id'] = environmentId;
+    }
 
     // For merchant-scoped endpoints, prefer the stored merchant secret key
     if (url.startsWith('/v1/connect') || url.startsWith('/v1/webhooks') || url.startsWith('/v1/charges')) {

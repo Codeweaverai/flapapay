@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
+import { EnvironmentProvider } from './contexts/EnvironmentContext';
 import { LandingPage } from './pages/LandingPage';
 import { SignInPage } from './pages/auth/SignInPage';
 import { UnifiedAuthPage } from './pages/auth/UnifiedAuthPage';
@@ -11,6 +12,7 @@ import { SendMoney } from './pages/SendMoney';
 import { ProductsPage } from './pages/ProductsPage';
 import { SolutionsPage } from './pages/SolutionsPage';
 import { DevelopersPage } from './pages/DevelopersPage';
+import { DeveloperWorkspace } from './pages/DeveloperWorkspace';
 import { PricingPage } from './pages/PricingPage';
 import { AboutPage } from './pages/AboutPage';
 import { CustomersPage } from './pages/CustomersPage';
@@ -126,6 +128,9 @@ function AppRoutes() {
       <Route path="/products" element={<ProductsPage />} />
       <Route path="/solutions" element={<SolutionsPage />} />
       <Route path="/developers" element={<DevelopersPage />} />
+      <Route path="/developers/api-keys" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
+      <Route path="/developers/activity" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
+      <Route path="/developers/environments" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
       <Route path="/merchant/login" element={<Navigate to="/merchant/signup" replace />} />
       <Route path="/merchant/signup" element={<MerchantAuth mode="signup" />} />
       <Route path="/pricing" element={<PricingPage />} />
@@ -484,11 +489,13 @@ function AppRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <NotificationProvider>
-        <Router>
-          <AppRoutes />
-        </Router>
-      </NotificationProvider>
+      <EnvironmentProvider>
+        <NotificationProvider>
+          <Router>
+            <AppRoutes />
+          </Router>
+        </NotificationProvider>
+      </EnvironmentProvider>
     </AuthProvider>
   );
 }
