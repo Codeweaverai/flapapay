@@ -10261,35 +10261,31 @@ const authenticateMerchant = async (req, res, next) => {
         req.merchant = result.rows[0];
         req.user = { id: decoded.userId }; // Minimal user object
 
-        // 3. Environment context. Compatibility mode preserves legacy behavior;
-        // enabling ENVIRONMENT_CONTEXT_ENABLED makes environment identity authoritative.
-        if (process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true') {
-            const requestedEnvironmentId = req.headers['x-flapapay-environment-id'] || null;
-            if (process.env.ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT === 'true' && !requestedEnvironmentId) {
-                return res.status(400).json({ error: 'Environment context is required', code: 'ENVIRONMENT_REQUIRED' });
+        // Resolve the live environment during compatibility mode as well. This
+        // keeps legacy JWT callers on live while allowing webhook resources to
+        // be written and queried with environment_id before enforcement.
+        const requestedEnvironmentId = req.headers['x-flapapay-environment-id'] || null;
+        if (process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true' &&
+            process.env.ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT === 'true' && !requestedEnvironmentId) {
+            return res.status(400).json({ error: 'Environment context is required', code: 'ENVIRONMENT_REQUIRED' });
+        }
+        try {
+            const environment = await require('./services/environmentContext').resolveEnvironment(pool, {
+                merchantId: req.merchant.id,
+                environmentId: requestedEnvironmentId,
+            });
+            req.environmentId = environment.id;
+            req.environmentKind = environment.kind;
+            req.environmentSlug = environment.slug;
+            req.isTestMode = environment.kind === 'sandbox';
+            req.environmentSource = process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true'
+                ? (requestedEnvironmentId ? 'jwt_header' : 'compat_live_default')
+                : 'legacy_jwt_default';
+        } catch (error) {
+            if (error?.status) {
+                return res.status(error.status).json({ error: error.message, code: error.code });
             }
-            try {
-                const environment = await require('./services/environmentContext').resolveEnvironment(pool, {
-                    merchantId: req.merchant.id,
-                    environmentId: requestedEnvironmentId,
-                });
-                req.environmentId = environment.id;
-                req.environmentKind = environment.kind;
-                req.environmentSlug = environment.slug;
-                req.isTestMode = environment.kind === 'sandbox';
-                req.environmentSource = requestedEnvironmentId ? 'jwt_header' : 'compat_live_default';
-            } catch (error) {
-                if (error?.status) {
-                    return res.status(error.status).json({ error: error.message, code: error.code });
-                }
-                throw error;
-            }
-        } else {
-            req.environmentId = null;
-            req.environmentKind = 'live';
-            req.environmentSlug = null;
-            req.isTestMode = !req.merchant.is_live_enabled;
-            req.environmentSource = 'legacy_jwt_default';
+            throw error;
         }
         next();
     } catch (err) {
@@ -10385,19 +10381,20 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
                     transactionReference: `CHG_${chargeId}`,
                     description: description || `Charge ${chargeId}`,
                     livemode: false,
+                    environmentId: req.environmentId,
                 });
 
                 await txClient.query(
                     `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
                                          description, metadata, livemode, destination_merchant_id, application_fee_amount,
-                                         available_at, is_settled)
-                     VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)`,
+                                         available_at, is_settled, environment_id)
+                     VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true,$12)`,
                     [
                         chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
                         source.startsWith('tok_') ? 'card' : 'mobile_money',
                         JSON.stringify(responseData.source.details),
                         description, JSON.stringify(req.body.metadata || {}), false,
-                        null, null
+                        null, null, req.environmentId
                     ]
                 );
 
@@ -10410,7 +10407,7 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
             }
 
             // E. Dispatch Webhooks (Background — after commit)
-            dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
+            dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData, req.environmentId);
             await emitFraudPlatformEvent({
                 eventType: 'charge.succeeded',
                 sourceSystem: 'charges_api',
@@ -10469,19 +10466,20 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
                 transactionReference: `CHG_${chargeId}`,
                 description: description || `Charge ${chargeId}`,
                 livemode: true,
+                environmentId: req.environmentId,
             });
 
             await txClientLive.query(
                 `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
                                      description, metadata, livemode, destination_merchant_id, application_fee_amount,
-                                     available_at, is_settled)
-                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)`,
+                                     available_at, is_settled, environment_id)
+                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true,$12)`,
                 [
                     chargeId, req.merchant.merchant_id, amount, currency.toUpperCase(),
                     source.startsWith('tok_') ? 'card' : 'mobile_money',
                     JSON.stringify(responseData.source.details),
                     description, JSON.stringify(req.body.metadata || {}), true,
-                    null, null
+                    null, null, req.environmentId
                 ]
             );
 
@@ -10494,7 +10492,7 @@ app.post('/v1/charges', authenticateApiKey, async (req, res) => {
         }
 
         // Dispatch Webhooks (Background — after commit)
-        dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData);
+        dispatchWebhook(req.merchant.merchant_id, 'charge.succeeded', responseData, req.environmentId);
         await emitFraudPlatformEvent({
             eventType: 'charge.succeeded',
             sourceSystem: 'charges_api',
@@ -14487,8 +14485,8 @@ app.get('/v1/encryption-key', authenticateMerchant, async (req, res) => {
 app.get('/v1/webhooks', authenticateMerchant, async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, url, events, enabled, description, created_at FROM webhook_endpoints WHERE merchant_id = $1 ORDER BY created_at DESC',
-            [req.merchant.merchant_id]
+            'SELECT id, url, events, enabled, description, created_at, environment_id FROM webhook_endpoints WHERE merchant_id = $1 AND environment_id = $2 ORDER BY created_at DESC',
+            [req.merchant.merchant_id, req.environmentId]
         );
         res.json(result.rows);
     } catch (err) {
@@ -14507,17 +14505,18 @@ app.post('/v1/webhooks', authenticateMerchant, async (req, res) => {
     const signingSecret = crypto.randomBytes(32).toString('hex');
     try {
         const result = await pool.query(
-            `INSERT INTO webhook_endpoints (merchant_id, url, events, signing_secret, description)
-             VALUES ($1,$2,$3,$4,$5) RETURNING id, url, events, description, created_at`,
+            `INSERT INTO webhook_endpoints (merchant_id, url, events, signing_secret, description, environment_id)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, url, events, description, created_at, environment_id`,
             [
                 req.merchant.merchant_id,
                 url,
                 events || ['*'],
                 signingSecret,
-                description || null
+                description || null,
+                req.environmentId
             ]
         );
-        res.json({ ...result.rows[0], signing_secret: signingSecret });
+        res.json({ ...result.rows[0], signing_secret: signingSecret, environment_id: req.environmentId });
     } catch (err) {
         res.status(500).json({ error: 'Failed to register webhook' });
     }
@@ -14527,8 +14526,8 @@ app.post('/v1/webhooks', authenticateMerchant, async (req, res) => {
 app.delete('/v1/webhooks/:id', authenticateMerchant, async (req, res) => {
     try {
         await pool.query(
-            'DELETE FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2',
-            [req.params.id, req.merchant.merchant_id]
+            'DELETE FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2 AND environment_id = $3',
+            [req.params.id, req.merchant.merchant_id, req.environmentId]
         );
         res.json({ deleted: true });
     } catch (err) {
@@ -14542,9 +14541,9 @@ app.get('/v1/webhooks/:id/events', authenticateMerchant, async (req, res) => {
         const result = await pool.query(
             `SELECT wd.* FROM webhook_deliveries wd
              JOIN webhook_endpoints we ON we.id = wd.endpoint_id
-             WHERE wd.endpoint_id = $1 AND we.merchant_id = $2
+             WHERE wd.endpoint_id = $1 AND we.merchant_id = $2 AND we.environment_id = $3 AND wd.environment_id = $3
              ORDER BY wd.delivered_at DESC LIMIT 50`,
-            [req.params.id, req.merchant.merchant_id]
+            [req.params.id, req.merchant.merchant_id, req.environmentId]
         );
         res.json(result.rows);
     } catch (err) {
@@ -14557,8 +14556,8 @@ app.post('/v1/webhooks/:id/test', authenticateMerchant, async (req, res) => {
     const { event_type, custom_payload } = req.body;
     try {
         const ep = await pool.query(
-            'SELECT * FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2',
-            [req.params.id, req.merchant.merchant_id]
+            'SELECT * FROM webhook_endpoints WHERE id = $1 AND merchant_id = $2 AND environment_id = $3',
+            [req.params.id, req.merchant.merchant_id, req.environmentId]
         );
         if (ep.rows.length === 0) return res.status(404).json({ error: 'Endpoint not found' });
 
@@ -14602,14 +14601,14 @@ app.post('/v1/webhooks/:id/test', authenticateMerchant, async (req, res) => {
                 timeout: 10000
             });
             await pool.query(
-                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
-                [deliveryId, endpoint.id, eventName, body, httpRes.status, JSON.stringify(httpRes.data).slice(0, 1000)]
+                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at, environment_id) VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)`,
+                [deliveryId, endpoint.id, eventName, body, httpRes.status, JSON.stringify(httpRes.data).slice(0, 1000), req.environmentId]
             );
             res.json({ success: true, response_status: httpRes.status, delivery_id: deliveryId, event_type: eventName, payload });
         } catch (httpErr) {
             await pool.query(
-                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
-                [deliveryId, endpoint.id, eventName, body, httpErr.response?.status || 0, httpErr.message]
+                `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, response_status, response_body, delivered_at, environment_id) VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)`,
+                [deliveryId, endpoint.id, eventName, body, httpErr.response?.status || 0, httpErr.message, req.environmentId]
             );
             res.json({ success: false, error: httpErr.message, response_status: httpErr.response?.status || 0, delivery_id: deliveryId, event_type: eventName });
         }
@@ -17715,9 +17714,9 @@ app.get('/v1/webhooks/deliveries', authenticateMerchant, async (req, res) => {
     const { event_type, status, endpoint_id, limit = 50, offset = 0 } = req.query;
     const merchantId = req.merchant.merchant_id;
     try {
-        const conditions = ['we.merchant_id = $1'];
-        const values = [merchantId];
-        let idx = 2;
+        const conditions = ['we.merchant_id = $1', 'we.environment_id = $2', 'wd.environment_id = $2'];
+        const values = [merchantId, req.environmentId];
+        let idx = 3;
 
         if (event_type) { conditions.push(`wd.event ILIKE $${idx++}`); values.push(`%${event_type}%`); }
         if (endpoint_id) { conditions.push(`wd.endpoint_id = $${idx++}`); values.push(endpoint_id); }
@@ -17739,7 +17738,7 @@ app.get('/v1/webhooks/deliveries', authenticateMerchant, async (req, res) => {
         const countResult = await pool.query(
             `SELECT COUNT(*) FROM webhook_deliveries wd
              JOIN webhook_endpoints we ON we.id = wd.endpoint_id
-             WHERE ${conditions.slice(0, -0).join(' AND ')}`,
+             WHERE ${conditions.join(' AND ')}`,
             countValues
         );
         res.json({ deliveries: result.rows, total: parseInt(countResult.rows[0].count) });
@@ -17757,8 +17756,8 @@ app.post('/v1/webhooks/deliveries/:id/retry', authenticateMerchant, async (req, 
             `SELECT wd.*, we.url, we.signing_secret, we.merchant_id
              FROM webhook_deliveries wd
              JOIN webhook_endpoints we ON we.id = wd.endpoint_id
-             WHERE wd.id = $1 AND we.merchant_id = $2`,
-            [req.params.id, merchantId]
+             WHERE wd.id = $1 AND we.merchant_id = $2 AND we.environment_id = $3 AND wd.environment_id = $3`,
+            [req.params.id, merchantId, req.environmentId]
         );
         if (delRes.rows.length === 0) return res.status(404).json({ error: 'Delivery not found' });
         const delivery = delRes.rows[0];
@@ -17789,9 +17788,9 @@ app.post('/v1/webhooks/deliveries/:id/retry', authenticateMerchant, async (req, 
 
         // Log the retry attempt as a new delivery record
         const newDelivery = await pool.query(
-            `INSERT INTO webhook_deliveries (endpoint_id, event, payload, response_status, response_body, delivered_at)
-             VALUES ($1,$2,$3,$4,$5,NOW()) RETURNING *`,
-            [delivery.endpoint_id, payload.event, body, responseStatus, responseBody]
+            `INSERT INTO webhook_deliveries (endpoint_id, event, payload, response_status, response_body, delivered_at, environment_id)
+             VALUES ($1,$2,$3,$4,$5,NOW(),$6) RETURNING *`,
+            [delivery.endpoint_id, payload.event, body, responseStatus, responseBody, req.environmentId]
         );
 
         res.json({
@@ -17809,8 +17808,8 @@ app.post('/v1/webhooks/deliveries/:id/retry', authenticateMerchant, async (req, 
 app.get('/v1/webhooks/endpoints', authenticateMerchant, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, url, description, events, enabled, created_at FROM webhook_endpoints WHERE merchant_id = $1 ORDER BY created_at DESC`,
-            [req.merchant.merchant_id]
+            `SELECT id, url, description, events, enabled, created_at, environment_id FROM webhook_endpoints WHERE merchant_id = $1 AND environment_id = $2 ORDER BY created_at DESC`,
+            [req.merchant.merchant_id, req.environmentId]
         );
         res.json({ endpoints: result.rows });
     } catch (err) {
@@ -18487,8 +18486,8 @@ app.post('/merchants/webhooks', authenticateToken, async (req, res) => {
 
         const secret = 'whsec_' + crypto.randomBytes(16).toString('hex');
         await pool.query(
-            'INSERT INTO webhooks (merchant_id, url, secret) VALUES ($1, $2, $3)',
-            [merchantRes.rows[0].id, url, secret]
+            'INSERT INTO webhooks (merchant_id, url, secret, environment_id) VALUES ($1, $2, $3, $4)',
+            [merchantRes.rows[0].id, url, secret, req.environmentId]
         );
         res.json({ success: true, secret });
     } catch (err) {
@@ -18497,18 +18496,22 @@ app.post('/merchants/webhooks', authenticateToken, async (req, res) => {
 });
 
 // Helper: Dispatch Webhook with Persistence
-const dispatchWebhook = async (merchantId, event, data) => {
+const dispatchWebhook = async (merchantId, event, data, requestedEnvironmentId = null) => {
     try {
-        const webhooks = await pool.query('SELECT id, url, secret FROM webhooks WHERE merchant_id = $1 AND is_active = TRUE', [merchantId]);
+        const environment = await require('./services/environmentContext').resolveEnvironment(pool, {
+            merchantId,
+            environmentId: requestedEnvironmentId,
+        });
+        const webhooks = await pool.query('SELECT id, url, secret FROM webhooks WHERE merchant_id = $1 AND environment_id = $2 AND is_active = TRUE', [merchantId, environment.id]);
 
         for (const wh of webhooks.rows) {
             console.log(`[Webhook] Queueing ${event} for ${wh.url}`);
 
             // Create log entry
             const logRes = await pool.query(
-                `INSERT INTO webhook_delivery_logs (webhook_id, merchant_id, event_type, payload, status, next_retry_at) 
-                 VALUES ($1, $2, $3, $4, 'PENDING', NOW()) RETURNING id`,
-                [wh.id, merchantId, event, JSON.stringify(data)]
+                `INSERT INTO webhook_delivery_logs (webhook_id, merchant_id, event_type, payload, status, next_retry_at, environment_id)
+                 VALUES ($1, $2, $3, $4, 'PENDING', NOW(), $5) RETURNING id`,
+                [wh.id, merchantId, event, JSON.stringify(data), environment.id]
             );
 
             // Immediate attempt
@@ -18525,7 +18528,7 @@ const attemptWebhookDelivery = async (logId) => {
             `SELECT l.*, w.url, w.secret 
              FROM webhook_delivery_logs l 
              JOIN webhooks w ON l.webhook_id = w.id 
-             WHERE l.id = $1`, [logId]
+             WHERE l.id = $1 AND l.environment_id = w.environment_id`, [logId]
         );
 
         if (logRes.rows.length === 0) return;
@@ -18574,7 +18577,7 @@ const attemptWebhookDelivery = async (logId) => {
 setInterval(async () => {
     try {
         const pendingRes = await pool.query(
-            "SELECT id FROM webhook_delivery_logs WHERE status = 'FAILED' AND retry_count < 5 AND next_retry_at <= NOW()"
+            "SELECT id FROM webhook_delivery_logs WHERE status = 'FAILED' AND retry_count < 5 AND next_retry_at <= NOW() AND environment_id IS NOT NULL"
         );
         for (const row of pendingRes.rows) {
             attemptWebhookDelivery(row.id);
@@ -18649,6 +18652,7 @@ async function creditCheckoutToMerchantWallet(client, {
     transactionReference,
     description,
     livemode = false,
+    environmentId = null,
 }) {
     const merchantRes = await client.query(
         'SELECT user_id FROM merchants WHERE id = $1',
@@ -18669,9 +18673,9 @@ async function creditCheckoutToMerchantWallet(client, {
 
     await client.query(
         `INSERT INTO ledger_entries
-          (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode)
-         VALUES ($1, $2, $3, $4, $5, 'checkout_payment', 'COMPLETED', $6)`,
-        [transactionReference, walletRes.rows[0].id, amount, currency, description, livemode]
+          (transaction_reference, credit_wallet_id, amount, currency, description, transaction_type, status, livemode, environment_id)
+         VALUES ($1, $2, $3, $4, $5, 'checkout_payment', 'COMPLETED', $6, $7)`,
+        [transactionReference, walletRes.rows[0].id, amount, currency, description, livemode, environmentId]
     );
 
     return walletRes.rows[0].id;
@@ -19166,6 +19170,7 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
                 transactionReference: `CHK_${session.id}`,
                 description: session.description || `Checkout ${session.id}`,
                 livemode: isSessionLive,
+                environmentId: session.environment_id || null,
             });
 
             await txClient.query(
@@ -19176,16 +19181,16 @@ app.post('/v1/checkout/sessions/:id/confirm', async (req, res) => {
             await txClient.query(
                 `INSERT INTO charges (id, merchant_id, amount, currency, status, payment_method, payment_details,
                                      description, metadata, livemode, destination_merchant_id, application_fee_amount,
-                                     available_at, is_settled)
-                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true)
+                                     available_at, is_settled, environment_id)
+                 VALUES ($1,$2,$3,$4,'succeeded',$5,$6,$7,$8,$9,$10,$11,NOW(),true,$12)
                  ON CONFLICT (id) DO NOTHING`,
                 [
                     csChargeId, session.merchant_id, amount, currency,
                     payment_method || 'mobile_money',
-                    JSON.stringify({ payment_intent: finalPaymentIntentId }),
+                    JSON.stringify({ payment_intent: finalPaymentId }),
                     session.description || `Checkout ${session.id}`,
                     JSON.stringify(session.metadata || {}), isSessionLive,
-                    null, null
+                    null, null, session.environment_id || null
                 ]
             );
 
@@ -23112,7 +23117,7 @@ app.post('/v1/subscriptions', async (req, res) => {
             id: subscription.id, customer_id, price_id,
             status: trialStatus, livemode: subscription.livemode,
             current_period_end: periodEnd,
-        }));
+        }, merchant.environmentId));
 
         res.status(201).json(DeveloperGateway.formatResponse({
             ...subscription,
@@ -23345,8 +23350,9 @@ app.patch('/v1/subscriptions/:id', async (req, res) => {
              FROM subscriptions s
              JOIN prices p ON s.price_id = p.id
              WHERE s.id = $1
-               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
-            [req.params.id, merchant.merchantId]
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND ($3::uuid IS NULL OR s.environment_id = $3)`,
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
         const sub = subRes.rows[0];
@@ -23435,7 +23441,7 @@ app.patch('/v1/subscriptions/:id', async (req, res) => {
                 new_price_id:    price_id,
                 proration_credit: unusedCredit,
                 proration_charge: prorationCharge,
-            }));
+            }, merchant.environmentId));
 
             res.json(DeveloperGateway.formatResponse({
                 ...updRes.rows[0],
@@ -23471,8 +23477,9 @@ app.post('/v1/subscriptions/:id/pause', async (req, res) => {
             `SELECT s.*
              FROM subscriptions s
              WHERE s.id = $1
-               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
-            [req.params.id, merchant.merchantId]
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND ($3::uuid IS NULL OR s.environment_id = $3)`,
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!subCheck.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
 
@@ -23488,15 +23495,16 @@ app.post('/v1/subscriptions/:id/pause', async (req, res) => {
                  updated_at = NOW()
              WHERE id = $2
                AND (merchant_id = $3 OR customer_id IN (SELECT id FROM customers WHERE merchant_id = $3))
+               AND ($4::uuid IS NULL OR environment_id = $4)
                AND status NOT IN ('canceled')
              RETURNING *`,
-            [pauseAt, req.params.id, merchant.merchantId]
+            [pauseAt, req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!result.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
 
         setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.paused', {
             subscription_id: req.params.id, pause_at: pauseAt,
-        }));
+        }, merchant.environmentId));
 
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -23512,8 +23520,9 @@ app.post('/v1/subscriptions/:id/resume', async (req, res) => {
             `SELECT s.*
              FROM subscriptions s
              WHERE s.id = $1
-               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
-            [req.params.id, merchant.merchantId]
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND ($3::uuid IS NULL OR s.environment_id = $3)`,
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!subCheck.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
 
@@ -23529,15 +23538,16 @@ app.post('/v1/subscriptions/:id/resume', async (req, res) => {
                  updated_at  = NOW()
              WHERE id = $1
                AND (merchant_id = $2 OR customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND ($3::uuid IS NULL OR environment_id = $3)
                AND status NOT IN ('canceled')
              RETURNING *`,
-            [req.params.id, merchant.merchantId]
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!result.rows.length) return res.status(404).json({ error: 'Subscription not found or already canceled' });
 
         setImmediate(() => emitWebhookForMerchant(merchant.merchantId, 'subscription.resumed', {
             subscription_id: req.params.id, resumed_at: new Date(),
-        }));
+        }, merchant.environmentId));
 
         res.json(DeveloperGateway.formatResponse(result.rows[0], merchant.environment));
     } catch (err) {
@@ -23658,8 +23668,9 @@ app.post('/v1/subscriptions/:id/discounts', async (req, res) => {
         const subRes = await pool.query(
             `SELECT s.* FROM subscriptions s
              WHERE s.id = $1
-               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))`,
-            [req.params.id, merchant.merchantId]
+               AND (s.merchant_id = $2 OR s.customer_id IN (SELECT id FROM customers WHERE merchant_id = $2))
+               AND ($3::uuid IS NULL OR s.environment_id = $3)`,
+            [req.params.id, merchant.merchantId, merchant.environmentId]
         );
         if (!subRes.rows.length) return res.status(404).json({ error: 'Subscription not found' });
 
@@ -24542,7 +24553,7 @@ server.listen(PORT, '0.0.0.0', () => {
                         currency: charge.currency,
                         settled_at: new Date().toISOString(),
                         livemode: charge.livemode
-                    });
+                    }, charge.environment_id);
                 }
             }
         } catch (err) {

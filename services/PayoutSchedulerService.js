@@ -59,13 +59,26 @@ async function ensureWebhookRetryColumns() {
 }
 
 // ─── Webhook emitter — signs, delivers, and marks for retry on failure ────────
-async function emitWebhookForMerchant(merchantId, event, payload) {
+async function resolveWebhookEnvironmentId(merchantId, requestedEnvironmentId = null) {
+    const result = await pool.query(
+        `SELECT id FROM merchant_environments
+         WHERE merchant_id = $1 AND status = 'active'
+           AND ($2::uuid IS NULL AND kind = 'live' OR id = $2)
+         LIMIT 1`,
+        [merchantId, requestedEnvironmentId]
+    );
+    return result.rows[0]?.id || null;
+}
+
+async function emitWebhookForMerchant(merchantId, event, payload, requestedEnvironmentId = null) {
     try {
+        const environmentId = await resolveWebhookEnvironmentId(merchantId, requestedEnvironmentId);
+        if (!environmentId) return;
         const endpointsRes = await pool.query(
             `SELECT * FROM webhook_endpoints
-             WHERE merchant_id = $1 AND enabled = TRUE
-               AND (events @> ARRAY[$2]::text[] OR events @> ARRAY['*']::text[])`,
-            [merchantId, event]
+             WHERE merchant_id = $1 AND environment_id = $2 AND enabled = TRUE
+               AND (events @> ARRAY[$3]::text[] OR events @> ARRAY['*']::text[])`,
+            [merchantId, environmentId, event]
         );
         if (endpointsRes.rows.length === 0) return;
 
@@ -92,9 +105,9 @@ async function emitWebhookForMerchant(merchantId, event, payload) {
 
                 await pool.query(
                     `INSERT INTO webhook_deliveries
-                       (id, endpoint_id, event, payload, response_status, response_body, status, retry_count, delivered_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,'delivered',0,NOW())`,
-                    [deliveryId, ep.id, event, body, res.status, JSON.stringify(res.data).slice(0, 500)]
+                       (id, endpoint_id, event, payload, response_status, response_body, status, retry_count, delivered_at, environment_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,'delivered',0,NOW(),$7)`,
+                    [deliveryId, ep.id, event, body, res.status, JSON.stringify(res.data).slice(0, 500), environmentId]
                 );
 
             } catch (err) {
@@ -102,13 +115,14 @@ async function emitWebhookForMerchant(merchantId, event, payload) {
                 await pool.query(
                     `INSERT INTO webhook_deliveries
                        (id, endpoint_id, event, payload, response_status, response_body,
-                        status, retry_count, next_retry_at, last_error, delivered_at)
-                     VALUES ($1,$2,$3,$4,$5,$6,'failed',0,$7,$8,NOW())`,
+                        status, retry_count, next_retry_at, last_error, delivered_at, environment_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,'failed',0,$7,$8,NOW(),$9)`,
                     [deliveryId, ep.id, event, body,
                      err.response?.status || 0,
                      (err.message || 'timeout').slice(0, 500),
                      nextRetryAt,
-                     (err.message || 'timeout').slice(0, 255)]
+                     (err.message || 'timeout').slice(0, 255),
+                     environmentId]
                 );
                 console.warn(`[Webhook] Delivery to ${ep.url} failed — scheduled retry at ${nextRetryAt.toISOString()}`);
             }
@@ -122,12 +136,14 @@ async function emitWebhookForMerchant(merchantId, event, payload) {
 // Called every 5 minutes by cron. Exponential backoff, max 5 attempts.
 async function retryFailedWebhooks() {
     const dueRows = await pool.query(`
-        SELECT wd.*, we.url, we.signing_secret
+        SELECT wd.*, we.url, we.signing_secret, we.environment_id AS endpoint_environment_id
         FROM webhook_deliveries wd
         JOIN webhook_endpoints we ON we.id = wd.endpoint_id
         WHERE wd.status      = 'failed'
           AND wd.retry_count  < $1
           AND wd.next_retry_at <= NOW()
+          AND wd.environment_id = we.environment_id
+          AND we.enabled = TRUE
         ORDER BY wd.next_retry_at ASC
         LIMIT 100
     `, [WEBHOOK_MAX_RETRIES]);

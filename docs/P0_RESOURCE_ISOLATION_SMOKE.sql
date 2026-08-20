@@ -119,6 +119,30 @@ BEGIN
     IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned merchant charges', n; END IF;
 END $$;
 
+-- Modern and legacy webhook resources must remain environment-assigned and
+-- delivery rows must match their parent endpoint environment.
+DO $$
+DECLARE n bigint;
+BEGIN
+    SELECT COUNT(*) INTO n FROM webhook_endpoints WHERE merchant_id IS NOT NULL AND environment_id IS NULL;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned webhook endpoints', n; END IF;
+
+    SELECT COUNT(*) INTO n
+    FROM webhook_deliveries wd
+    JOIN webhook_endpoints we ON we.id = wd.endpoint_id
+    WHERE wd.environment_id IS NULL OR wd.environment_id IS DISTINCT FROM we.environment_id;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % webhook deliveries with missing or mismatched environment', n; END IF;
+
+    SELECT COUNT(*) INTO n FROM webhooks WHERE merchant_id IS NOT NULL AND environment_id IS NULL;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % unassigned legacy webhooks', n; END IF;
+
+    SELECT COUNT(*) INTO n
+    FROM webhook_delivery_logs l
+    JOIN webhooks w ON w.id = l.webhook_id
+    WHERE l.environment_id IS NULL OR l.environment_id IS DISTINCT FROM w.environment_id;
+    IF n <> 0 THEN RAISE EXCEPTION 'Found % legacy webhook logs with missing or mismatched environment', n; END IF;
+END $$;
+
 -- Attached subscription/invoice environments must agree with legacy livemode.
 DO $$
 DECLARE n bigint;
