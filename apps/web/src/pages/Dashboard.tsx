@@ -308,10 +308,10 @@ export const Dashboard: React.FC = () => {
                                     onClick={() => requestEnvironmentSwitch('sandbox')}
                                     disabled={environmentsLoading || environmentSwitching || !environments.some(environment => environment.kind === 'sandbox')}
                                     className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-all disabled:cursor-not-allowed disabled:opacity-50 ${activeEnvironment?.kind === 'sandbox' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-200' : 'text-amber-700 hover:bg-white/80'}`}
-                                    title="Switch to Test Sandbox environment"
+                                    title="Switch to Sandbox environment"
                                 >
                                     <span className={`h-1.5 w-1.5 rounded-full ${activeEnvironment?.kind === 'sandbox' ? 'bg-white' : 'bg-amber-500'}`} />
-                                    Test Sandbox
+                                    Sandbox
                                 </button>
                             </div>
                             <button
