@@ -106,6 +106,20 @@ export const AboutPage: React.FC = () => {
     return (
         <div className="min-h-screen bg-[#f7f4ed] font-sans text-slate-950 selection:bg-orange-300/50">
             <Navbar />
+            <style>{`
+                @keyframes flapapay-hero-device-drift {
+                    0% { transform: translate3d(0, 0, 0) rotate(-1deg); }
+                    100% { transform: translate3d(0, -14px, 0) rotate(1deg); }
+                }
+                @keyframes flapapay-hero-card-drift {
+                    0% { transform: translate3d(0, 0, 0) rotate(-2deg); }
+                    100% { transform: translate3d(10px, -10px, 0) rotate(2deg); }
+                }
+                @media (prefers-reduced-motion: no-preference) {
+                    .flapapay-hero-device { animation: flapapay-hero-device-drift 6.5s cubic-bezier(0.77, 0, 0.175, 1) infinite alternate; }
+                    .flapapay-hero-card { animation: flapapay-hero-card-drift 5.5s cubic-bezier(0.23, 1, 0.32, 1) infinite alternate; }
+                }
+            `}</style>
 
             <main className="pt-20">
                 <section
@@ -117,7 +131,7 @@ export const AboutPage: React.FC = () => {
                     <div className="pointer-events-none absolute -bottom-32 left-1/3 h-80 w-80 rounded-full bg-yellow-400/10 blur-[112px]" />
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid gap-14 lg:grid-cols-[minmax(0,1.08fr)_minmax(420px,.82fr)] lg:items-center">
+                        <div className="grid gap-14 lg:grid-cols-[minmax(0,.95fr)_minmax(480px,1.05fr)] lg:items-center">
                             <div className="max-w-3xl">
                                 <div className="inline-flex items-center gap-3 border border-white/15 bg-white/[0.06] px-4 py-2 text-[10px] font-black uppercase tracking-[0.32em] text-orange-200 backdrop-blur-sm">
                                     <span className="h-2 w-2 rounded-full bg-gradient-to-br from-orange-400 to-yellow-300" />
@@ -140,9 +154,17 @@ export const AboutPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="relative overflow-hidden border border-white/20 bg-white p-2 shadow-[0_32px_90px_rgba(0,0,0,.5)]">
-                                <div className="absolute left-0 top-0 z-10 h-1 w-full bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" />
-                                <img src={assets.virtualCards} alt="FlapaPay virtual-card merchant dashboard" className="block aspect-[4/3] w-full object-cover object-center" />
+                            <div className="relative mx-auto w-full max-w-[46rem] pb-7 sm:pb-10 lg:-mr-14 lg:ml-auto lg:max-w-none xl:-mr-20">
+                                <div aria-hidden="true" className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-orange-500/30 blur-3xl" />
+                                <div aria-hidden="true" className="absolute -bottom-2 left-8 h-28 w-40 bg-yellow-300/25 blur-3xl" />
+                                <div className="flapapay-hero-device relative overflow-hidden border border-white/25 bg-white p-2.5 shadow-[0_42px_110px_rgba(0,0,0,.62),0_18px_46px_rgba(249,115,22,.28)] sm:p-3">
+                                    <div className="absolute left-0 top-0 z-10 h-1 w-full bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" />
+                                    <img src={assets.virtualCards} alt="FlapaPay virtual-card merchant dashboard" className="block aspect-[4/3] w-full object-cover object-center" />
+                                </div>
+                                <div className="flapapay-hero-card absolute -bottom-1 left-2 hidden border border-white/25 bg-[#111722]/95 px-4 py-3 shadow-[0_18px_42px_rgba(0,0,0,.46)] backdrop-blur sm:flex sm:items-center sm:gap-3 lg:-left-8">
+                                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-orange-500 to-yellow-300 text-slate-950"><CreditCard className="h-4 w-4" /></div>
+                                    <div><p className="text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Merchant tools</p><p className="mt-1 text-sm font-black text-white">Virtual Cards</p></div>
+                                </div>
                             </div>
                         </div>
                     </div>
