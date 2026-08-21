@@ -4,7 +4,6 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import { EnvironmentProvider } from './contexts/EnvironmentContext';
 import { LandingPage } from './pages/LandingPage';
-import { SignInPage } from './pages/auth/SignInPage';
 import { UnifiedAuthPage } from './pages/auth/UnifiedAuthPage';
 import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 import { Dashboard } from './pages/Dashboard';
@@ -71,7 +70,6 @@ import { AdminNotifications } from './pages/admin/AdminNotifications';
 import { AdminEscrowDetail } from './pages/admin/AdminEscrowDetail';
 import { AdminSubMerchants } from './pages/admin/AdminSubMerchants';
 import { AdminSubMerchantReview } from './pages/admin/AdminSubMerchantReview';
-import { MerchantAuth } from './pages/auth/MerchantAuth';
 import { AllTransactions } from './pages/AllTransactions';
 import { FXLiquidityPool } from './pages/FXLiquidityPool';
 import { FXLiquidityPoolInfo } from './pages/FXLiquidityPoolInfo';
@@ -98,7 +96,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }
   const { isAuthenticated, token } = useAuth();
   // Simple check. Real app might check token expiry.
   if (!isAuthenticated && !token) {
-    return <Navigate to="/signup/individual" replace />;
+    return <Navigate to="/signup?mode=login" replace />;
   }
   return children;
 };
@@ -107,7 +105,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }
 const AdminRoute: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const { isAuthenticated, user, token } = useAuth();
   if (!isAuthenticated && !token) {
-    return <Navigate to="/signup/individual" replace />;
+    return <Navigate to="/signup?mode=login" replace />;
   }
   if (user && user.role !== 'admin') {
     return <Navigate to="/dashboard" replace />;
@@ -119,10 +117,10 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
-      <Route path="/login" element={<Navigate to="/signup/individual" replace />} />
+      <Route path="/login" element={<Navigate to="/signup?mode=login" replace />} />
       <Route path="/signup" element={<UnifiedAuthPage />} />
-      <Route path="/create-account" element={<UnifiedAuthPage />} />
-      <Route path="/signup/individual" element={<SignInPage initialTab="register" />} />
+      <Route path="/create-account" element={<Navigate to="/signup" replace />} />
+      <Route path="/signup/individual" element={<Navigate to="/signup?account=individual&mode=signup" replace />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/claim/:token" element={<ClaimFundsPage />} />
       <Route path="/products" element={<ProductsPage />} />
@@ -131,8 +129,8 @@ function AppRoutes() {
       <Route path="/developers/api-keys" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
       <Route path="/developers/activity" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
       <Route path="/developers/environments" element={<ProtectedRoute><DeveloperWorkspace /></ProtectedRoute>} />
-      <Route path="/merchant/login" element={<Navigate to="/merchant/signup" replace />} />
-      <Route path="/merchant/signup" element={<MerchantAuth mode="signup" />} />
+      <Route path="/merchant/login" element={<Navigate to="/signup?account=business&mode=login" replace />} />
+      <Route path="/merchant/signup" element={<Navigate to="/signup?account=business&mode=signup" replace />} />
       <Route path="/pricing" element={<PricingPage />} />
       <Route path="/about" element={<AboutPage />} />
       <Route path="/customers" element={<CustomersPage />} />

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../../lib/axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { Navbar } from '../../components/layout/Navbar';
@@ -30,10 +30,11 @@ const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 export const UnifiedAuthPage: React.FC = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const { login } = useAuth();
 
     const [audience, setAudience] = useState<Audience>('individual');
-    const [mode, setMode] = useState<Mode>('login');
+    const [mode, setMode] = useState<Mode>('signup');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
@@ -64,6 +65,14 @@ export const UnifiedAuthPage: React.FC = () => {
     const [merchantRegistrationType, setMerchantRegistrationType] = useState('');
     const [merchantAgreedToTerms, setMerchantAgreedToTerms] = useState(false);
     const [registrationTypes, setRegistrationTypes] = useState<RegistrationType[]>([]);
+
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const requestedAudience = params.get('account');
+        const requestedMode = params.get('mode');
+        setAudience(requestedAudience === 'business' ? 'business' : 'individual');
+        setMode(requestedMode === 'login' ? 'login' : 'signup');
+    }, [location.search]);
 
     useEffect(() => {
         if (audience !== 'business' || mode !== 'signup' || merchantCountry !== 'Zambia') return;
@@ -490,15 +499,15 @@ export const UnifiedAuthPage: React.FC = () => {
                     <section className="rounded-[40px] bg-slate-950 text-white p-8 md:p-12 shadow-2xl shadow-slate-900/25">
                         <p className="text-[11px] font-black uppercase tracking-[0.35em] text-orange-400">Access FlapaPay</p>
                         <h1 className="mt-6 text-4xl md:text-5xl font-black tracking-tight leading-[1.02]">
-                            One login surface for wallets and business accounts
+                            One place to create your FlapaPay account
                         </h1>
                         <p className="mt-5 text-slate-300 text-lg font-medium leading-relaxed">
-                            Switch between personal wallet access and merchant operations without losing the existing security PIN flow or merchant onboarding journey.
+                            Choose an individual wallet or business account here. Business accounts begin in Sandbox and follow the guided compliance path before Live activation.
                         </p>
                         <div className="mt-10 space-y-4">
                             <Feature text="Individuals still sign in with password + 4-digit PIN." />
                             <Feature text="Businesses still continue to the existing onboarding flow after account creation." />
-                            <Feature text="Signup and login are both available directly on this page." />
+                            <Feature text="One public registration entry point for every FlapaPay account." />
                         </div>
                     </section>
 
@@ -526,7 +535,7 @@ export const UnifiedAuthPage: React.FC = () => {
                                         : 'Open a personal FlapaPay wallet and set your 4-digit account PIN during signup.'
                                     : mode === 'login'
                                         ? 'Access your merchant dashboard and resume onboarding or operations.'
-                                        : 'Create the merchant account here, then continue to your existing onboarding flow.'}
+                                        : 'Create a business account, start in Sandbox, then continue through Live verification when you are ready.'}
                             </p>
                         </div>
 
@@ -548,12 +557,7 @@ export const UnifiedAuthPage: React.FC = () => {
                             </button>
                         </div>
 
-                        <div className="mt-4 text-center text-xs font-bold uppercase tracking-[0.16em] text-slate-400">
-                            Legacy routes still work:
-                            <Link to="/signup/individual" className="ml-2 text-slate-600 hover:text-orange-500 normal-case tracking-normal">individual signup</Link>
-                            <span className="mx-2">|</span>
-                            <Link to="/merchant/signup" className="text-slate-600 hover:text-orange-500 normal-case tracking-normal">merchant signup</Link>
-                        </div>
+                        <p className="mt-4 text-center text-xs font-bold uppercase tracking-[0.16em] text-slate-400">One secure signup flow for individual and business accounts.</p>
                     </section>
                 </div>
             </main>
