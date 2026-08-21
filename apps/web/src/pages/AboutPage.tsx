@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowUpRight, ChevronRight, CircleCheck, Code2, CreditCard, Landmark, Link2, ReceiptText, Send, Store, WalletCards, Workflow } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, CircleCheck, Code2, CreditCard, Landmark, Link2, ReceiptText, Send, ShieldCheck, Sparkles, Store, WalletCards, Workflow } from 'lucide-react';
 import { Navbar } from '../components/layout/Navbar';
 import { Footer } from '../components/layout/Footer';
 import { Button } from '../components/ui/Button';
@@ -13,6 +13,7 @@ const assets = {
     dashboard: '/assets/images/company/flapapay-dashboard-tools.png',
     checkoutSuccess: '/assets/images/company/flapapay-checkout-success.webp',
     checkoutSecurity: '/assets/images/company/flapapay-checkout-security.png',
+    virtualCards: '/assets/images/company/flapapay-virtual-card-dashboard.webp',
     mbolela: '/assets/images/company/mbolela-pule.png',
     george: '/assets/images/company/george-munganga.png',
 };
@@ -45,6 +46,24 @@ const platformLanes = [
         title: 'Connect payments to the systems your business already runs.',
         description: 'Use APIs and webhooks for collections, hosted checkout, payment verification, notifications, refunds, and payout automation, or start without code using Payment Links and Hosted Checkout.',
         icon: <Code2 className="h-5 w-5" />,
+    },
+];
+
+const coreValues = [
+    {
+        title: 'Simplicity',
+        description: 'Payments should enable businesses rather than create unnecessary complexity. We reduce the steps between wanting to pay and being able to pay.',
+        icon: <Sparkles className="h-5 w-5" />,
+    },
+    {
+        title: 'Trust',
+        description: 'Security, privacy, reliability, and regulatory compliance are designed into the operating model, because payment infrastructure must be easy to trust.',
+        icon: <ShieldCheck className="h-5 w-5" />,
+    },
+    {
+        title: 'Progress',
+        description: 'We keep expanding infrastructure, partnerships, payment methods, and technology to meet the changing needs of modern businesses.',
+        icon: <ArrowUpRight className="h-5 w-5" />,
     },
 ];
 
@@ -98,18 +117,18 @@ export const AboutPage: React.FC = () => {
                     <div className="pointer-events-none absolute -bottom-32 left-1/3 h-80 w-80 rounded-full bg-yellow-400/10 blur-[112px]" />
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid gap-14 lg:grid-cols-[minmax(0,1.08fr)_minmax(360px,.72fr)] lg:items-end">
+                        <div className="grid gap-14 lg:grid-cols-[minmax(0,1.08fr)_minmax(420px,.82fr)] lg:items-center">
                             <div className="max-w-3xl">
                                 <div className="inline-flex items-center gap-3 border border-white/15 bg-white/[0.06] px-4 py-2 text-[10px] font-black uppercase tracking-[0.32em] text-orange-200 backdrop-blur-sm">
                                     <span className="h-2 w-2 rounded-full bg-gradient-to-br from-orange-400 to-yellow-300" />
                                     FlapaPay Technologies Limited
                                 </div>
                                 <h1 className="mt-8 text-5xl font-black leading-[0.95] tracking-[-0.055em] text-white sm:text-6xl md:text-7xl lg:text-[5.3rem]">
-                                    The payment gateway built for how African businesses
-                                    <span className="block bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-300 bg-clip-text text-transparent"> collect, pay, and grow.</span>
+                                    Payments made simple.
+                                    <span className="block bg-gradient-to-r from-orange-400 via-orange-500 to-yellow-300 bg-clip-text text-transparent"> Accept. Pay. Move money.</span>
                                 </h1>
                                 <p className="mt-7 max-w-2xl text-lg leading-relaxed text-slate-300 md:text-xl">
-                                    FlapaPay is a Lusaka-headquartered Zambian fintech company building one integrated payment platform for cards, mobile money, bank transfers, online checkout, payment links, APIs, payouts, and point-of-sale payments.
+                                    FlapaPay is a fintech company building one integrated payment platform for cards, mobile money, bank transfers, online checkout, payment links, APIs, payouts, and point-of-sale payments.
                                 </p>
                                 <div className="mt-10 flex flex-col gap-3 sm:flex-row">
                                     <Button size="lg" onClick={() => navigate('/signup')} className="group rounded-none bg-gradient-to-r from-orange-500 via-orange-500 to-yellow-300 px-7 py-5 text-base font-black text-slate-950 shadow-[0_18px_45px_rgba(249,115,22,.24)] transition duration-200 hover:-translate-y-0.5 hover:brightness-110 active:scale-[0.98]">
@@ -121,19 +140,10 @@ export const AboutPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            <aside className="relative border border-white/15 bg-[#0c1019]/90 p-6 shadow-[0_32px_90px_rgba(0,0,0,.48)] backdrop-blur-xl sm:p-7">
-                                <div className="absolute left-0 top-0 h-1 w-full bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" />
-                                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">One gateway, connected rails</p>
-                                <div className="mt-7 space-y-4 border-l border-white/15 pl-5">
-                                    <div><p className="text-sm font-black text-orange-200">For every payment moment</p><p className="mt-1 text-sm leading-relaxed text-slate-300">Collect online and in person. Pay out at operating scale. Track the result from one merchant workspace.</p></div>
-                                    <div><p className="text-sm font-black text-orange-200">For every build stage</p><p className="mt-1 text-sm leading-relaxed text-slate-300">Use Payment Links and Hosted Checkout with no code, or integrate gateway capabilities through APIs and webhooks.</p></div>
-                                </div>
-                                <div className="mt-7 grid gap-px bg-white/10 sm:grid-cols-3">
-                                    <div className="bg-[#0c1019] p-4"><p className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-500">HQ</p><p className="mt-2 text-sm font-black text-white">Lusaka</p></div>
-                                    <div className="bg-[#0c1019] p-4"><p className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-500">Platform</p><p className="mt-2 text-sm font-black text-white">API-first</p></div>
-                                    <div className="bg-[#0c1019] p-4"><p className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-500">Currencies</p><p className="mt-2 text-sm font-black text-white">ZMW / USD</p></div>
-                                </div>
-                            </aside>
+                            <div className="relative overflow-hidden border border-white/20 bg-white p-2 shadow-[0_32px_90px_rgba(0,0,0,.5)]">
+                                <div className="absolute left-0 top-0 z-10 h-1 w-full bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" />
+                                <img src={assets.virtualCards} alt="FlapaPay virtual-card merchant dashboard" className="block aspect-[4/3] w-full object-cover object-center" />
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -145,13 +155,27 @@ export const AboutPage: React.FC = () => {
                     </div>
                 </section>
 
-                <section className="bg-white py-16 md:py-24">
+                <section className="bg-[#10131a] py-16 text-white md:py-24">
                     <div className="mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid gap-10 border-b border-slate-200 pb-10 lg:grid-cols-[.8fr_1.2fr] lg:items-end"><div><p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-600">The FlapaPay platform</p><h2 className="mt-4 text-4xl font-black tracking-[-0.04em] text-slate-950 md:text-5xl">Accept. Manage. Pay. Integrate.</h2></div><p className="max-w-2xl text-base leading-relaxed text-slate-600">Four connected capabilities bring digital collections, transaction visibility, controlled disbursements, and developer integration into one payment-gateway experience.</p></div>
-                        <div className="divide-y divide-slate-200">
-                            {platformLanes.map((lane) => <article key={lane.number} className="group grid gap-6 py-7 transition-colors md:grid-cols-[82px_minmax(0,.95fr)_minmax(0,1.2fr)_42px] md:items-center"><p className="text-sm font-black tracking-[0.16em] text-orange-600">{lane.number}</p><div className="flex items-center gap-4"><div className="flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-yellow-300">{lane.icon}</div><div><p className="text-[10px] font-black uppercase tracking-[0.25em] text-orange-600">{lane.label}</p><h3 className="mt-1 text-2xl font-black tracking-[-0.025em] text-slate-950">{lane.title}</h3></div></div><p className="max-w-xl leading-relaxed text-slate-600">{lane.description}</p><ArrowUpRight className="hidden h-5 w-5 text-orange-500 transition-transform duration-200 group-hover:-translate-y-1 group-hover:translate-x-1 md:block" /></article>)}
+                        <div className="mb-10 max-w-3xl"><p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-300">Our direction</p><h2 className="mt-4 text-4xl font-black leading-[1.02] tracking-[-0.04em] md:text-5xl">A simpler way forward for payments.</h2></div>
+                        <div className="grid gap-px bg-white/15 lg:grid-cols-2">
+                            <article className="bg-[#10131a] p-7 md:p-10"><p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-300">Our mission</p><h3 className="mt-4 max-w-xl text-3xl font-black leading-tight tracking-[-0.03em] text-white md:text-4xl">To make payments simple, secure, and accessible for businesses.</h3><p className="mt-5 max-w-xl leading-relaxed text-slate-300">We build practical payment infrastructure that helps businesses collect, send, and manage money through one connected platform.</p></article>
+                            <article className="relative overflow-hidden bg-gradient-to-br from-orange-500 via-orange-500 to-yellow-300 p-7 text-slate-950 md:p-10"><div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-white/25 blur-3xl" /><div className="relative"><p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-800">Our vision</p><h3 className="mt-4 max-w-xl text-3xl font-black leading-tight tracking-[-0.03em] md:text-4xl">To build a future where moving money is as simple as sending a message.</h3><p className="mt-5 max-w-xl leading-relaxed text-slate-800">Build the rails. Remove the friction. Let businesses move.</p></div></article>
                         </div>
                     </div>
+                </section>
+
+                <section className="relative overflow-hidden bg-white py-16 md:py-24">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8">
+                        <div className="grid gap-10 border-b border-slate-200 pb-10 lg:grid-cols-[.82fr_1.18fr] lg:items-end"><div><p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-600">The FlapaPay platform</p><h2 className="mt-4 text-4xl font-black tracking-[-0.04em] text-slate-950 md:text-5xl">One merchant platform. Four ways to move money.</h2></div><p className="max-w-2xl text-base leading-relaxed text-slate-600">Accept, manage, pay, and integrate through connected payment capabilities that give merchants one clear view of money in motion.</p></div>
+                        <div className="mt-8 grid gap-px bg-slate-200 md:grid-cols-2 lg:grid-cols-4">
+                            {platformLanes.map((lane) => <article key={lane.number} className="group relative min-h-[300px] bg-white p-7 transition duration-200 hover:bg-[#fff7ed] md:p-8"><p className="text-5xl font-black tracking-[-0.06em] text-slate-100 transition-colors group-hover:text-orange-100">{lane.number}</p><div className="absolute right-7 top-7 flex h-11 w-11 items-center justify-center rounded-full bg-slate-950 text-yellow-300 transition-transform duration-200 group-hover:-translate-y-1">{lane.icon}</div><p className="mt-14 text-[10px] font-black uppercase tracking-[0.28em] text-orange-600">{lane.label}</p><h3 className="mt-3 text-2xl font-black leading-tight tracking-[-0.03em] text-slate-950">{lane.title}</h3><p className="mt-4 text-sm leading-relaxed text-slate-600">{lane.description}</p><ChevronRight className="absolute bottom-7 right-7 h-5 w-5 text-orange-500 transition-transform duration-200 group-hover:translate-x-1" /></article>)}
+                        </div>
+                    </div>
+                </section>
+
+                <section className="bg-[#f7f4ed] py-16 md:py-24">
+                    <div className="mx-auto max-w-7xl px-6 lg:px-8"><div className="grid gap-10 lg:grid-cols-[.7fr_1.3fr]"><div><p className="text-[10px] font-black uppercase tracking-[0.3em] text-orange-600">Core values</p><h2 className="mt-4 text-4xl font-black leading-[1.02] tracking-[-0.04em] text-slate-950 md:text-5xl">The principles behind the platform.</h2><p className="mt-6 max-w-md leading-relaxed text-slate-600">Our values come from a practical commitment: payments should make it easier for businesses and customers to move forward.</p></div><div className="grid gap-px bg-slate-300 md:grid-cols-3">{coreValues.map((value) => <article key={value.title} className="bg-[#f7f4ed] p-7"><div className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-orange-600 shadow-sm">{value.icon}</div><h3 className="mt-7 text-2xl font-black tracking-[-0.025em] text-slate-950">{value.title}</h3><p className="mt-3 text-sm leading-relaxed text-slate-600">{value.description}</p></article>)}</div></div></div>
                 </section>
 
                 <section className="relative overflow-hidden bg-[#0a0d13] py-16 text-white md:py-24">
