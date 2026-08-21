@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { api } from '../lib/axios';
 import { useAuth } from '../contexts/AuthContext';
-import { useEnvironment } from '../contexts/EnvironmentContext';
+import { useEnvironment, type MerchantEnvironment } from '../contexts/EnvironmentContext';
 import { Button } from '../components/ui/Button';
 import { useNavigate } from 'react-router-dom';
 import { Sidebar } from '../components/layout/Sidebar';
@@ -207,6 +207,7 @@ export const Dashboard: React.FC = () => {
     const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [environmentSwitching, setEnvironmentSwitching] = useState(false);
+    const [pendingEnvironment, setPendingEnvironment] = useState<MerchantEnvironment | null>(null);
 
     const fetchData = async () => {
         if (!token) return;
@@ -237,13 +238,18 @@ export const Dashboard: React.FC = () => {
         }
     };
 
-    const switchEnvironment = async (kind: 'live' | 'sandbox') => {
+    const requestEnvironmentSwitch = (kind: 'live' | 'sandbox') => {
         const target = environments.find(environment => environment.kind === kind);
         if (!target || target.id === activeEnvironment?.id || environmentSwitching) return;
+        setPendingEnvironment(target);
+    };
 
+    const confirmEnvironmentSwitch = async () => {
+        if (!pendingEnvironment || environmentSwitching) return;
         setEnvironmentSwitching(true);
         try {
-            await selectEnvironment(target.id);
+            await selectEnvironment(pendingEnvironment.id);
+            setPendingEnvironment(null);
         } catch (error: any) {
             window.alert(error?.response?.data?.error || 'This environment is not available yet.');
         } finally {
@@ -290,7 +296,7 @@ export const Dashboard: React.FC = () => {
                             </button>
                             <div className="flex items-center rounded-2xl border border-orange-200 bg-gradient-to-r from-orange-50 via-amber-50 to-yellow-50 p-1 shadow-sm" role="group" aria-label="Payment environment">
                                 <button
-                                    onClick={() => void switchEnvironment('live')}
+                                    onClick={() => requestEnvironmentSwitch('live')}
                                     disabled={environmentsLoading || environmentSwitching || !environments.some(environment => environment.kind === 'live')}
                                     className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-all disabled:cursor-not-allowed disabled:opacity-50 ${activeEnvironment?.kind === 'live' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-200' : 'text-orange-700 hover:bg-white/80'}`}
                                     title="Switch to Live environment"
@@ -299,7 +305,7 @@ export const Dashboard: React.FC = () => {
                                     Live
                                 </button>
                                 <button
-                                    onClick={() => void switchEnvironment('sandbox')}
+                                    onClick={() => requestEnvironmentSwitch('sandbox')}
                                     disabled={environmentsLoading || environmentSwitching || !environments.some(environment => environment.kind === 'sandbox')}
                                     className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-[0.1em] transition-all disabled:cursor-not-allowed disabled:opacity-50 ${activeEnvironment?.kind === 'sandbox' ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-200' : 'text-amber-700 hover:bg-white/80'}`}
                                     title="Switch to Test Sandbox environment"
@@ -752,6 +758,30 @@ export const Dashboard: React.FC = () => {
                             >
                                 Done
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {pendingEnvironment && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="environment-switch-title">
+                    <div className="w-full max-w-md overflow-hidden rounded-[28px] border border-orange-100 bg-white shadow-2xl shadow-slate-900/20">
+                        <div className="h-1.5 bg-gradient-to-r from-orange-500 via-amber-400 to-yellow-300" />
+                        <div className="p-7">
+                            <div className="flex items-start gap-4">
+                                <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${pendingEnvironment.kind === 'live' ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700'}`}>
+                                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v18m-6-9h12" /></svg>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-orange-600">Confirm environment change</p>
+                                    <h2 id="environment-switch-title" className="mt-1 text-xl font-black text-slate-950">Switch to {pendingEnvironment.kind === 'live' ? 'Live' : 'Test Sandbox'}?</h2>
+                                    <p className="mt-3 text-sm leading-relaxed text-slate-500">Your dashboard data, API keys, activity, and requests will use the <span className="font-bold text-slate-800">{pendingEnvironment.name}</span> environment after confirmation.</p>
+                                </div>
+                            </div>
+                            {pendingEnvironment.kind === 'live' && <div className="mt-5 rounded-2xl border border-orange-100 bg-orange-50 px-4 py-3 text-xs leading-relaxed text-orange-800">Live mode can access production configuration and payment rails. Confirm that this is the intended workspace.</div>}
+                            <div className="mt-7 flex items-center justify-end gap-3">
+                                <button onClick={() => setPendingEnvironment(null)} disabled={environmentSwitching} className="rounded-xl px-4 py-2.5 text-xs font-black text-slate-500 transition hover:bg-slate-100 disabled:opacity-50">Cancel</button>
+                                <button onClick={() => void confirmEnvironmentSwitch()} disabled={environmentSwitching} className="rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-4 py-2.5 text-xs font-black text-white shadow-lg shadow-orange-200 transition hover:brightness-105 active:scale-[0.97] disabled:opacity-50">{environmentSwitching ? 'Switching…' : `Switch to ${pendingEnvironment.kind === 'live' ? 'Live' : 'Test Sandbox'}`}</button>
+                            </div>
                         </div>
                     </div>
                 </div>
