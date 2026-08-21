@@ -131,7 +131,7 @@ export const AboutPage: React.FC = () => {
                     <div className="pointer-events-none absolute -bottom-32 left-1/3 h-80 w-80 rounded-full bg-yellow-400/10 blur-[112px]" />
 
                     <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
-                        <div className="grid gap-14 lg:grid-cols-[minmax(0,.86fr)_minmax(480px,1.14fr)] lg:items-center">
+                        <div className="grid gap-14 lg:grid-cols-[minmax(0,.86fr)_minmax(480px,1.14fr)] lg:items-center xl:gap-24">
                             <div className="max-w-3xl">
                                 <div className="inline-flex items-center gap-3 border border-white/15 bg-white/[0.06] px-4 py-2 text-[10px] font-black uppercase tracking-[0.32em] text-orange-200 backdrop-blur-sm">
                                     <span className="h-2 w-2 rounded-full bg-gradient-to-br from-orange-400 to-yellow-300" />
@@ -154,7 +154,7 @@ export const AboutPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            <div className="relative mx-auto w-full max-w-[46rem] pb-7 sm:pb-10 lg:-mt-5 lg:-mr-4 lg:ml-auto lg:max-w-none lg:origin-right lg:scale-[1.06] xl:-mr-8 xl:scale-[1.10] 2xl:-mr-12 2xl:scale-[1.18]">
+                            <div className="relative mx-auto w-full max-w-[46rem] pb-7 sm:pb-10 lg:-mt-5 lg:-mr-8 lg:ml-auto lg:max-w-none lg:origin-right lg:scale-[1.06] xl:-mr-16 xl:scale-[1.10] 2xl:-mr-24 2xl:scale-[1.18]">
                                 <div aria-hidden="true" className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-orange-500/30 blur-3xl" />
                                 <div aria-hidden="true" className="absolute -bottom-2 left-8 h-28 w-40 bg-yellow-300/25 blur-3xl" />
                                 <div className="flapapay-hero-device relative overflow-hidden border border-white/25 bg-white p-2.5 shadow-[0_42px_110px_rgba(0,0,0,.62),0_18px_46px_rgba(249,115,22,.28)] sm:p-3">
