@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import ReactCountryFlag from 'react-country-flag';
 import { api } from '../../lib/axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { Navbar } from '../../components/layout/Navbar';
@@ -11,8 +12,8 @@ type BusinessType = 'business' | 'other';
 interface RegistrationType { value: string; label: string; }
 
 const COUNTRY_CODES = [
-    { code: 'ZM', dial: '+260' }, { code: 'NG', dial: '+234' }, { code: 'KE', dial: '+254' },
-    { code: 'ZA', dial: '+27' }, { code: 'GH', dial: '+233' }, { code: 'US', dial: '+1' }, { code: 'GB', dial: '+44' },
+    { code: 'ZM', dial: '+260', name: 'Zambia' }, { code: 'NG', dial: '+234', name: 'Nigeria' }, { code: 'KE', dial: '+254', name: 'Kenya' },
+    { code: 'ZA', dial: '+27', name: 'South Africa' }, { code: 'GH', dial: '+233', name: 'Ghana' }, { code: 'US', dial: '+1', name: 'United States' }, { code: 'GB', dial: '+44', name: 'United Kingdom' },
 ];
 const BUSINESS_COUNTRIES = ['Zambia', 'Nigeria', 'Kenya', 'South Africa', 'Ghana'];
 const AUTH_CAMPAIGN_IMAGE = '/assets/images/auth/flapapay-auth-campaign.png';
@@ -71,6 +72,7 @@ export const UnifiedAuthPage: React.FC = () => {
         { value: 'sole-proprietorship', label: 'Sole Proprietorship' }, { value: 'limited-liability', label: 'Private Limited Company (Ltd)' },
         { value: 'public-company', label: 'Public Limited Company (PLC)' }, { value: 'partnership', label: 'Partnership' }, { value: 'ngo', label: 'NGO / Non-Profit' },
     ], [registrationTypes]);
+    const selectedPhoneCountry = COUNTRY_CODES.find((country) => country.dial === countryCode) || COUNTRY_CODES[0];
 
     const routeAfterLogin = async (token: string, user: any) => {
         login(token, user);
@@ -147,7 +149,7 @@ export const UnifiedAuthPage: React.FC = () => {
         <form onSubmit={handleSignup} className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2"><Field label="First name"><input type="text" value={firstName} onChange={(event) => setFirstName(event.target.value)} className={inputClass} required /></Field><Field label="Last name"><input type="text" value={lastName} onChange={(event) => setLastName(event.target.value)} className={inputClass} required /></Field></div>
             <Field label="Email address"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className={inputClass} required /></Field>
-            <Field label="Phone number"><div className="grid grid-cols-[120px_1fr] gap-3"><select value={countryCode} onChange={(event) => setCountryCode(event.target.value)} className={inputClass}>{COUNTRY_CODES.map((country) => <option key={country.code} value={country.dial} className="bg-slate-950">{country.code} {country.dial}</option>)}</select><input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} className={inputClass} placeholder="97XXXXXXX" required /></div></Field>
+            <Field label="Phone number"><div className="grid grid-cols-[148px_1fr] gap-3"><div className="relative"><ReactCountryFlag countryCode={selectedPhoneCountry.code} svg title={selectedPhoneCountry.name} style={{ width: '1.35em', height: '1.35em' }} className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2" /><select value={countryCode} onChange={(event) => setCountryCode(event.target.value)} aria-label="Phone country" className={`${inputClass} pl-10 pr-2`}>{COUNTRY_CODES.map((country) => <option key={country.code} value={country.dial} className="bg-slate-950">{country.name} {country.dial}</option>)}</select></div><input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} className={inputClass} placeholder="97XXXXXXX" required /></div><p className="text-xs text-slate-500">Default country: Zambia (+260).</p></Field>
             <Field label="Password"><div className="relative"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} className={`${inputClass} pr-16`} minLength={8} required /><button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-4 text-xs font-black uppercase tracking-[0.1em] text-amber-200 transition hover:text-yellow-100">{showPassword ? 'Hide' : 'Show'}</button></div></Field>
             <PinEntry label="Create a 4-digit security PIN" value={pin} onChange={setPin} helper="Use a PIN you can remember. It adds a second check when you sign in." />
             <label className={`block cursor-pointer rounded-2xl border p-4 transition ${isBusinessAccount ? 'border-amber-300/60 bg-gradient-to-r from-orange-500/15 to-yellow-400/10 shadow-lg shadow-orange-500/10' : 'border-white/10 bg-white/[0.035] hover:border-white/25'}`}><div className="flex items-start gap-3"><input type="checkbox" checked={isBusinessAccount} onChange={(event) => setIsBusinessAccount(event.target.checked)} className="mt-1 h-4 w-4 accent-orange-500" /><div><p className="font-bold text-white">I am registering this account for a business</p><p className="mt-1 text-sm leading-relaxed text-slate-400">Add business details now. Your business begins in Sandbox and unlocks Live only after compliance approval.</p></div></div></label>
@@ -159,9 +161,9 @@ export const UnifiedAuthPage: React.FC = () => {
     return <div className="min-h-screen bg-[#07090e] text-white" style={{ backgroundImage: "linear-gradient(rgba(7,9,14,.83), rgba(7,9,14,.97)), url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed' }}>
         <Navbar />
         <main className="mx-auto grid min-h-screen max-w-7xl items-center gap-8 px-5 pb-12 pt-28 sm:px-8 lg:grid-cols-[minmax(0,0.92fr)_minmax(440px,0.8fr)] lg:gap-12 lg:pt-32">
-            <aside className="relative hidden h-[min(760px,calc(100vh-10rem))] min-h-[620px] overflow-hidden rounded-[34px] border border-white/10 shadow-[0_32px_90px_rgba(0,0,0,.62)] lg:block"><img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="h-full w-full object-cover object-center" /><div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/10" /><div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/35 to-transparent" /></aside>
+            <aside className="relative hidden w-full max-h-[760px] aspect-[2/3] self-center overflow-hidden rounded-[34px] border border-white/10 bg-black/30 shadow-[0_32px_90px_rgba(0,0,0,.62)] lg:block"><img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="h-full w-full object-contain object-center" /></aside>
             <section className="relative w-full max-w-xl justify-self-end overflow-hidden rounded-[32px] border border-white/15 bg-slate-950/65 p-6 shadow-[0_30px_95px_rgba(0,0,0,.58),inset_0_1px_0_rgba(255,255,255,.08)] backdrop-blur-2xl sm:p-8"><div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" /><div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-orange-400/15 blur-3xl" /><div className="pointer-events-none absolute -bottom-24 -left-24 h-52 w-52 rounded-full bg-yellow-300/10 blur-3xl" /><div className="relative"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-200">Secure account access</p><h1 className="mt-3 text-3xl font-black tracking-tight text-white sm:text-4xl">{mode === 'signup' ? 'Create your FlapaPay account' : 'Sign in to FlapaPay'}</h1><p className="mt-3 max-w-lg text-sm leading-relaxed text-slate-400">{mode === 'signup' ? 'One secure signup flow with password and PIN protection. Add business details only when you need a Sandbox merchant workspace.' : 'Use your email, password, and four-digit security PIN to access your FlapaPay workspace.'}</p></div>{error && <Alert tone="error">{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}<div className="relative mt-7">{mode === 'signup' ? renderSignup() : renderLogin()}</div><div className="relative mt-7 border-t border-white/10 pt-6 text-center text-sm font-semibold text-slate-400">{mode === 'signup' ? 'Already have an account?' : 'Need an account?'}<button type="button" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="ml-2 font-black text-amber-200 transition hover:text-yellow-100">{mode === 'signup' ? 'Sign in' : 'Create one'}</button></div></section>
-            <aside className="relative h-44 overflow-hidden rounded-3xl border border-white/10 shadow-2xl lg:hidden"><img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="h-full w-full object-cover object-[50%_30%]" /><div className="absolute inset-0 bg-gradient-to-r from-black/35 to-transparent" /></aside>
+            <aside className="relative w-full max-w-[360px] aspect-[2/3] justify-self-center overflow-hidden rounded-3xl border border-white/10 bg-black/30 shadow-2xl lg:hidden"><img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="h-full w-full object-contain object-center" /></aside>
         </main>
     </div>;
 };
