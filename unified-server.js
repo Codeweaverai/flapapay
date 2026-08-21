@@ -4928,6 +4928,7 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
     try {
         await syncPendingLencoWithdrawalsForUser(req.user.id, 10);
         await syncPendingPawaPayPayoutsForUser(req.user.id, 10);
+        const selectedLiveMode = req.environmentKind !== 'sandbox';
         const walletsResult = await pool.query(
             `SELECT w.id,
                     w.currency,
@@ -4944,9 +4945,11 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
                    AND local_status = 'PENDING'
                  GROUP BY wallet_id
              ) p ON p.wallet_id = w.id
-             WHERE w.user_id = $1 AND w.livemode = TRUE
+             WHERE w.user_id = $1
+               AND w.livemode = $2
+               AND ($3::uuid IS NULL OR w.environment_id = $3)
              ORDER BY w.currency`,
-            [req.user.id]
+            [req.user.id, selectedLiveMode, req.environmentId]
         );
         const userRes = await pool.query('SELECT id, email, full_name, phone, role, default_payment_method_id, avatar_url, pin_hash FROM users WHERE id = $1', [req.user.id]);
         const updatedUser = userRes.rows[0];
@@ -4962,7 +4965,11 @@ app.get('/auth/me', authenticateToken, async (req, res) => {
                 avatarUrl: updatedUser.avatar_url,
                 hasPin: !!updatedUser.pin_hash
             },
-            wallets: walletsResult.rows
+            wallets: walletsResult.rows,
+            environment: {
+                id: req.environmentId || null,
+                kind: req.environmentKind || (selectedLiveMode ? 'live' : 'sandbox')
+            }
         });
     } catch (err) {
         console.error('Auth/Me Error:', err);
