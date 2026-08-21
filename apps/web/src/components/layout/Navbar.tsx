@@ -35,12 +35,14 @@ export const Navbar: React.FC = () => {
                                 <span className="text-orange-500">Flapa</span><span className="text-white">Pay</span>
                             </div>
                         </Link>
-                        <div className="hidden md:ml-10 md:flex md:space-x-8">
+                        <div className="hidden md:ml-8 md:flex md:items-center md:gap-5">
                             <Link to="/products" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Products</Link>
                             <Link to="/solutions" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Solutions</Link>
                             <Link to="/developers" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Developers</Link>
                             <Link to="/pricing" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Pricing</Link>
                             <Link to="/fx-liquidity" className="text-sm font-medium text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-1">FX Liquidity <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping"></span></Link>
+                            <Link to="/about" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Company</Link>
+                            <Link to="/careers" className="text-sm font-medium text-white hover:text-orange-400 transition-colors">Careers</Link>
                         </div>
                     </div>
 
