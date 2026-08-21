@@ -3,6 +3,7 @@ import { Button } from '../ui/Button';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 
+// Public navigation alignment: primary links follow the left viewport rail while account actions remain anchored to the right rail.
 export const Navbar: React.FC = () => {
     const [scrolled, setScrolled] = useState(false);
     const { isAuthenticated, user, logout } = useAuth();
@@ -23,7 +24,7 @@ export const Navbar: React.FC = () => {
 
     return (
         <nav className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${scrolled ? 'bg-black shadow-xl shadow-black/50 border-b border-white/10 py-3' : 'bg-black py-5'}`}>
-            <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="w-full px-4 sm:px-6 lg:px-10 2xl:px-14">
                 <div className="flex h-12 items-center justify-between">
 
                     {/* Logo */}
