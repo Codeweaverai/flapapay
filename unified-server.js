@@ -5185,8 +5185,19 @@ app.post('/wallets/deposit', authenticateToken, async (req, res) => {
 
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
-        const isTestMode = req.query.mode === 'test';
-        const requestedEnvironmentId = req.query.mode === 'test' && !req.headers['x-flapapay-environment-id'] ? null : req.environmentId;
+        const requestedMode = String(req.query.mode || '').trim().toLowerCase();
+        const requestedKind = requestedMode === 'test' ? 'sandbox' : requestedMode === 'live' ? 'live' : req.environmentKind === 'sandbox' ? 'sandbox' : 'live';
+        const isTestMode = requestedKind === 'sandbox';
+        let requestedEnvironmentId = req.environmentId;
+        if (requestedMode === 'test' || requestedMode === 'live') {
+            const environmentRes = await pool.query(
+                `SELECT me.id FROM merchant_environments me JOIN merchants m ON m.id = me.merchant_id
+                 WHERE m.user_id = $1 AND me.kind = $2 AND me.status = 'active'
+                 ORDER BY me.created_at ASC LIMIT 1`,
+                [req.user.id, requestedKind]
+            );
+            requestedEnvironmentId = environmentRes.rows[0]?.id || null;
+        }
         const result = await pool.query(
             'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 AND ($3::uuid IS NULL OR environment_id = $3) ORDER BY currency',
             [req.user.id, !isTestMode, requestedEnvironmentId]
@@ -12498,8 +12509,19 @@ app.get('/v1/settlements/:reference', authenticateApiKey, async (req, res) => {
 
 app.get('/wallets', authenticateToken, async (req, res) => {
     try {
-        const isTestMode = req.query.mode === 'test';
-        const requestedEnvironmentId = req.query.mode === 'test' && !req.headers['x-flapapay-environment-id'] ? null : req.environmentId;
+        const requestedMode = String(req.query.mode || '').trim().toLowerCase();
+        const requestedKind = requestedMode === 'test' ? 'sandbox' : requestedMode === 'live' ? 'live' : req.environmentKind === 'sandbox' ? 'sandbox' : 'live';
+        const isTestMode = requestedKind === 'sandbox';
+        let requestedEnvironmentId = req.environmentId;
+        if (requestedMode === 'test' || requestedMode === 'live') {
+            const environmentRes = await pool.query(
+                `SELECT me.id FROM merchant_environments me JOIN merchants m ON m.id = me.merchant_id
+                 WHERE m.user_id = $1 AND me.kind = $2 AND me.status = 'active'
+                 ORDER BY me.created_at ASC LIMIT 1`,
+                [req.user.id, requestedKind]
+            );
+            requestedEnvironmentId = environmentRes.rows[0]?.id || null;
+        }
         const result = await pool.query(
             'SELECT * FROM wallets WHERE user_id = $1 AND livemode = $2 AND ($3::uuid IS NULL OR environment_id = $3) ORDER BY currency',
             [req.user.id, !isTestMode, requestedEnvironmentId]
