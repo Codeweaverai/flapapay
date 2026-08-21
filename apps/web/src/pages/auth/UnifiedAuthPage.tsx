@@ -20,7 +20,6 @@ export const UnifiedAuthPage: React.FC = () => {
     const location = useLocation();
     const { login } = useAuth();
     const [mode, setMode] = useState<Mode>('signup');
-    const [isBusinessAccount, setIsBusinessAccount] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
@@ -31,7 +30,6 @@ export const UnifiedAuthPage: React.FC = () => {
     const [lastName, setLastName] = useState('');
     const [email, setEmail] = useState('');
     const [phone, setPhone] = useState('');
-    const [countryCode] = useState(ZAMBIA.dial);
     const [password, setPassword] = useState('');
     const [pin, setPin] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -47,11 +45,10 @@ export const UnifiedAuthPage: React.FC = () => {
     useEffect(() => {
         const params = new URLSearchParams(location.search);
         setMode(params.get('mode') === 'login' ? 'login' : 'signup');
-        setIsBusinessAccount(params.get('account') === 'business');
     }, [location.search]);
 
     useEffect(() => {
-        if (!isBusinessAccount || mode !== 'signup' || businessCountry !== 'Zambia' || registrationTypes.length > 0) return;
+        if (mode !== 'signup' || businessCountry !== 'Zambia' || registrationTypes.length > 0) return;
         api.get('/merchants/zambia/registration-types')
             .then((res) => setRegistrationTypes(res.data.registrationTypes || []))
             .catch(() => setRegistrationTypes([
@@ -60,7 +57,7 @@ export const UnifiedAuthPage: React.FC = () => {
                 { value: 'public-company', label: 'Public Limited Company (PLC)' },
                 { value: 'partnership', label: 'Partnership' }, { value: 'ngo', label: 'NGO / Non-Profit' },
             ]));
-    }, [isBusinessAccount, mode, businessCountry, registrationTypes.length]);
+    }, [mode, businessCountry, registrationTypes.length]);
 
     useEffect(() => { setError(''); setSuccess(''); setPartialToken(null); setPinStep('none'); setPin(''); }, [mode]);
 
@@ -98,19 +95,14 @@ export const UnifiedAuthPage: React.FC = () => {
     const handleSignup = async (event: React.FormEvent) => {
         event.preventDefault(); setIsSubmitting(true); setError(''); setSuccess('');
         try {
-            if (isBusinessAccount) {
-                const response = await api.post('/merchants/register', {
-                    email: normalizeEmail(email), password, pin, firstName, lastName, businessName, country: businessCountry,
-                    accountType: businessType, isIncorporated, registrationType, agreedToTerms,
-                });
-                login(response.data.token, response.data.user); localStorage.setItem('merchantId', response.data.merchant.id); navigate('/merchant/dashboard'); return;
-            }
-            const response = await api.post('/auth/register', {
-                email: normalizeEmail(email), password, firstName, lastName, phone: `${countryCode}${phone.replace(/\D/g, '')}`, pin,
+            if (isIncorporated === null) { setError('Please confirm whether your business is incorporated.'); return; }
+            const response = await api.post('/merchants/register', {
+                email: normalizeEmail(email), password, pin, firstName, lastName, businessName, country: businessCountry,
+                accountType: businessType, isIncorporated, registrationType, agreedToTerms,
             });
-            const credited = response.data.creditedPayments || 0;
-            setSuccess(credited > 0 ? `Account created. ${credited} pending payment${credited > 1 ? 's have' : ' has'} been credited to your wallet.` : 'Account created successfully. You can sign in now.');
-            setMode('login');
+            login(response.data.token, response.data.user);
+            localStorage.setItem('merchantId', response.data.merchant.id);
+            navigate('/merchant/dashboard');
         } catch (err: any) { setError(err.response?.data?.error || 'Unable to create your account.'); }
         finally { setIsSubmitting(false); }
     };
@@ -147,17 +139,37 @@ export const UnifiedAuthPage: React.FC = () => {
             <Field label="Phone number"><div className="grid grid-cols-[168px_minmax(0,1fr)] gap-3"><div className={`${inputClass} flex items-center gap-2 px-3 text-sm font-bold text-amber-100`} aria-label="Phone country: Zambia"><ReactCountryFlag countryCode={ZAMBIA.code} svg title={ZAMBIA.name} style={{ width: '1.35em', height: '1.35em' }} /><span>Zambia +260</span></div><input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} className={inputClass} placeholder="97XXXXXXX" required /></div><p className="text-xs text-slate-500">Zambia phone registration only.</p></Field>
             <Field label="Password"><div className="relative"><input type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} className={`${inputClass} pr-16`} minLength={8} required /><button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute inset-y-0 right-4 text-xs font-black uppercase tracking-[0.1em] text-amber-200 transition hover:text-yellow-100">{showPassword ? 'Hide' : 'Show'}</button></div></Field>
             <PinEntry label="Create a 4-digit security PIN" value={pin} onChange={setPin} helper="Use a PIN you can remember. It adds a second check when you sign in." />
-            <label className={`block cursor-pointer rounded-2xl border p-4 transition ${isBusinessAccount ? 'border-amber-300/60 bg-gradient-to-r from-orange-500/15 to-yellow-400/10 shadow-lg shadow-orange-500/10' : 'border-white/10 bg-white/[0.035] hover:border-white/25'}`}><div className="flex items-start gap-3"><input type="checkbox" checked={isBusinessAccount} onChange={(event) => setIsBusinessAccount(event.target.checked)} className="mt-1 h-4 w-4 accent-orange-500" /><div><p className="font-bold text-white">I am registering this account for a business</p><p className="mt-1 text-sm leading-relaxed text-slate-400">Add business details now. Your business begins in Sandbox and unlocks Live only after compliance approval.</p></div></div></label>
-            {isBusinessAccount && <section className="space-y-4 rounded-2xl border border-amber-300/15 bg-black/20 p-4"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-200">Business setup</p><p className="mt-1 text-sm text-slate-400">These details create your Sandbox merchant workspace and start the guided Live verification journey.</p></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Country"><div className={`${inputClass} flex items-center gap-2 px-3 text-sm font-bold text-amber-100`}><ReactCountryFlag countryCode={ZAMBIA.code} svg title={ZAMBIA.name} style={{ width: '1.35em', height: '1.35em' }} /><span>Zambia</span></div></Field><Field label="Entity type"><select value={businessType} onChange={(event) => setBusinessType(event.target.value as BusinessType)} className={inputClass}><option value="business" className="bg-slate-950">Business account</option><option value="other" className="bg-slate-950">Other entity</option></select></Field></div><Field label="Registered business name"><input type="text" value={businessName} onChange={(event) => setBusinessName(event.target.value)} className={inputClass} required={isBusinessAccount} /></Field><Field label="Is your business incorporated?"><div className="grid grid-cols-2 gap-3"><button type="button" onClick={() => setIsIncorporated(true)} className={choiceButtonClass(isIncorporated === true)}>Yes</button><button type="button" onClick={() => setIsIncorporated(false)} className={choiceButtonClass(isIncorporated === false)}>No</button></div></Field><Field label="Registration type"><select value={registrationType} onChange={(event) => setRegistrationType(event.target.value)} className={inputClass} required={isBusinessAccount}><option value="" className="bg-slate-950">Select one</option>{businessRegistrationOptions.map((option) => <option key={option.value} value={option.value} className="bg-slate-950">{option.label}</option>)}</select></Field><label className="flex items-start gap-3 rounded-xl bg-white/[0.04] px-4 py-3 text-sm text-slate-300"><input type="checkbox" checked={agreedToTerms} onChange={() => setAgreedToTerms((value) => !value)} className="mt-1 accent-orange-500" required={isBusinessAccount} /><span>I agree to the <a href="https://www.flapapay.com/merchant-service-agreement" target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="font-bold text-amber-200 underline decoration-amber-300/60 underline-offset-2 transition hover:text-yellow-100">Merchant Service Agreement</a> and understand that compliance approval is required before Live payment processing.</span></label></section>}
-            <button type="submit" disabled={isSubmitting || pin.length !== 4} className={primaryButtonClass}>{isSubmitting ? 'Creating your account…' : isBusinessAccount ? 'Create account and open Sandbox' : 'Create your account'}</button>
+            <section className="space-y-4 rounded-2xl border border-amber-300/20 bg-gradient-to-br from-orange-500/[0.08] to-black/20 p-4"><div><p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-200">Required business details</p><p className="mt-1 text-sm text-slate-400">Complete these details to create your Sandbox merchant workspace.</p></div><div className="grid gap-3 sm:grid-cols-2"><Field label="Country"><div className={`${inputClass} flex items-center gap-2 px-3 text-sm font-bold text-amber-100`}><ReactCountryFlag countryCode={ZAMBIA.code} svg title={ZAMBIA.name} style={{ width: '1.35em', height: '1.35em' }} /><span>Zambia</span></div></Field><Field label="Entity type"><select value={businessType} onChange={(event) => setBusinessType(event.target.value as BusinessType)} className={inputClass}><option value="business" className="bg-slate-950">Business account</option><option value="other" className="bg-slate-950">Other entity</option></select></Field></div><Field label="Registered business name"><input type="text" value={businessName} onChange={(event) => setBusinessName(event.target.value)} className={inputClass} required /></Field><Field label="Is your business incorporated?"><div className="grid grid-cols-2 gap-3"><button type="button" onClick={() => setIsIncorporated(true)} className={choiceButtonClass(isIncorporated === true)}>Yes</button><button type="button" onClick={() => setIsIncorporated(false)} className={choiceButtonClass(isIncorporated === false)}>No</button></div></Field><Field label="Registration type"><select value={registrationType} onChange={(event) => setRegistrationType(event.target.value)} className={inputClass} required><option value="" className="bg-slate-950">Select one</option>{businessRegistrationOptions.map((option) => <option key={option.value} value={option.value} className="bg-slate-950">{option.label}</option>)}</select></Field><label className="flex items-start gap-3 rounded-xl bg-white/[0.04] px-4 py-3 text-sm text-slate-300"><input type="checkbox" checked={agreedToTerms} onChange={() => setAgreedToTerms((value) => !value)} className="mt-1 accent-orange-500" required /><span>I agree to the <a href="https://www.flapapay.com/merchant-service-agreement" target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="font-bold text-amber-200 underline decoration-amber-300/60 underline-offset-2 transition hover:text-yellow-100">Merchant Service Agreement</a> and understand that compliance approval is required before Live payment processing.</span></label></section>
+            <button type="submit" disabled={isSubmitting || pin.length !== 4} className={primaryButtonClass}>{isSubmitting ? 'Creating your account…' : 'Create account and open Sandbox'}</button>
         </form>
     );
 
     return <div className="min-h-screen bg-[#07090e] text-white">
         <Navbar />
         <main className="min-h-[calc(100vh-64px)] lg:grid lg:grid-cols-[minmax(0,1.12fr)_minmax(500px,0.88fr)]">
-            <aside className="relative hidden min-h-[calc(100vh-64px)] overflow-hidden bg-black lg:block"><img src={AUTH_CAMPAIGN_IMAGE} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover object-center opacity-35 blur-2xl" /><div className="absolute inset-0 bg-gradient-to-r from-black/45 via-black/10 to-black/45" /><img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="relative h-full w-full scale-[0.94] object-contain object-center" /></aside>
-            <section className="relative flex min-h-[calc(100vh-64px)] items-center justify-center overflow-hidden bg-[#07090e] px-5 pb-10 pt-28 sm:px-8 sm:pt-32 lg:px-10" style={{ backgroundImage: "linear-gradient(rgba(7,9,14,.84), rgba(7,9,14,.97)), url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed', alignItems: mode === 'signup' ? 'flex-start' : 'center' }}><div className="pointer-events-none absolute -right-28 top-1/4 h-72 w-72 rounded-full bg-orange-500/10 blur-3xl" /><div className="pointer-events-none absolute -left-28 bottom-1/4 h-64 w-64 rounded-full bg-yellow-300/8 blur-3xl" /><div className={`relative w-full max-w-xl overflow-hidden rounded-[32px] border border-orange-300/35 bg-gradient-to-br from-[#26140e]/95 via-[#11131c]/92 to-[#091019]/96 p-5 shadow-[0_30px_95px_rgba(0,0,0,.62),0_14px_62px_rgba(249,115,22,.38),0_46px_130px_rgba(245,158,11,.20),inset_0_1px_0_rgba(255,228,190,.16)] backdrop-blur-2xl sm:p-6 ${mode === 'login' ? 'min-h-[540px] lg:-translate-y-10 lg:flex lg:flex-col lg:justify-center' : ''}`}><div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" /><div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-orange-400/25 blur-3xl" /><div className="pointer-events-none absolute -bottom-24 -left-24 h-52 w-52 rounded-full bg-yellow-300/18 blur-3xl" /><div className="relative"><p className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-200">Secure account access</p><h1 className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">{mode === 'signup' ? 'Create your FlapaPay account' : 'Sign in to FlapaPay'}</h1><p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-400">{mode === 'signup' ? 'One secure signup flow with password and PIN protection. Add business details only when you need a Sandbox merchant workspace.' : 'Use your email, password, and four-digit security PIN to access your FlapaPay workspace.'}</p></div>{error && <Alert tone="error">{error}</Alert>}{success && <Alert tone="success">{success}</Alert>}<div className="relative mt-5">{mode === 'signup' ? renderSignup() : renderLogin()}</div><div className="relative mt-5 border-t border-white/10 pt-5 text-center text-sm font-semibold text-slate-400">{mode === 'signup' ? 'Already have an account?' : 'Need an account?'}<button type="button" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="ml-2 font-black text-amber-200 transition hover:text-yellow-100">{mode === 'signup' ? 'Sign in' : 'Create one'}</button></div></div></section>
+            <aside className="relative hidden min-h-[calc(100vh-64px)] overflow-hidden bg-black lg:block">
+                <img src={AUTH_CAMPAIGN_IMAGE} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover object-center opacity-35 blur-2xl" />
+                <div className="absolute inset-0 bg-gradient-to-r from-black/45 via-black/10 to-black/45" />
+                <img src={AUTH_CAMPAIGN_IMAGE} alt="FlapaPay customer story" className="relative h-full w-full scale-[0.94] object-contain object-center" />
+            </aside>
+            <section className="relative flex min-h-[calc(100vh-64px)] items-center justify-center overflow-hidden bg-[#07090e] px-5 pb-10 pt-28 sm:px-8 sm:pt-32 lg:px-10" style={{ backgroundImage: "linear-gradient(rgba(7,9,14,.84), rgba(7,9,14,.97)), url('https://www.transparenttextures.com/patterns/cubes.png')", backgroundAttachment: 'fixed', alignItems: mode === 'signup' ? 'flex-start' : 'center' }}>
+                <div className="pointer-events-none absolute -right-28 top-1/4 h-72 w-72 rounded-full bg-orange-500/10 blur-3xl" />
+                <div className="pointer-events-none absolute -left-28 bottom-1/4 h-64 w-64 rounded-full bg-yellow-300/8 blur-3xl" />
+                <div className={`relative w-full max-w-xl overflow-hidden rounded-[32px] border border-orange-300/35 bg-gradient-to-br from-[#26140e]/95 via-[#11131c]/92 to-[#091019]/96 p-5 shadow-[0_30px_95px_rgba(0,0,0,.62),0_14px_62px_rgba(249,115,22,.38),0_46px_130px_rgba(245,158,11,.20),inset_0_1px_0_rgba(255,228,190,.16)] backdrop-blur-2xl sm:p-6 ${mode === 'login' ? 'min-h-[540px] lg:-translate-y-10 lg:flex lg:flex-col lg:justify-center' : ''}`}>
+                    <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-orange-500 via-amber-300 to-yellow-200" />
+                    <div className="pointer-events-none absolute -right-24 -top-24 h-56 w-56 rounded-full bg-orange-400/25 blur-3xl" />
+                    <div className="pointer-events-none absolute -bottom-24 -left-24 h-52 w-52 rounded-full bg-yellow-300/18 blur-3xl" />
+                    <div className="relative">
+                        <p className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-200">Secure account access</p>
+                        <h1 className="mt-2 text-2xl font-black tracking-tight text-white sm:text-3xl">{mode === 'signup' ? 'Create your FlapaPay account' : 'Sign in to FlapaPay'}</h1>
+                        {mode === 'login' && <p className="mt-2 max-w-lg text-sm leading-relaxed text-slate-400">Use your email, password, and four-digit security PIN to access your FlapaPay workspace.</p>}
+                    </div>
+                    {error && <Alert tone="error">{error}</Alert>}
+                    {success && <Alert tone="success">{success}</Alert>}
+                    <div className="relative mt-5">{mode === 'signup' ? renderSignup() : renderLogin()}</div>
+                    <div className="relative mt-5 border-t border-white/10 pt-5 text-center text-sm font-semibold text-slate-400">{mode === 'signup' ? 'Already have an account?' : 'Need an account?'}<button type="button" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="ml-2 font-black text-amber-200 transition hover:text-yellow-100">{mode === 'signup' ? 'Sign in' : 'Create one'}</button></div>
+                </div>
+            </section>
         </main>
     </div>;
 };
