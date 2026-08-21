@@ -20580,7 +20580,7 @@ const provisionApiKeys = async (db, merchantId, environmentId) => {
 // Full Zambia-first merchant onboarding. Creates user + merchant record + API keys in one transaction.
 app.post('/merchants/register', async (req, res) => {
     const {
-        email, password, firstName, lastName, businessName,
+        email, password, pin, firstName, lastName, businessName,
         country = 'Zambia', accountType = 'business',
         isIncorporated = false, registrationType,
         agreedToTerms = false
@@ -20591,6 +20591,7 @@ app.post('/merchants/register', async (req, res) => {
     if (!businessName) return res.status(400).json({ error: 'Business name is required' });
     if (!firstName || !lastName) return res.status(400).json({ error: 'First name and last name are required' });
     if (!agreedToTerms) return res.status(400).json({ error: 'You must agree to the terms and conditions' });
+    if (!/^\d{4}$/.test(String(pin || ''))) return res.status(400).json({ error: 'A 4-digit security PIN is required' });
 
     const passwordCheck = verifyPasswordStrength(password);
     if (!passwordCheck.isValid) return res.status(400).json({ error: passwordCheck.message });
@@ -20605,13 +20606,14 @@ app.post('/merchants/register', async (req, res) => {
 
         // Create the user record with role = 'merchant'
         const passwordHash = await bcrypt.hash(password, 12);
+        const pinHash = await bcrypt.hash(pin, 12);
         const fullName = `${firstName} ${lastName}`;
         const emailVerifyToken = crypto.randomBytes(32).toString('hex');
 
         const userResult = await client.query(
-            `INSERT INTO users (email, password_hash, full_name, email_verified, created_at)
-             VALUES ($1, $2, $3, false, NOW()) RETURNING id, email`,
-            [email, passwordHash, fullName]
+            `INSERT INTO users (email, password_hash, pin_hash, full_name, email_verified, created_at)
+             VALUES ($1, $2, $3, $4, false, NOW()) RETURNING id, email`,
+            [email, passwordHash, pinHash, fullName]
         );
         const user = userResult.rows[0];
 
