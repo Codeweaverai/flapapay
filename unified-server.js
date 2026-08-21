@@ -536,6 +536,7 @@ const authenticateToken = async (req, res, next) => {
         }
         next();
     } catch (err) {
+        if (err?.status) return res.status(err.status).json({ error: err.message, code: err.code });
         return res.status(403).json({ error: 'Invalid or expired token' });
     }
 };
@@ -10277,35 +10278,24 @@ const authenticateMerchant = async (req, res, next) => {
                 return res.status(401).json({ error: 'Merchant account not found. Please register at /merchant/dashboard first.' });
             }
             result.rows[0] = reQuery.rows[0];
-            // Provision API keys if this is a new merchant (and provisionApiKeys is available)
-            if (newMerchantId && typeof provisionApiKeys === 'function') {
-                try { await provisionApiKeys(pool, result.rows[0].id || newMerchantId); } catch (_) {}
+            // Provision a complete Sandbox-first workspace for auto-created merchants.
+            if (newMerchantId && typeof provisionMerchantEnvironments === 'function') {
+                try {
+                    const environments = await provisionMerchantEnvironments(pool, result.rows[0].id || newMerchantId, decoded.userId);
+                    await provisionDefaultMerchantWallets(pool, decoded.userId, environments.sandbox.id, environments.live.id);
+                    await provisionApiKeys(pool, result.rows[0].id || newMerchantId, environments.sandbox.id);
+                } catch (_) {}
             }
         }
 
         req.merchant = result.rows[0];
         req.user = { id: decoded.userId }; // Minimal user object
 
-        // Resolve the live environment during compatibility mode as well. This
-        // keeps legacy JWT callers on live while allowing webhook resources to
-        // be written and queried with environment_id before enforcement.
-        const requestedEnvironmentId = req.headers['x-flapapay-environment-id'] || null;
-        if (process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true' &&
-            process.env.ENVIRONMENT_CONTEXT_REQUIRE_EXPLICIT === 'true' && !requestedEnvironmentId) {
-            return res.status(400).json({ error: 'Environment context is required', code: 'ENVIRONMENT_REQUIRED' });
-        }
         try {
-            const environment = await require('./services/environmentContext').resolveEnvironment(pool, {
+            await attachJwtEnvironment(req, pool, {
                 merchantId: req.merchant.id,
-                environmentId: requestedEnvironmentId,
+                actorUserId: decoded.userId,
             });
-            req.environmentId = environment.id;
-            req.environmentKind = environment.kind;
-            req.environmentSlug = environment.slug;
-            req.isTestMode = environment.kind === 'sandbox';
-            req.environmentSource = process.env.ENVIRONMENT_CONTEXT_ENABLED === 'true'
-                ? (requestedEnvironmentId ? 'jwt_header' : 'compat_live_default')
-                : 'legacy_jwt_default';
         } catch (error) {
             if (error?.status) {
                 return res.status(error.status).json({ error: error.message, code: error.code });
@@ -20528,18 +20518,59 @@ app.post('/admin/content/jobs', authenticateToken, isAdmin, async (req, res) => 
     }
 })();
 
-// Helper: provision default API keys for a new merchant
-const provisionApiKeys = async (db, merchantId) => {
+// Compliance-gated workspace provisioning: every merchant receives isolated
+// Sandbox and Live records, but only Sandbox credentials are issued at signup.
+const provisionMerchantEnvironments = async (db, merchantId, userId) => {
+    await db.query(
+        `INSERT INTO merchant_environments (merchant_id, name, slug, kind, status, created_by_user_id)
+         VALUES
+            ($1, 'Sandbox', 'sandbox', 'sandbox', 'active', $2),
+            ($1, 'Live', 'live', 'live', 'active', $2)
+         ON CONFLICT DO NOTHING`,
+        [merchantId, userId],
+    );
+    const result = await db.query(
+        `SELECT id, kind FROM merchant_environments
+          WHERE merchant_id = $1 AND kind IN ('sandbox', 'live') AND status = 'active'`,
+        [merchantId],
+    );
+    const sandbox = result.rows.find((environment) => environment.kind === 'sandbox');
+    const live = result.rows.find((environment) => environment.kind === 'live');
+    if (!sandbox || !live) throw new Error('Merchant environment provisioning failed');
+    return { sandbox, live };
+};
+
+const provisionDefaultMerchantWallets = async (db, userId, sandboxEnvironmentId, liveEnvironmentId) => {
+    for (const [currency, livemode, environmentId] of [
+        ['ZMW', false, sandboxEnvironmentId],
+        ['USD', false, sandboxEnvironmentId],
+        ['ZMW', true, liveEnvironmentId],
+        ['USD', true, liveEnvironmentId],
+    ]) {
+        await db.query(
+            `INSERT INTO wallets (user_id, currency, balance, livemode, environment_id)
+             SELECT $1, $2, 0.00, $3, $4
+              WHERE NOT EXISTS (
+                  SELECT 1 FROM wallets
+                   WHERE user_id = $1 AND currency = $2 AND livemode = $3 AND environment_id = $4
+              )`,
+            [userId, currency, livemode, environmentId],
+        );
+    }
+};
+
+// Helper: provision Sandbox API keys for a new merchant. Live keys are issued
+// only after an administrator has approved compliance and enabled Live access.
+const provisionApiKeys = async (db, merchantId, environmentId) => {
     const keys = [
         { type: 'test_public', value: generateMerchantApiKey('test_public') },
         { type: 'test_secret', value: generateMerchantApiKey('test_secret') },
-        { type: 'live_public', value: generateMerchantApiKey('live_public') },
-        { type: 'live_secret', value: generateMerchantApiKey('live_secret') },
     ];
     for (const k of keys) {
         await db.query(
-            `INSERT INTO api_keys (merchant_id, key_type, key_value) VALUES ($1, $2, $3)`,
-            [merchantId, k.type, k.value]
+            `INSERT INTO api_keys (merchant_id, key_type, key_value, environment_id, mode)
+             VALUES ($1, $2, $3, $4, 'test')`,
+            [merchantId, k.type, k.value, environmentId]
         );
     }
     return keys;
@@ -20584,12 +20615,6 @@ app.post('/merchants/register', async (req, res) => {
         );
         const user = userResult.rows[0];
 
-        // Create default live and test wallets
-        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, true)`, [user.id]);
-        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, true)`, [user.id]);
-        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'ZMW', 0.00, false)`, [user.id]);
-        await client.query(`INSERT INTO wallets (user_id, currency, balance, livemode) VALUES ($1, 'USD', 0.00, false)`, [user.id]);
-
         // Determine compliance/PACRA status for Zambia
         const pacraVerified = country === 'Zambia' && isIncorporated;
         const complianceStatus = pacraVerified ? 'PENDING' : 'SANDBOX_ONLY';
@@ -20616,8 +20641,11 @@ app.post('/merchants/register', async (req, res) => {
         );
         const merchant = merchantResult.rows[0];
 
-        // Provision API keys
-        const apiKeys = await provisionApiKeys(client, merchant.id);
+        const environments = await provisionMerchantEnvironments(client, merchant.id, user.id);
+        await provisionDefaultMerchantWallets(client, user.id, environments.sandbox.id, environments.live.id);
+
+        // Issue Sandbox credentials now; Live credentials remain unavailable until approval.
+        const apiKeys = await provisionApiKeys(client, merchant.id, environments.sandbox.id);
 
         // Create a balance record for the platform balance
         await client.query(
@@ -20641,6 +20669,7 @@ app.post('/merchants/register', async (req, res) => {
                 complianceStatus: merchant.compliance_status,
                 isLiveEnabled: false,
             },
+            environment: { id: environments.sandbox.id, kind: 'sandbox', name: 'Sandbox' },
             // Only return test keys on registration; live keys are for after KYC
             apiKeys: {
                 testPublicKey: apiKeys.find(k => k.type === 'test_public')?.value,

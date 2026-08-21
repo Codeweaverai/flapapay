@@ -157,7 +157,7 @@ export const MerchantDashboard: React.FC = () => {
         setTimeout(() => setCopiedKey(null), 2000);
     };
 
-    const isApproved = merchant?.compliance_status === 'ACTIVE' || merchant?.is_live_enabled;
+    const isApproved = merchant?.compliance_status === 'ACTIVE' && merchant?.is_live_enabled === true;
     const isPending  = merchant?.compliance_status === 'PENDING';
     const currentKeys = dashboardMode === 'TEST' ? apiKeys?.test : apiKeys?.live;
 
@@ -213,7 +213,9 @@ export const MerchantDashboard: React.FC = () => {
                                     <button
                                         key={m}
                                         onClick={() => setDashboardMode(m)}
-                                        className={`px-5 py-2 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                                        disabled={m === 'LIVE' && !isApproved}
+                                        title={m === 'LIVE' && !isApproved ? 'Complete compliance approval to unlock Live' : undefined}
+                                        className={`px-5 py-2 rounded-lg text-xs font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-45 ${
                                             dashboardMode === m
                                                 ? 'bg-gray-900 text-white shadow-sm'
                                                 : 'text-gray-400 hover:text-gray-600'
@@ -289,6 +291,27 @@ export const MerchantDashboard: React.FC = () => {
                                         ))}
                                     </div>
                                 </div>
+                            )}
+
+                            {/* ── Sandbox-to-Live setup ─────────────────────── */}
+                            {dashboardMode === 'TEST' && !isApproved && (
+                                <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+                                    <div className="flex flex-col gap-4 border-b border-amber-100 bg-gradient-to-r from-amber-50 via-orange-50 to-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+                                        <div>
+                                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-600">Sandbox-to-Live setup</p>
+                                            <h2 className="mt-1 text-lg font-bold text-gray-900">Your Sandbox is ready. Live stays locked until approval.</h2>
+                                            <p className="mt-1 text-sm text-gray-500">Test integrations safely now while you complete the compliance steps required for production payments.</p>
+                                        </div>
+                                        <button onClick={() => navigate('/merchant/onboarding')} className="shrink-0 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800">
+                                            {isPending ? 'View application' : 'Start verification'}
+                                        </button>
+                                    </div>
+                                    <div className="grid gap-0 divide-y divide-gray-100 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                                        <div className="p-5"><div className="mb-3 flex items-center gap-2 text-emerald-700"><CheckCircle2 className="h-4 w-4" /><span className="text-xs font-bold">1. Sandbox ready</span></div><p className="text-xs leading-relaxed text-gray-500">Use your isolated test wallets and Sandbox API keys. No real money moves.</p></div>
+                                        <div className="p-5"><div className="mb-3 flex items-center gap-2 text-amber-700"><ShieldCheck className="h-4 w-4" /><span className="text-xs font-bold">2. Submit verification</span></div><p className="text-xs leading-relaxed text-gray-500">Provide business details, ownership information, identity checks, and supporting documents.</p></div>
+                                        <div className="p-5"><div className="mb-3 flex items-center gap-2 text-gray-700"><Lock className="h-4 w-4" /><span className="text-xs font-bold">3. Activate Live</span></div><p className="text-xs leading-relaxed text-gray-500">After approval, select Live and create your production credentials before processing real payments.</p></div>
+                                    </div>
+                                </section>
                             )}
 
                             {/* ── Main content ─────────────────────────────── */}

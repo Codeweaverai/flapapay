@@ -70,6 +70,22 @@ async function resolveEnvironment(pool, { merchantId, environmentId, kind = null
     return result.rows[0];
 }
 
+async function assertLiveEnvironmentEligible(pool, merchantId, environment) {
+    if (environment?.kind !== 'live') return environment;
+    const result = await pool.query(
+        `SELECT compliance_status, is_live_enabled
+           FROM merchants
+          WHERE id = $1
+          LIMIT 1`,
+        [merchantId],
+    );
+    const merchant = result.rows[0];
+    if (!merchant || merchant.compliance_status !== 'ACTIVE' || merchant.is_live_enabled !== true) {
+        throw new EnvironmentError(409, 'LIVE_COMPLIANCE_REQUIRED', 'Live environment requires approved merchant compliance');
+    }
+    return environment;
+}
+
 async function resolveApiKey(pool, rawKey) {
     const result = await pool.query(
         `SELECT
@@ -115,7 +131,9 @@ async function attachApiKeyEnvironment(req, pool, rawKey) {
     const environment = await resolveEnvironment(pool, {
         merchantId: key.merchant_id,
         environmentId: key.environment_id,
+        kind: key.environment_id ? null : (String(key.key_type || '').startsWith('test_') ? 'sandbox' : 'live'),
     });
+    await assertLiveEnvironmentEligible(pool, key.merchant_id, environment);
 
     req.merchant = {
         ...key,
@@ -138,10 +156,22 @@ async function attachJwtEnvironment(req, pool, { merchantId, actorUserId }) {
         throw new EnvironmentError(400, 'ENVIRONMENT_REQUIRED', `Header ${ENVIRONMENT_HEADER} is required`);
     }
 
-    const environment = await resolveEnvironment(pool, {
-        merchantId,
-        environmentId: requestedEnvironmentId,
-    });
+    let environment;
+    if (requestedEnvironmentId) {
+        environment = await resolveEnvironment(pool, {
+            merchantId,
+            environmentId: requestedEnvironmentId,
+        });
+        await assertLiveEnvironmentEligible(pool, merchantId, environment);
+    } else {
+        try {
+            environment = await resolveEnvironment(pool, { merchantId, kind: 'live' });
+            await assertLiveEnvironmentEligible(pool, merchantId, environment);
+        } catch (error) {
+            if (error?.code !== 'LIVE_COMPLIANCE_REQUIRED') throw error;
+            environment = await resolveEnvironment(pool, { merchantId, kind: 'sandbox' });
+        }
+    }
 
     // P0 rule: until environment-specific team grants exist, only the merchant
     // owner may use the dashboard environment context. Expand this check to a
@@ -159,9 +189,9 @@ async function attachJwtEnvironment(req, pool, { merchantId, actorUserId }) {
     req.environmentId = environment.id;
     req.environmentKind = environment.kind;
     req.environmentSlug = environment.slug;
-    req.environmentSource = ENVIRONMENT_CONTEXT_ENABLED
-        ? (requestedEnvironmentId ? 'jwt_header' : 'compat_live_default')
-        : 'legacy_jwt_default';
+    req.environmentSource = requestedEnvironmentId
+        ? 'jwt_header'
+        : (environment.kind === 'sandbox' ? 'compliance_sandbox_default' : 'compat_live_default');
     req.isTestMode = environment.kind === 'sandbox';
     return req;
 }
@@ -196,6 +226,7 @@ module.exports = {
     EnvironmentError,
     readEnvironmentId,
     resolveEnvironment,
+    assertLiveEnvironmentEligible,
     resolveApiKey,
     attachApiKeyEnvironment,
     attachJwtEnvironment,
