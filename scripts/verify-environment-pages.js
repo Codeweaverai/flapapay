@@ -42,15 +42,27 @@ async function request(path, token, method = 'GET', body, environmentId = null) 
   if (sandboxKeys.status !== 200 || sandboxKeys.data?.environment?.id !== sandbox.id || sandboxKeys.data?.environment?.kind !== 'sandbox') {
     throw new Error('sandbox API keys were not scoped to selected environment');
   }
+  const sandboxWallets = await request('/auth/me', token, 'GET', undefined, sandbox.id);
+  if (sandboxWallets.status !== 200 || sandboxWallets.data?.environment?.id !== sandbox.id || sandboxWallets.data?.environment?.kind !== 'sandbox') {
+    throw new Error('sandbox dashboard wallets were not scoped to selected environment');
+  }
+  const sandboxWalletList = await request('/wallets?mode=test', token);
+  if (sandboxWalletList.status !== 200 || !Array.isArray(sandboxWalletList.data)) throw new Error('sandbox wallet list request failed');
   const liveActivity = await request('/merchant/environment-activity', token, 'GET', undefined, live.id);
   if (liveActivity.status !== 200 || liveActivity.data.environmentId !== live.id) throw new Error('live activity was not scoped to selected environment');
   const liveKeys = await request('/merchants/keys', token, 'GET', undefined, live.id);
   if (liveKeys.status !== 200 || liveKeys.data?.environment?.id !== live.id || liveKeys.data?.environment?.kind !== 'live') {
     throw new Error('live API keys were not scoped to selected environment');
   }
+  const liveWallets = await request('/auth/me', token, 'GET', undefined, live.id);
+  if (liveWallets.status !== 200 || liveWallets.data?.environment?.id !== live.id || liveWallets.data?.environment?.kind !== 'live') {
+    throw new Error('live dashboard wallets were not scoped to selected environment');
+  }
+  const liveWalletList = await request('/wallets?mode=live', token);
+  if (liveWalletList.status !== 200 || !Array.isArray(liveWalletList.data)) throw new Error('live wallet list request failed');
   const selectedLive = await request(`/merchant/environments/${live.id}/select`, token, 'POST');
   const liveEnvironment = listed.data.environments.find(environment => environment.kind === 'live');
   const shouldBlockLive = liveEnvironment.complianceStatus !== 'ACTIVE' || liveEnvironment.isLiveEnabled !== true;
   if (shouldBlockLive && selectedLive.status !== 409) throw new Error(`expected Live compliance gate 409, got ${selectedLive.status}`);
-  console.log(JSON.stringify({ listStatus: listed.status, sandboxSelectionStatus: selectedSandbox.status, sandboxActivityStatus: activity.status, sandboxKeysStatus: sandboxKeys.status, liveActivityStatus: liveActivity.status, liveKeysStatus: liveKeys.status, liveSelectionStatus: selectedLive.status, liveBlockedByCompliance: shouldBlockLive }));
+  console.log(JSON.stringify({ listStatus: listed.status, sandboxSelectionStatus: selectedSandbox.status, sandboxActivityStatus: activity.status, sandboxKeysStatus: sandboxKeys.status, sandboxWalletCount: sandboxWallets.data.wallets.length, sandboxWalletListCount: sandboxWalletList.data.length, liveActivityStatus: liveActivity.status, liveKeysStatus: liveKeys.status, liveWalletCount: liveWallets.data.wallets.length, liveWalletListCount: liveWalletList.data.length, liveSelectionStatus: selectedLive.status, liveBlockedByCompliance: shouldBlockLive }));
 })().catch(error => { console.error(error.message); process.exit(1); });
