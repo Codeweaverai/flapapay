@@ -3177,6 +3177,22 @@ const ensureSchema = async () => {
             )
         `);
 
+        // Store applicant-provided role applications separately from public job postings.
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS job_applications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                job_id INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+                full_name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                phone VARCHAR(80),
+                portfolio_url TEXT,
+                cover_note TEXT NOT NULL,
+                status VARCHAR(40) NOT NULL DEFAULT 'submitted',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_job_applications_job_id ON job_applications(job_id)');
+
         // Create merchant_bank_accounts table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS merchant_bank_accounts (
@@ -7960,10 +7976,46 @@ app.get('/content/jobs', async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); } finally { client.release(); }
 });
 
+app.post('/content/jobs/:id/applications', async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const jobId = Number.parseInt(req.params.id, 10);
+        const fullName = typeof req.body.fullName === 'string' ? req.body.fullName.trim() : '';
+        const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+        const phone = typeof req.body.phone === 'string' ? req.body.phone.trim() : '';
+        const portfolioUrl = typeof req.body.portfolioUrl === 'string' ? req.body.portfolioUrl.trim() : '';
+        const coverNote = typeof req.body.coverNote === 'string' ? req.body.coverNote.trim() : '';
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        if (!Number.isInteger(jobId) || jobId < 1) return res.status(400).json({ message: 'A valid role is required.' });
+        if (fullName.length < 2 || fullName.length > 255) return res.status(400).json({ message: 'Please provide your full name.' });
+        if (!emailPattern.test(email) || email.length > 255) return res.status(400).json({ message: 'Please provide a valid email address.' });
+        if (phone.length > 80 || portfolioUrl.length > 2000 || coverNote.length < 20 || coverNote.length > 5000) return res.status(400).json({ message: 'Please review the application details and try again.' });
+        if (portfolioUrl && !/^https?:\/\//i.test(portfolioUrl)) return res.status(400).json({ message: 'Portfolio links must begin with http:// or https://.' });
+
+        const job = await client.query('SELECT id FROM job_postings WHERE id = $1 AND is_active = TRUE', [jobId]);
+        if (job.rows.length === 0) return res.status(404).json({ message: 'This role is no longer accepting applications.' });
+
+        const result = await client.query(
+            'INSERT INTO job_applications (job_id, full_name, email, phone, portfolio_url, cover_note) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at',
+            [jobId, fullName, email, phone || null, portfolioUrl || null, coverNote]
+        );
+        res.status(201).json({ applicationId: result.rows[0].id, submittedAt: result.rows[0].created_at, message: 'Application received.' });
+    } catch (error) {
+        console.error('Job application submission failed:', error.message);
+        res.status(500).json({ message: 'We could not submit your application. Please try again.' });
+    } finally {
+        client.release();
+    }
+});
+
 app.get('/content/jobs/:slug', async (req, res) => {
     const client = await pool.connect();
     try {
-        const result = await client.query('SELECT * FROM job_postings WHERE slug = $1', [req.params.slug]);
+        const identifier = req.params.slug;
+        const result = /^\d+$/.test(identifier)
+            ? await client.query('SELECT * FROM job_postings WHERE id = $1', [Number.parseInt(identifier, 10)])
+            : await client.query('SELECT * FROM job_postings WHERE slug = $1', [identifier]);
         if (result.rows.length === 0) return res.status(404).json({ message: 'Not found' });
         res.status(200).json(result.rows[0]);
     } catch (error) { res.status(500).json({ error: error.message }); } finally { client.release(); }
