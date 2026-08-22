@@ -12,6 +12,7 @@ import {
     Building2,
     ShieldCheck,
     UserCheck,
+    BriefcaseBusiness,
     ChevronLeft,
     Menu,
     X
@@ -36,6 +37,7 @@ export const AdminLayout: React.FC = () => {
         { name: 'Merchants', icon: Building2, path: '/admin/merchants' },
         { name: 'Sub-merchant KYC', icon: UserCheck, path: '/admin/sub-merchants' },
         { name: 'Escrows', icon: ShieldCheck, path: '/admin/escrows' },
+        { name: 'Recruitment', icon: BriefcaseBusiness, path: '/admin/recruitment/applications' },
         { name: 'Content (CMS)', icon: FileText, path: '/admin/cms' },
     ];
 

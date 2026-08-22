@@ -396,6 +396,38 @@ function generateOtpCode() {
     return String(randomInt(100000, 999999));
 }
 
+function escapeHtml(value = '') {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+async function sendJobApplicationConfirmation(email, { applicantName, jobTitle }) {
+    const safeName = escapeHtml(applicantName || 'there');
+    const safeJobTitle = escapeHtml(jobTitle || 'the role');
+    return send({
+        to: email,
+        subject: `We received your application for ${jobTitle}`,
+        html: `<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:Arial,sans-serif;color:#0f172a;"><div style="max-width:600px;margin:32px auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden;"><div style="padding:28px 32px;background:#0f172a;color:#ffffff;"><p style="margin:0;color:#fb923c;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">FlapaPay Careers</p><h1 style="margin:12px 0 0;font-size:25px;line-height:1.2;">Application received</h1></div><div style="padding:32px;"><p style="font-size:16px;line-height:1.7;">Hello ${safeName},</p><p style="font-size:16px;line-height:1.7;">Thank you for applying for <strong>${safeJobTitle}</strong>. Your application has been recorded and will be reviewed by our recruitment team.</p><p style="font-size:16px;line-height:1.7;">If your experience matches the next stage, we will contact you using this email address.</p><p style="margin:28px 0 0;font-size:16px;line-height:1.7;">— The FlapaPay Team</p></div></div></body></html>`,
+    });
+}
+
+async function sendRecruiterApplicationAlert(recipients, { applicantName, applicantEmail, jobTitle, department, applicationUrl }) {
+    const safeName = escapeHtml(applicantName);
+    const safeEmail = escapeHtml(applicantEmail);
+    const safeJobTitle = escapeHtml(jobTitle);
+    const safeDepartment = escapeHtml(department || 'Unassigned');
+    const safeApplicationUrl = escapeHtml(applicationUrl);
+    return send({
+        to: recipients,
+        subject: `New application: ${applicantName} for ${jobTitle}`,
+        html: `<!doctype html><html><body style="margin:0;background:#f8fafc;font-family:Arial,sans-serif;color:#0f172a;"><div style="max-width:600px;margin:32px auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:20px;overflow:hidden;"><div style="padding:28px 32px;background:#0f172a;color:#ffffff;"><p style="margin:0;color:#fb923c;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;">FlapaPay Recruitment</p><h1 style="margin:12px 0 0;font-size:25px;line-height:1.2;">New candidate application</h1></div><div style="padding:32px;"><p style="font-size:16px;line-height:1.7;margin-top:0;"><strong>${safeName}</strong> has applied for <strong>${safeJobTitle}</strong>.</p><table style="border-collapse:collapse;width:100%;font-size:14px;"><tr><td style="padding:10px 0;color:#64748b;width:120px;">Email</td><td style="padding:10px 0;font-weight:700;">${safeEmail}</td></tr><tr><td style="padding:10px 0;color:#64748b;">Department</td><td style="padding:10px 0;font-weight:700;">${safeDepartment}</td></tr></table><a href="${safeApplicationUrl}" style="display:inline-block;margin-top:24px;border-radius:10px;background:#f97316;color:#ffffff;padding:13px 18px;font-size:14px;font-weight:700;text-decoration:none;">Review application</a></div></div></body></html>`,
+    });
+}
+
 // ── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
     send,
@@ -409,5 +441,7 @@ module.exports = {
     sendPayoutNotification,
     sendOnboardingComplete,
     sendAccountSuspended,
+    sendJobApplicationConfirmation,
+    sendRecruiterApplicationAlert,
     generateOtpCode,
 };

@@ -70,6 +70,7 @@ import { AdminNotifications } from './pages/admin/AdminNotifications';
 import { AdminEscrowDetail } from './pages/admin/AdminEscrowDetail';
 import { AdminSubMerchants } from './pages/admin/AdminSubMerchants';
 import { AdminSubMerchantReview } from './pages/admin/AdminSubMerchantReview';
+import { AdminApplications } from './pages/admin/AdminApplications';
 import { AllTransactions } from './pages/AllTransactions';
 import { FXLiquidityPool } from './pages/FXLiquidityPool';
 import { FXLiquidityPoolInfo } from './pages/FXLiquidityPoolInfo';
@@ -466,6 +467,7 @@ function AppRoutes() {
         <Route path="sub-merchants/:id" element={<AdminSubMerchantReview />} />
         <Route path="escrows" element={<AdminEscrowManagement />} />
         <Route path="escrows/:id" element={<AdminEscrowDetail />} />
+        <Route path="recruitment/applications" element={<AdminApplications />} />
         <Route path="cms" element={<AdminCMS />} />
         <Route path="notifications" element={<AdminNotifications />} />
       </Route>

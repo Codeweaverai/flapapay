@@ -3188,10 +3188,23 @@ const ensureSchema = async () => {
                 portfolio_url TEXT,
                 cover_note TEXT NOT NULL,
                 status VARCHAR(40) NOT NULL DEFAULT 'submitted',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                reviewer_notes TEXT,
+                reviewed_by UUID REFERENCES users(id),
+                reviewed_at TIMESTAMP,
+                applicant_confirmation_sent_at TIMESTAMP,
+                recruiter_alert_sent_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_job_applications_job_id ON job_applications(job_id)');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS reviewer_notes TEXT');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES users(id)');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS applicant_confirmation_sent_at TIMESTAMP');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS recruiter_alert_sent_at TIMESTAMP');
+        await pool.query('ALTER TABLE job_applications ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_job_applications_status_created_at ON job_applications(status, created_at DESC)');
 
         // Create merchant_bank_accounts table
         await pool.query(`
@@ -7993,7 +8006,7 @@ app.post('/content/jobs/:id/applications', async (req, res) => {
         if (phone.length > 80 || portfolioUrl.length > 2000 || coverNote.length < 20 || coverNote.length > 5000) return res.status(400).json({ message: 'Please review the application details and try again.' });
         if (portfolioUrl && !/^https?:\/\//i.test(portfolioUrl)) return res.status(400).json({ message: 'Portfolio links must begin with http:// or https://.' });
 
-        const job = await client.query('SELECT id FROM job_postings WHERE id = $1 AND is_active = TRUE', [jobId]);
+        const job = await client.query('SELECT id, title, department FROM job_postings WHERE id = $1 AND is_active = TRUE', [jobId]);
         if (job.rows.length === 0) return res.status(404).json({ message: 'This role is no longer accepting applications.' });
 
         const result = await client.query(
@@ -8001,9 +8014,120 @@ app.post('/content/jobs/:id/applications', async (req, res) => {
             [jobId, fullName, email, phone || null, portfolioUrl || null, coverNote]
         );
         res.status(201).json({ applicationId: result.rows[0].id, submittedAt: result.rows[0].created_at, message: 'Application received.' });
+
+        const applicationUrl = `${process.env.APP_BASE_URL || 'https://www.flapapay.com'}/admin/recruitment/applications`;
+        const configuredRecruiterRecipients = (process.env.RECRUITMENT_NOTIFICATION_EMAILS || '')
+            .split(',')
+            .map((recipient) => recipient.trim())
+            .filter((recipient) => emailPattern.test(recipient));
+        const adminRecipientResult = await client.query(
+            "SELECT DISTINCT email FROM users WHERE role = 'admin' AND email IS NOT NULL"
+        );
+        const recruiterRecipients = [...new Set([
+            ...configuredRecruiterRecipients,
+            ...adminRecipientResult.rows.map((row) => row.email).filter((recipient) => emailPattern.test(recipient)),
+        ])];
+        const notificationTasks = [
+            EmailService.sendJobApplicationConfirmation(email, { applicantName: fullName, jobTitle: job.rows[0].title }),
+        ];
+        if (recruiterRecipients.length > 0) {
+            notificationTasks.push(EmailService.sendRecruiterApplicationAlert(recruiterRecipients, {
+                applicantName: fullName,
+                applicantEmail: email,
+                jobTitle: job.rows[0].title,
+                department: job.rows[0].department,
+                applicationUrl,
+            }));
+        } else {
+            console.warn('[Recruitment] No valid recruiter recipients were found; recruiter alert was skipped.');
+        }
+        Promise.allSettled(notificationTasks).then(async (outcomes) => {
+            const applicantDelivered = outcomes[0]?.status === 'fulfilled';
+            const recruiterDelivered = recruiterRecipients.length > 0 && outcomes[1]?.status === 'fulfilled';
+            await pool.query(
+                'UPDATE job_applications SET applicant_confirmation_sent_at = CASE WHEN $1 THEN CURRENT_TIMESTAMP ELSE NULL END, recruiter_alert_sent_at = CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+                [applicantDelivered, recruiterDelivered, result.rows[0].id]
+            );
+            outcomes.forEach((outcome) => {
+                if (outcome.status === 'rejected') console.error('[Recruitment] Application email notification failed:', outcome.reason?.message || outcome.reason);
+            });
+        }).catch((notificationError) => console.error('[Recruitment] Email delivery bookkeeping failed:', notificationError.message));
     } catch (error) {
         console.error('Job application submission failed:', error.message);
         res.status(500).json({ message: 'We could not submit your application. Please try again.' });
+    } finally {
+        client.release();
+    }
+});
+
+const RECRUITMENT_APPLICATION_STATUSES = ['submitted', 'in_review', 'shortlisted', 'interview', 'rejected', 'hired'];
+
+app.get('/admin/recruitment/applications', authenticateToken, isAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { status, department, q } = req.query;
+        const requestedLimit = Number.parseInt(req.query.limit, 10);
+        const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+        const where = [];
+        const values = [];
+
+        if (status && status !== 'ALL') {
+            if (!RECRUITMENT_APPLICATION_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid application status filter.' });
+            values.push(status);
+            where.push(`a.status = $${values.length}`);
+        }
+        if (department && department !== 'ALL') {
+            values.push(String(department).trim());
+            where.push(`j.department = $${values.length}`);
+        }
+        if (q && String(q).trim()) {
+            values.push(`%${String(q).trim()}%`);
+            where.push(`(a.full_name ILIKE $${values.length} OR a.email ILIKE $${values.length} OR j.title ILIKE $${values.length})`);
+        }
+        values.push(limit);
+        const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const result = await client.query(
+            `SELECT a.id, a.full_name, a.email, a.phone, a.portfolio_url, a.cover_note, a.status, a.reviewer_notes, a.created_at, a.reviewed_at,
+                    j.title AS job_title, j.department, j.location, j.type AS employment_type,
+                    COUNT(*) OVER() AS total_count
+             FROM job_applications a
+             JOIN job_postings j ON j.id = a.job_id
+             ${whereClause}
+             ORDER BY a.created_at DESC
+             LIMIT $${values.length}`,
+            values
+        );
+        res.json({ applications: result.rows, total: result.rows.length ? Number(result.rows[0].total_count) : 0 });
+    } catch (error) {
+        console.error('[Recruitment] Unable to list applications:', error.message);
+        res.status(500).json({ error: 'Unable to load candidate applications.' });
+    } finally {
+        client.release();
+    }
+});
+
+app.patch('/admin/recruitment/applications/:id', authenticateToken, isAdmin, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const applicationId = String(req.params.id || '');
+        const status = String(req.body.status || '');
+        const reviewerNotes = typeof req.body.reviewerNotes === 'string' ? req.body.reviewerNotes.trim() : '';
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(applicationId)) return res.status(400).json({ error: 'Invalid application identifier.' });
+        if (!RECRUITMENT_APPLICATION_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid application status.' });
+        if (reviewerNotes.length > 5000) return res.status(400).json({ error: 'Reviewer notes must be 5,000 characters or fewer.' });
+
+        const result = await client.query(
+            `UPDATE job_applications
+             SET status = $1, reviewer_notes = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $4
+             RETURNING id, status, reviewer_notes, reviewed_at`,
+            [status, reviewerNotes || null, req.user.id, applicationId]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Candidate application not found.' });
+        res.json({ application: result.rows[0] });
+    } catch (error) {
+        console.error('[Recruitment] Unable to update application:', error.message);
+        res.status(500).json({ error: 'Unable to update this application.' });
     } finally {
         client.release();
     }
